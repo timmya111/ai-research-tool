@@ -1,0 +1,30 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - paragraph [ref=e4]: local only · Ollama
+      - heading "AI Research Tool" [level=1] [ref=e5]
+      - paragraph [ref=e6]:
+        - text: Ask research questions, paste allowlisted URLs for
+        - code [ref=e7]: fetch_url
+        - text: ", and let Auto mode pick a single specialist or a tools + reason → merge pipeline."
+    - generic [ref=e8]:
+      - generic [ref=e9] [cursor=pointer]:
+        - checkbox "Auto model plans single or tools+reason→merge" [checked] [disabled] [ref=e10]
+        - generic [ref=e11]: Auto model
+        - generic [ref=e12]: plans single or tools+reason→merge
+      - button "Advanced…" [disabled] [ref=e13] [cursor=pointer]
+      - generic [ref=e14]: Ollama ok · 9 free models
+    - generic [ref=e15]:
+      - button "What local Ollama models are available, and which should I use for research?" [disabled] [ref=e16] [cursor=pointer]
+      - button "Fetch https://en.wikipedia.org/wiki/Large_language_model and summarize the lead section in 5 bullets." [disabled] [ref=e17] [cursor=pointer]
+      - button "Compare pros and cons of local vs cloud LLMs for private research notes." [disabled] [ref=e18] [cursor=pointer]
+      - button "Fetch https://127.0.0.1:3333/api/status and summarize what this research tool reports." [disabled] [ref=e19] [cursor=pointer]
+      - button "What time is it on this machine right now?" [disabled] [ref=e20] [cursor=pointer]
+    - generic [ref=e36]:
+      - generic [ref=e37]: You
+      - text: What time is it on this machine right now?
+    - generic [ref=e23]:
+      - textbox "Ask a research question, or paste a URL to fetch…" [disabled] [ref=e24]
+      - button "Working…" [disabled] [ref=e38]
+  - button "Open Next.js Dev Tools" [ref=e31] [cursor=pointer]
+  - alert [ref=e35]

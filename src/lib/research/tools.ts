@@ -1,0 +1,266 @@
+export type ResearchToolName = 'fetch_url' | 'current_time';
+
+export const RESEARCH_TOOL_DEFINITIONS = [
+	{
+		type: 'function' as const,
+		function: {
+			name: 'fetch_url',
+			description:
+				'GET an API endpoint or page URL the user provided for research. Returns truncated JSON or readable text. Allowlisted / safe hosts only. Read-only.',
+			parameters: {
+				type: 'object',
+				properties: {
+					url: { type: 'string', description: 'Absolute http(s) URL to fetch' },
+					maxChars: {
+						type: 'number',
+						description: 'Max characters of body to return (default 24000, max 48000)',
+					},
+				},
+				required: ['url'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'current_time',
+			description: 'Return the current date and time in ISO and local string forms (server timezone).',
+			parameters: {
+				type: 'object',
+				properties: {},
+			},
+		},
+	},
+];
+
+const FETCH_URL_DEFAULT_HOSTS = new Set([
+	'localhost',
+	'127.0.0.1',
+	'[::1]',
+	'::1',
+	'en.wikipedia.org',
+	'www.wikipedia.org',
+	'raw.githubusercontent.com',
+	'github.com',
+	'api.github.com',
+	'docs.x.ai',
+	'arxiv.org',
+	'export.arxiv.org',
+]);
+
+const FETCH_URL_MAX_BYTES = 512_000;
+const FETCH_URL_TIMEOUT_MS = 15_000;
+
+function fetchUrlAllowedHosts(): Set<string> {
+	const hosts = new Set(FETCH_URL_DEFAULT_HOSTS);
+	const extra = String(process.env.RESEARCH_FETCH_HOSTS || process.env.LOCAL_AI_FETCH_HOSTS || '')
+		.split(',')
+		.map((h) => h.trim().toLowerCase())
+		.filter(Boolean);
+	for (const h of extra) hosts.add(h);
+	return hosts;
+}
+
+function openFetchEnabled(): boolean {
+	return process.env.RESEARCH_OPEN_FETCH === '1' || process.env.ALLOW_OPEN_FETCH === '1';
+}
+
+function normalizeFetchHost(hostname: string): string {
+	return String(hostname || '')
+		.trim()
+		.toLowerCase()
+		.replace(/^\[(.*)\]$/, '$1');
+}
+
+function isPrivateOrLocalHostname(hostname: string): boolean {
+	const host = normalizeFetchHost(hostname);
+	if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+	if (/^10\.\d+\.\d+\.\d+$/.test(host)) return true;
+	if (/^192\.168\.\d+\.\d+$/.test(host)) return true;
+	if (/^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(host)) return true;
+	if (/^169\.254\.\d+\.\d+$/.test(host)) return true;
+	if (host.endsWith('.local') || host.endsWith('.internal')) return true;
+	return false;
+}
+
+function isFetchUrlAllowed(url: URL): { ok: true } | { ok: false; error: string } {
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+		return { ok: false, error: 'only http(s) URLs are allowed' };
+	}
+	if (url.username || url.password) {
+		return { ok: false, error: 'URLs with credentials are not allowed' };
+	}
+	const host = normalizeFetchHost(url.hostname);
+	const allowlist = fetchUrlAllowedHosts();
+	if (allowlist.has(host) || allowlist.has(url.hostname.toLowerCase())) {
+		return { ok: true };
+	}
+	if (openFetchEnabled()) {
+		if (isPrivateOrLocalHostname(host) && !allowlist.has(host)) {
+			return {
+				ok: false,
+				error: `private/local host blocked even with open fetch: ${url.hostname}. Add it to RESEARCH_FETCH_HOSTS.`,
+			};
+		}
+		return { ok: true };
+	}
+	return {
+		ok: false,
+		error: `host not allowlisted: ${url.hostname}. Add hosts via RESEARCH_FETCH_HOSTS, or set RESEARCH_OPEN_FETCH=1 for public https.`,
+	};
+}
+
+function htmlToReadableText(html: string): string {
+	return html
+		.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+		.replace(/<style[\s\S]*?<\/style>/gi, ' ')
+		.replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+		.replace(/<!--[\s\S]*?-->/g, ' ')
+		.replace(/<[^>]+>/g, ' ')
+		.replace(/&nbsp;/gi, ' ')
+		.replace(/&amp;/gi, '&')
+		.replace(/&lt;/gi, '<')
+		.replace(/&gt;/gi, '>')
+		.replace(/&quot;/gi, '"')
+		.replace(/&#39;/gi, "'")
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function truncateChars(text: string, maxChars: number): { text: string; truncated: boolean } {
+	if (text.length <= maxChars) return { text, truncated: false };
+	return { text: text.slice(0, maxChars), truncated: true };
+}
+
+async function fetchUrlForResearch(
+	rawUrl: unknown,
+	maxCharsRaw: unknown,
+): Promise<{ ok: boolean; result: Record<string, unknown> }> {
+	const maxChars = Math.max(1000, Math.min(48_000, Number(maxCharsRaw) || 24_000));
+	let parsed: URL;
+	try {
+		parsed = new URL(String(rawUrl || '').trim());
+	} catch {
+		return { ok: false, result: { error: 'invalid URL' } };
+	}
+	const allowed = isFetchUrlAllowed(parsed);
+	if (allowed.ok === false) {
+		return { ok: false, result: { error: allowed.error, url: parsed.href } };
+	}
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), FETCH_URL_TIMEOUT_MS);
+	try {
+		const res = await fetch(parsed.href, {
+			method: 'GET',
+			redirect: 'follow',
+			cache: 'no-store',
+			signal: controller.signal,
+			headers: {
+				Accept: 'application/json, text/plain, text/html;q=0.9, */*;q=0.8',
+				'User-Agent': 'ai-research-tool-fetch/1.0',
+			},
+		});
+		const finalUrl = new URL(res.url);
+		const finalAllowed = isFetchUrlAllowed(finalUrl);
+		if (!finalAllowed.ok) {
+			return {
+				ok: false,
+				result: {
+					error: `redirect landed on disallowed host: ${finalUrl.hostname}`,
+					requestedUrl: parsed.href,
+					finalUrl: finalUrl.href,
+				},
+			};
+		}
+
+		const contentType = String(res.headers.get('content-type') || '')
+			.split(';')[0]
+			.trim()
+			.toLowerCase();
+		const buf = Buffer.from(await res.arrayBuffer());
+		const byteTruncated = buf.length > FETCH_URL_MAX_BYTES;
+		const slice = byteTruncated ? buf.subarray(0, FETCH_URL_MAX_BYTES) : buf;
+		const rawText = slice.toString('utf8');
+
+		let kind: 'json' | 'text' | 'html' = 'text';
+		let body: unknown = rawText;
+		const looksJson = contentType.includes('json') || /^\s*[{[]/.test(rawText);
+		if (looksJson) {
+			try {
+				body = JSON.parse(rawText);
+				kind = 'json';
+			} catch {
+				kind = 'text';
+				body = rawText;
+			}
+		} else if (contentType.includes('html') || /^\s*</.test(rawText)) {
+			kind = 'html';
+			body = htmlToReadableText(rawText);
+		}
+
+		const serialized = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+		const { text, truncated } = truncateChars(serialized, maxChars);
+		let returnedBody: unknown = text;
+		if (kind === 'json') {
+			try {
+				returnedBody = JSON.parse(text);
+			} catch {
+				returnedBody = text;
+			}
+		}
+
+		return {
+			ok: res.ok,
+			result: {
+				ok: res.ok,
+				status: res.status,
+				contentType: contentType || null,
+				kind,
+				requestedUrl: parsed.href,
+				finalUrl: finalUrl.href,
+				byteLength: buf.length,
+				truncated: truncated || byteTruncated,
+				body: returnedBody,
+				hint:
+					truncated || byteTruncated
+						? 'Body truncated for model context; ask for a narrower URL or field if needed.'
+						: undefined,
+			},
+		};
+	} catch (e: unknown) {
+		const err = e as { name?: string; message?: string };
+		const message =
+			err?.name === 'AbortError' ? `timeout after ${FETCH_URL_TIMEOUT_MS}ms` : err?.message || String(e);
+		return { ok: false, result: { error: message, url: parsed.href } };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export async function runResearchTool(
+	name: string,
+	args: Record<string, unknown>,
+): Promise<{ ok: boolean; result: unknown }> {
+	const tool = String(name || '').trim() as ResearchToolName;
+
+	if (tool === 'current_time') {
+		const now = new Date();
+		return {
+			ok: true,
+			result: {
+				iso: now.toISOString(),
+				local: now.toString(),
+				timezoneOffsetMinutes: now.getTimezoneOffset(),
+				unixMs: now.getTime(),
+			},
+		};
+	}
+
+	if (tool === 'fetch_url') {
+		const fetched = await fetchUrlForResearch(args.url, args.maxChars);
+		return { ok: fetched.ok, result: fetched.result };
+	}
+
+	return { ok: false, result: { error: `unknown tool: ${name}` } };
+}

@@ -1,36 +1,40 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Research Tool
 
-## Getting Started
+Standalone local research assistant extracted from the Local AI stack in `finra-sec-data-visualizer-canvas`.
 
-First, run the development server:
+It keeps:
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Ollama chat UI
+- Adaptive auto model routing (single specialist or tools/fetch + reason → merge)
+- Tool calling (`fetch_url`, `current_time`)
+- Localhost-only guard by default
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+FINRA/graph/Redis-specific tools and canvas snapshot wiring were removed.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Quick start
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Install deps: `pnpm install`
+2. Run [Ollama](https://ollama.com) locally and pull a chat model, e.g. `ollama pull qwen2.5:7b`
+3. Start the app: `pnpm dev` (http://localhost:3333)
+4. Ask questions on the home page
 
-## Learn More
+## Env
 
-To learn more about Next.js, take a look at the following resources:
+See `.env.example`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Variable | Purpose |
+| --- | --- |
+| `OLLAMA_BASE_URL` | Ollama base URL (default `http://127.0.0.1:11434`) |
+| `ALLOW_LOCAL_AI` | Set `1` to allow non-localhost access |
+| `RESEARCH_FETCH_HOSTS` | Extra comma-separated hosts for `fetch_url` |
+| `RESEARCH_OPEN_FETCH` | Set `1` to allow any public https host (private IPs still blocked) |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## API
 
-## Deploy on Vercel
+- `GET /api/status` — Ollama reachability + free local models
+- `POST /api/chat` — `{ question, model?, history?, availableModels? }`
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Cloud Ollama tags (`*:cloud`) are filtered out of the picker.
+- Skip paid cloud models; this app is meant for free local models.

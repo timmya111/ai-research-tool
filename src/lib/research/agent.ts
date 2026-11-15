@@ -1,0 +1,279 @@
+import {
+	DEFAULT_RESEARCH_MODEL,
+	normalizeToolCallArguments,
+	ollamaChat,
+	type OllamaChatMessage,
+} from '@/lib/research/ollama';
+import { RESEARCH_TOOL_DEFINITIONS, runResearchTool } from '@/lib/research/tools';
+import {
+	RESEARCH_AUTO_MODEL,
+	routeResearchModel,
+	type ResearchRouteDecision,
+	type ResearchWorkerPlan,
+} from '@/lib/research/orchestrator';
+
+function buildSystemPrompt(workerFocus?: string) {
+	const focusLine = workerFocus ? `\nWorker focus: ${workerFocus}\n` : '';
+
+	return `You are a local AI research assistant running on the developer's machine via Ollama.
+You help with research questions: summarizing sources, cross-checking URLs, comparing claims, and drafting concise findings.
+${focusLine}
+Rules:
+- Use tools for facts when the user pastes a URL or asks you to look something up. Do not invent page contents, quotes, or citations.
+- When the user pastes an API endpoint or page URL, call fetch_url with that URL. Only allowlisted (or open-fetch public) hosts work.
+- Prefer short, structured answers. Lead with the conclusion or list, then brief supporting notes.
+- If a tool fails or a host is blocked, say so clearly and suggest adding the host to RESEARCH_FETCH_HOSTS or enabling RESEARCH_OPEN_FETCH=1.
+- Do not claim you browsed the live web unless fetch_url succeeded.
+- Keep answers concise.`;
+}
+
+export type ResearchAgentResult = {
+	ok: boolean;
+	model: string;
+	answer: string;
+	messages: OllamaChatMessage[];
+	toolTrace: Array<{ tool: string; args: Record<string, unknown>; result: unknown }>;
+	route?: ResearchRouteDecision | null;
+	workerTraces?: Array<{
+		id: string;
+		role: string;
+		model: string;
+		answer: string;
+		toolTrace: ResearchAgentResult['toolTrace'];
+	}>;
+	error?: string;
+};
+
+async function runToolAgentLoop(options: {
+	model: string;
+	question: string;
+	history: OllamaChatMessage[];
+	maxRounds: number;
+	useTools: boolean;
+	workerFocus?: string;
+	priorContext?: string;
+}): Promise<{
+	ok: boolean;
+	answer: string;
+	messages: OllamaChatMessage[];
+	toolTrace: ResearchAgentResult['toolTrace'];
+	error?: string;
+}> {
+	const userContent =
+		options.priorContext
+			? `${options.question}\n\n---\nPrior worker findings (use as evidence; do not invent beyond this + tools):\n${options.priorContext}`
+			: options.question;
+
+	const messages: OllamaChatMessage[] = [
+		{
+			role: 'system',
+			content: buildSystemPrompt(options.workerFocus),
+		},
+		...options.history.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content),
+		{ role: 'user', content: userContent },
+	];
+	const toolTrace: ResearchAgentResult['toolTrace'] = [];
+
+	try {
+		for (let round = 0; round < options.maxRounds; round++) {
+			const { message } = await ollamaChat({
+				model: options.model,
+				messages,
+				tools: options.useTools ? RESEARCH_TOOL_DEFINITIONS : undefined,
+			});
+			messages.push(message);
+
+			const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+			if (!toolCalls.length || !options.useTools) {
+				return {
+					ok: true,
+					answer: String(message.content || '').trim() || '(empty model response)',
+					messages,
+					toolTrace,
+				};
+			}
+
+			for (const call of toolCalls) {
+				const toolName = String(call?.function?.name || '').trim();
+				const args = normalizeToolCallArguments(call?.function?.arguments);
+				const ran = await runResearchTool(toolName, args);
+				toolTrace.push({ tool: toolName, args, result: ran.result });
+				messages.push({
+					role: 'tool',
+					tool_name: toolName,
+					content: JSON.stringify(ran.result),
+				});
+			}
+		}
+
+		return {
+			ok: true,
+			answer:
+				'I hit the tool-round limit before a final answer. Check the tool trace and ask a more specific follow-up.',
+			messages,
+			toolTrace,
+		};
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			ok: false,
+			answer: '',
+			messages,
+			toolTrace,
+			error: message,
+		};
+	}
+}
+
+async function mergeWorkerAnswers(options: {
+	question: string;
+	mergeModel: string;
+	workers: Array<{ id: string; role: string; model: string; answer: string }>;
+}): Promise<{ ok: boolean; answer: string; error?: string }> {
+	const blocks = options.workers
+		.map((w, i) => `### Worker ${i + 1} (${w.id}, role=${w.role}, model=${w.model})\n${w.answer || '(empty)'}`)
+		.join('\n\n');
+	try {
+		const { message } = await ollamaChat({
+			model: options.mergeModel,
+			messages: [
+				{
+					role: 'system',
+					content: `You merge specialist worker answers into one final reply for a local research assistant.
+Rules:
+- Prefer concrete tool facts (URLs fetched, quotes, numbers, dates) over speculation.
+- Resolve conflicts explicitly; if workers disagree, say so and prefer tool-backed claims.
+- Do not invent citations absent from the worker findings.
+- Keep the answer concise. Lead with the conclusion or list, then brief notes.`,
+				},
+				{
+					role: 'user',
+					content: `Original question:\n${options.question}\n\nWorker findings:\n${blocks}\n\nWrite the final merged answer.`,
+				},
+			],
+		});
+		return { ok: true, answer: String(message.content || '').trim() || '(empty merge response)' };
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, answer: '', error: message };
+	}
+}
+
+export async function runResearchAgent(options: {
+	question: string;
+	model?: string;
+	history?: OllamaChatMessage[];
+	maxRounds?: number;
+	availableModels?: string[];
+}): Promise<ResearchAgentResult> {
+	const requested = String(options.model || RESEARCH_AUTO_MODEL).trim() || RESEARCH_AUTO_MODEL;
+	const route = await routeResearchModel({
+		question: options.question,
+		availableModels: options.availableModels,
+		forceModel: requested === RESEARCH_AUTO_MODEL ? null : requested,
+	});
+	const maxRounds = Math.max(1, Math.min(8, options.maxRounds ?? 5));
+	const history = Array.isArray(options.history) ? options.history : [];
+
+	if (!String(options.question || '').trim()) {
+		return {
+			ok: false,
+			model: route.model || DEFAULT_RESEARCH_MODEL,
+			answer: '',
+			messages: [],
+			toolTrace: [],
+			route,
+			error: 'question required',
+		};
+	}
+
+	const workers: ResearchWorkerPlan[] =
+		route.pipeline === 'multi' && Array.isArray(route.workers) && route.workers.length >= 2
+			? route.workers.slice(0, 2)
+			: [];
+
+	if (!workers.length) {
+		const model = route.model || DEFAULT_RESEARCH_MODEL;
+		const ran = await runToolAgentLoop({
+			model,
+			question: options.question,
+			history,
+			maxRounds,
+			useTools: true,
+		});
+		return {
+			ok: ran.ok,
+			model,
+			answer: ran.answer,
+			messages: ran.messages,
+			toolTrace: ran.toolTrace,
+			route,
+			error: ran.error,
+		};
+	}
+
+	const workerTraces: NonNullable<ResearchAgentResult['workerTraces']> = [];
+	const allToolTrace: ResearchAgentResult['toolTrace'] = [];
+	let prior = '';
+	let lastMessages: OllamaChatMessage[] = [];
+
+	for (const worker of workers) {
+		const ran = await runToolAgentLoop({
+			model: worker.model,
+			question: options.question,
+			history,
+			maxRounds: worker.useTools ? maxRounds : Math.min(3, maxRounds),
+			useTools: worker.useTools,
+			workerFocus: worker.focus,
+			priorContext: prior || undefined,
+		});
+		workerTraces.push({
+			id: worker.id,
+			role: worker.role,
+			model: worker.model,
+			answer: ran.answer || ran.error || '',
+			toolTrace: ran.toolTrace,
+		});
+		allToolTrace.push(...ran.toolTrace.map((t) => ({ ...t, args: { ...t.args, _worker: worker.id } })));
+		lastMessages = ran.messages;
+		prior = [prior, `## ${worker.id} (${worker.role} / ${worker.model})\n${ran.answer || ran.error || ''}`]
+			.filter(Boolean)
+			.join('\n\n');
+	}
+
+	const mergeModel = route.mergeModel || route.model || DEFAULT_RESEARCH_MODEL;
+	const merged = await mergeWorkerAnswers({
+		question: options.question,
+		mergeModel,
+		workers: workerTraces.map((w) => ({
+			id: w.id,
+			role: w.role,
+			model: w.model,
+			answer: w.answer,
+		})),
+	});
+
+	if (!merged.ok) {
+		const fallbackAnswer = workerTraces.map((w) => `### ${w.role} (${w.model})\n${w.answer}`).join('\n\n');
+		return {
+			ok: Boolean(fallbackAnswer.trim()),
+			model: mergeModel,
+			answer: fallbackAnswer || '',
+			messages: lastMessages,
+			toolTrace: allToolTrace,
+			route,
+			workerTraces,
+			error: merged.error,
+		};
+	}
+
+	return {
+		ok: true,
+		model: mergeModel,
+		answer: merged.answer,
+		messages: lastMessages,
+		toolTrace: allToolTrace,
+		route,
+		workerTraces,
+	};
+}

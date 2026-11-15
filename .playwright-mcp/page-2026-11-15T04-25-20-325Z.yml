@@ -1,0 +1,48 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - paragraph [ref=e4]: local only · Ollama
+      - heading "AI Research Tool" [level=1] [ref=e5]
+      - paragraph [ref=e6]:
+        - text: Ask research questions, paste allowlisted URLs for
+        - code [ref=e7]: fetch_url
+        - text: ", and let Auto mode pick a single specialist or a tools + reason → merge pipeline."
+    - generic [ref=e8]:
+      - generic [ref=e9] [cursor=pointer]:
+        - checkbox "Auto model manual override" [ref=e45]
+        - generic [ref=e11]: Auto model
+        - generic [ref=e12]: manual override
+      - generic [ref=e46]:
+        - generic [ref=e47]: Model
+        - combobox "Model" [ref=e48]:
+          - option "qwen2.5:7b" [selected]
+          - option "qwen2.5:14b"
+          - option "qwen3.6:latest"
+          - option "llama3.2:latest"
+          - option "gemma4:26b"
+          - option "muse-glimmer:latest"
+          - option "jikepjikep_16HEX/qwen3.6-27b-nightshift-heretic-uncensored-q4:latest"
+          - option "nomic-embed-text:latest"
+          - option "frob/qwen3-coder-next:latest"
+      - generic [ref=e14]: Ollama ok · 9 free models
+      - generic [ref=e39]: "Last route: Auto → qwen2.5:14b · Simple time query"
+    - generic [ref=e15]:
+      - button "What local Ollama models are available, and which should I use for research?" [ref=e16] [cursor=pointer]
+      - button "Fetch https://en.wikipedia.org/wiki/Large_language_model and summarize the lead section in 5 bullets." [ref=e17] [cursor=pointer]
+      - button "Compare pros and cons of local vs cloud LLMs for private research notes." [ref=e18] [cursor=pointer]
+      - button "Fetch https://127.0.0.1:3333/api/status and summarize what this research tool reports." [ref=e19] [cursor=pointer]
+      - button "What time is it on this machine right now?" [ref=e20] [cursor=pointer]
+    - generic [ref=e21]:
+      - generic [ref=e36]:
+        - generic [ref=e37]: You
+        - text: What time is it on this machine right now?
+      - generic [ref=e40]:
+        - generic [ref=e41]: Assistant
+        - text: Right now, the current date and time on this machine is November 14, 2026, at 22:24 PM (GMT-06:00). In ISO format, it's 2026-11-15T04:24:31.985Z.
+    - generic [ref=e23]:
+      - textbox "Ask a research question, or paste a URL to fetch…" [ref=e24]
+      - button "Ask" [disabled] [ref=e42]
+    - group [ref=e43]:
+      - generic "Tool trace (1)" [ref=e44] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e31] [cursor=pointer]
+  - alert [ref=e35]
