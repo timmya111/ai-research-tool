@@ -4,6 +4,7 @@ import {
 	ollamaChat,
 	type OllamaChatMessage,
 } from '@/lib/research/ollama';
+import type { CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { RESEARCH_TOOL_DEFINITIONS, runResearchTool } from '@/lib/research/tools';
 import {
 	RESEARCH_AUTO_MODEL,
@@ -12,19 +13,34 @@ import {
 	type ResearchWorkerPlan,
 } from '@/lib/research/orchestrator';
 
-function buildSystemPrompt(workerFocus?: string) {
+function buildSystemPrompt(
+	snapshot?: CanvasSnapshot | null,
+	aboutNodeGraph = false,
+	workerFocus?: string,
+) {
+	const canvasLine =
+		aboutNodeGraph && snapshot && snapshot.nodeCount > 0
+			? `The user checked "Question about node graph". Canvas snapshot attached: source=${snapshot.source}, nodes=${snapshot.nodeCount}, links=${snapshot.linkCount}, people=${snapshot.personCount}, firms=${snapshot.firmCount}. Call inspect_canvas_graph first for this question.`
+			: aboutNodeGraph
+				? 'The user checked "Question about node graph", but no canvas snapshot is attached (or it is empty). Tell them to Connect the live FINRA graph window (or paste snapshot JSON), then ask again.'
+				: 'The user did not check "Question about node graph". Do not use inspect_canvas_graph unless they clearly ask about the attached canvas.';
+
 	const focusLine = workerFocus ? `\nWorker focus: ${workerFocus}\n` : '';
 
 	return `You are a local AI research assistant running on the developer's machine via Ollama.
-You help with research questions: summarizing sources, cross-checking URLs, comparing claims, and drafting concise findings.
+You help with research questions: summarizing sources, cross-checking URLs, comparing claims, drafting concise findings, and (when enabled) inspecting a FINRA canvas graph snapshot from the live visualizer.
 ${focusLine}
 Rules:
 - Use tools for facts when the user pastes a URL or asks you to look something up. Do not invent page contents, quotes, or citations.
-- When the user pastes an API endpoint or page URL, call fetch_url with that URL. Only allowlisted (or open-fetch public) hosts work.
+- When the user pastes an API endpoint or page URL, call fetch_url with that URL. Only allowlisted (or open-fetch public) hosts work. The live app host finra-sec-data-visualizer-canvas.vercel.app, BrokerCheck, and AdviserInfo are allowlisted.
+- Only use inspect_canvas_graph when a canvas snapshot is attached for a node-graph question.
 - Prefer short, structured answers. Lead with the conclusion or list, then brief supporting notes.
 - If a tool fails or a host is blocked, say so clearly and suggest adding the host to RESEARCH_FETCH_HOSTS or enabling RESEARCH_OPEN_FETCH=1.
 - Do not claim you browsed the live web unless fetch_url succeeded.
-- Keep answers concise.`;
+- When listing people from the canvas, use: Name :: CRD# 1234567
+- Keep answers concise.
+
+${canvasLine}`;
 }
 
 export type ResearchAgentResult = {
@@ -41,15 +57,17 @@ export type ResearchAgentResult = {
 		answer: string;
 		toolTrace: ResearchAgentResult['toolTrace'];
 	}>;
+	canvas?: { source?: string; nodeCount?: number; linkCount?: number } | null;
 	error?: string;
 };
-
 async function runToolAgentLoop(options: {
 	model: string;
 	question: string;
 	history: OllamaChatMessage[];
 	maxRounds: number;
 	useTools: boolean;
+	canvasSnapshot: CanvasSnapshot | null;
+	aboutNodeGraph: boolean;
 	workerFocus?: string;
 	priorContext?: string;
 }): Promise<{
@@ -67,7 +85,7 @@ async function runToolAgentLoop(options: {
 	const messages: OllamaChatMessage[] = [
 		{
 			role: 'system',
-			content: buildSystemPrompt(options.workerFocus),
+			content: buildSystemPrompt(options.canvasSnapshot, options.aboutNodeGraph, options.workerFocus),
 		},
 		...options.history.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content),
 		{ role: 'user', content: userContent },
@@ -96,7 +114,7 @@ async function runToolAgentLoop(options: {
 			for (const call of toolCalls) {
 				const toolName = String(call?.function?.name || '').trim();
 				const args = normalizeToolCallArguments(call?.function?.arguments);
-				const ran = await runResearchTool(toolName, args);
+				const ran = await runResearchTool(toolName, args, { canvasSnapshot: options.canvasSnapshot });
 				toolTrace.push({ tool: toolName, args, result: ran.result });
 				messages.push({
 					role: 'tool',
@@ -105,7 +123,6 @@ async function runToolAgentLoop(options: {
 				});
 			}
 		}
-
 		return {
 			ok: true,
 			answer:
@@ -165,6 +182,8 @@ export async function runResearchAgent(options: {
 	history?: OllamaChatMessage[];
 	maxRounds?: number;
 	availableModels?: string[];
+	canvasSnapshot?: CanvasSnapshot | null;
+	aboutNodeGraph?: boolean;
 }): Promise<ResearchAgentResult> {
 	const requested = String(options.model || RESEARCH_AUTO_MODEL).trim() || RESEARCH_AUTO_MODEL;
 	const route = await routeResearchModel({
@@ -174,6 +193,19 @@ export async function runResearchAgent(options: {
 	});
 	const maxRounds = Math.max(1, Math.min(8, options.maxRounds ?? 5));
 	const history = Array.isArray(options.history) ? options.history : [];
+	const aboutNodeGraph = Boolean(options.aboutNodeGraph);
+	const canvasSnapshot =
+		aboutNodeGraph && options.canvasSnapshot && typeof options.canvasSnapshot === 'object'
+			? options.canvasSnapshot
+			: null;
+	const canvasMeta =
+		canvasSnapshot && canvasSnapshot.nodeCount > 0
+			? {
+					source: canvasSnapshot.source,
+					nodeCount: canvasSnapshot.nodeCount,
+					linkCount: canvasSnapshot.linkCount,
+				}
+			: null;
 
 	if (!String(options.question || '').trim()) {
 		return {
@@ -183,6 +215,7 @@ export async function runResearchAgent(options: {
 			messages: [],
 			toolTrace: [],
 			route,
+			canvas: canvasMeta,
 			error: 'question required',
 		};
 	}
@@ -200,6 +233,8 @@ export async function runResearchAgent(options: {
 			history,
 			maxRounds,
 			useTools: true,
+			canvasSnapshot,
+			aboutNodeGraph,
 		});
 		return {
 			ok: ran.ok,
@@ -208,6 +243,7 @@ export async function runResearchAgent(options: {
 			messages: ran.messages,
 			toolTrace: ran.toolTrace,
 			route,
+			canvas: canvasMeta,
 			error: ran.error,
 		};
 	}
@@ -224,6 +260,8 @@ export async function runResearchAgent(options: {
 			history,
 			maxRounds: worker.useTools ? maxRounds : Math.min(3, maxRounds),
 			useTools: worker.useTools,
+			canvasSnapshot,
+			aboutNodeGraph,
 			workerFocus: worker.focus,
 			priorContext: prior || undefined,
 		});
@@ -263,6 +301,7 @@ export async function runResearchAgent(options: {
 			toolTrace: allToolTrace,
 			route,
 			workerTraces,
+			canvas: canvasMeta,
 			error: merged.error,
 		};
 	}
@@ -275,5 +314,6 @@ export async function runResearchAgent(options: {
 		toolTrace: allToolTrace,
 		route,
 		workerTraces,
+		canvas: canvasMeta,
 	};
 }

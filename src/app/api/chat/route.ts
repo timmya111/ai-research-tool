@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { runResearchAgent } from '@/lib/research/agent';
+import { isCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { rejectUnlessLocalResearch } from '@/lib/research/guard';
 import { RESEARCH_AUTO_MODEL } from '@/lib/research/orchestrator';
 
@@ -28,12 +29,17 @@ export async function POST(request: Request) {
 	const availableModels = Array.isArray(body?.availableModels)
 		? body.availableModels.map((m: unknown) => String(m || '').trim()).filter(Boolean)
 		: undefined;
+	const aboutNodeGraph = Boolean(body?.aboutNodeGraph);
+	const canvasSnapshot: CanvasSnapshot | null =
+		aboutNodeGraph && isCanvasSnapshot(body?.canvasSnapshot) ? body.canvasSnapshot : null;
 
 	const result = await runResearchAgent({
 		question,
 		model,
 		history,
 		availableModels,
+		aboutNodeGraph,
+		canvasSnapshot,
 	});
 	return NextResponse.json(result, {
 		status: result.ok ? 200 : 500,

@@ -1,6 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CanvasSnapshot } from '@/lib/research/canvasSnapshot';
+import { parseCanvasSnapshotJson } from '@/lib/research/canvasSnapshot';
+import {
+	captureCanvasSnapshotForResearch,
+	formatCanvasInfo,
+	openLiveFinraGraphWindow,
+} from '@/lib/research/captureCanvasSnapshotClient';
+import { getFinraAppOrigin } from '@/lib/research/finraApp';
 import { filterFreeLocalOllamaModels } from '@/lib/research/ollama';
 import { RESEARCH_AUTO_MODEL } from '@/lib/research/orchestrator';
 
@@ -18,10 +26,10 @@ type StatusPayload = {
 };
 
 const EXAMPLES = [
-	'What local Ollama models are available, and which should I use for research?',
+	'Summarize the nodes currently on my canvas.',
+	'Which people on the canvas connect to two different firms?',
+	'Fetch https://finra-sec-data-visualizer-canvas.vercel.app/api/finra/health and summarize status.',
 	'Fetch https://en.wikipedia.org/wiki/Large_language_model and summarize the lead section in 5 bullets.',
-	'Compare pros and cons of local vs cloud LLMs for private research notes.',
-	'Fetch http://127.0.0.1:3333/api/status and summarize what this research tool reports.',
 	'What time is it on this machine right now?',
 ];
 
@@ -44,6 +52,12 @@ export default function ResearchClient() {
 		mergeModel?: string;
 	} | null>(null);
 	const [workerTraces, setWorkerTraces] = useState<unknown[] | null>(null);
+	const [aboutNodeGraph, setAboutNodeGraph] = useState(false);
+	const [canvasInfo, setCanvasInfo] = useState('Canvas: not checked yet');
+	const [canvasSnapshot, setCanvasSnapshot] = useState<CanvasSnapshot | null>(null);
+	const [pastedJson, setPastedJson] = useState('');
+	const [showPaste, setShowPaste] = useState(false);
+	const liveWindowRef = useRef<Window | null>(null);
 
 	const preferredModels = useMemo(() => {
 		const models = filterFreeLocalOllamaModels(status?.models || []);
@@ -51,6 +65,22 @@ export default function ResearchClient() {
 		const ordered = [...prefer.filter((m) => models.includes(m)), ...models.filter((m) => !prefer.includes(m))];
 		return ordered.length ? ordered : prefer;
 	}, [status]);
+
+	const refreshCanvasInfo = useCallback(async () => {
+		try {
+			const snap = await captureCanvasSnapshotForResearch({
+				liveWindow: liveWindowRef.current,
+				pastedJson: pastedJson || null,
+				previous: canvasSnapshot,
+			});
+			setCanvasSnapshot(snap);
+			setCanvasInfo(formatCanvasInfo(snap));
+			return snap;
+		} catch {
+			setCanvasInfo('Canvas: unavailable');
+			return null;
+		}
+	}, [canvasSnapshot, pastedJson]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -76,6 +106,25 @@ export default function ResearchClient() {
 		};
 	}, []);
 
+	const connectLiveGraph = useCallback(() => {
+		const popup = openLiveFinraGraphWindow();
+		liveWindowRef.current = popup;
+		setCanvasInfo(`Canvas: connected window → ${getFinraAppOrigin()} (load the graph, then Refresh)`);
+	}, []);
+
+	const applyPastedJson = useCallback(() => {
+		const parsed = parseCanvasSnapshotJson(pastedJson);
+		if (!parsed || parsed.nodeCount <= 0) {
+			setError('Paste a valid canvas snapshot JSON (with nodes).');
+			return;
+		}
+		const snap = { ...parsed, source: 'paste' as const };
+		setCanvasSnapshot(snap);
+		setCanvasInfo(formatCanvasInfo(snap));
+		setError(null);
+		setShowPaste(false);
+	}, [pastedJson]);
+
 	const ask = useCallback(async () => {
 		const q = question.trim();
 		if (!q || busy) return;
@@ -87,6 +136,8 @@ export default function ResearchClient() {
 		setHistory((prev) => [...prev, { role: 'user', content: q }]);
 		setQuestion('');
 		try {
+			const snap: CanvasSnapshot | null = aboutNodeGraph ? await refreshCanvasInfo() : null;
+			if (!aboutNodeGraph) void refreshCanvasInfo();
 			const requestedModel = autoMode ? RESEARCH_AUTO_MODEL : model;
 			const res = await fetch('/api/chat', {
 				method: 'POST',
@@ -96,6 +147,8 @@ export default function ResearchClient() {
 					model: requestedModel,
 					history: history.slice(-8),
 					availableModels: status?.models || preferredModels,
+					aboutNodeGraph,
+					canvasSnapshot: snap,
 				}),
 			});
 			const data = await res.json();
@@ -131,7 +184,17 @@ export default function ResearchClient() {
 		} finally {
 			setBusy(false);
 		}
-	}, [autoMode, busy, history, model, preferredModels, question, status?.models]);
+	}, [
+		aboutNodeGraph,
+		autoMode,
+		busy,
+		history,
+		model,
+		preferredModels,
+		question,
+		refreshCanvasInfo,
+		status?.models,
+	]);
 
 	return (
 		<main className="mx-auto max-w-[920px] px-4 py-5 pb-12 text-[var(--foreground)]">
@@ -139,10 +202,30 @@ export default function ResearchClient() {
 				<p className="m-0 text-[13px] opacity-70">local only · Ollama</p>
 				<h1 className="my-1.5 text-[28px] font-semibold tracking-tight">AI Research Tool</h1>
 				<p className="m-0 leading-snug opacity-80">
-					Ask research questions, paste allowlisted URLs for <code className="text-[0.95em]">fetch_url</code>, and
-					let Auto mode pick a single specialist or a tools + reason → merge pipeline.
+					Ask research questions, fetch the live FINRA app API via <code className="text-[0.95em]">fetch_url</code>
+					, and attach a canvas snapshot from the live graph window (or paste JSON).
 				</p>
 			</header>
+
+			<label
+				className={`mb-4 flex cursor-pointer select-none items-center gap-2.5 rounded-lg border border-zinc-300 px-3 py-2.5 text-sm font-semibold dark:border-zinc-700 ${
+					aboutNodeGraph ? 'bg-orange-500/10' : 'bg-zinc-50 dark:bg-zinc-900/60'
+				}`}
+			>
+				<input
+					type="checkbox"
+					checked={aboutNodeGraph}
+					onChange={(e) => setAboutNodeGraph(e.target.checked)}
+					disabled={busy}
+					className="h-4 w-4"
+				/>
+				<span>Question about node graph</span>
+				<span className="text-xs font-normal opacity-70">
+					{aboutNodeGraph
+						? 'Attaches live/pasted canvas · uses inspect_canvas_graph'
+						: 'Off · general research / API fetch only'}
+				</span>
+			</label>
 
 			<section className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-zinc-300 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900/60">
 				<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
@@ -201,6 +284,7 @@ export default function ResearchClient() {
 							? `Ollama ok · ${status.models?.length || 0} free models`
 							: `Ollama unreachable: ${status.error || 'unknown error'}`}
 				</span>
+				<span className="text-[13px] opacity-75">{canvasInfo}</span>
 				{lastRoute?.model ? (
 					<span className="max-w-full text-xs opacity-85">
 						Last route:{' '}
@@ -212,7 +296,53 @@ export default function ResearchClient() {
 						{lastRoute.reason ? ` · ${lastRoute.reason}` : ''}
 					</span>
 				) : null}
+				<button
+					type="button"
+					onClick={connectLiveGraph}
+					disabled={busy}
+					className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+				>
+					Connect live graph
+				</button>
+				<button
+					type="button"
+					onClick={() => void refreshCanvasInfo()}
+					disabled={busy}
+					className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+				>
+					Refresh canvas
+				</button>
+				<button
+					type="button"
+					onClick={() => setShowPaste((v) => !v)}
+					disabled={busy}
+					className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+				>
+					{showPaste ? 'Hide paste' : 'Paste snapshot'}
+				</button>
 			</section>
+
+			{showPaste ? (
+				<section className="mb-4 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+					<p className="mb-2 text-xs opacity-70">
+						Paste canvas snapshot JSON from the live app (Copy canvas for research), then Apply.
+					</p>
+					<textarea
+						value={pastedJson}
+						onChange={(e) => setPastedJson(e.target.value)}
+						rows={5}
+						placeholder='{"nodeCount":…,"nodes":[…],…}'
+						className="mb-2 w-full resize-y rounded-md border border-zinc-300 bg-transparent p-2 font-mono text-xs dark:border-zinc-600"
+					/>
+					<button
+						type="button"
+						onClick={applyPastedJson}
+						className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2.5 py-1.5 text-xs font-semibold dark:border-zinc-600"
+					>
+						Apply pasted snapshot
+					</button>
+				</section>
+			) : null}
 
 			<section className="mb-4 flex flex-wrap gap-2">
 				{EXAMPLES.map((example) => (
@@ -258,7 +388,7 @@ export default function ResearchClient() {
 				<textarea
 					value={question}
 					onChange={(e) => setQuestion(e.target.value)}
-					placeholder="Ask a research question, or paste a URL to fetch…"
+					placeholder="Ask a research question, paste a live API URL, or ask about the canvas…"
 					rows={3}
 					disabled={busy}
 					className="flex-1 resize-y rounded-lg border border-zinc-300 bg-transparent p-2.5 font-[inherit] dark:border-zinc-600"

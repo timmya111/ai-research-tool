@@ -1,12 +1,35 @@
-export type ResearchToolName = 'fetch_url' | 'current_time';
+import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
+
+export type ResearchToolName = 'fetch_url' | 'current_time' | 'inspect_canvas_graph';
 
 export const RESEARCH_TOOL_DEFINITIONS = [
 	{
 		type: 'function' as const,
 		function: {
+			name: 'inspect_canvas_graph',
+			description:
+				"Inspect the user's FINRA canvas graph snapshot (nodes/links from the live graph window or pasted JSON). Use for questions about what is on the graph right now. Actions: summary, list_people, list_firms, selection_log, neighbors, dual_on_canvas, search.",
+			parameters: {
+				type: 'object',
+				properties: {
+					action: {
+						type: 'string',
+						description:
+							'summary | list_people | list_firms | selection_log | neighbors | dual_on_canvas | search',
+					},
+					query: { type: 'string', description: 'Optional name/CRD filter for list/search actions' },
+					nodeId: { type: 'string', description: 'Node id for neighbors, e.g. person:5417517 or firm:2525' },
+					limit: { type: 'number', description: 'Max rows to return (default 40)' },
+				},
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
 			name: 'fetch_url',
 			description:
-				'GET an API endpoint or page URL the user provided for research. Returns truncated JSON or readable text. Allowlisted / safe hosts only. Read-only.',
+				'GET an API endpoint or page URL the user provided for research. Returns truncated JSON or readable text. Allowlisted / safe hosts only (includes the live FINRA SEC visualizer, BrokerCheck, AdviserInfo). Read-only.',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -46,8 +69,13 @@ const FETCH_URL_DEFAULT_HOSTS = new Set([
 	'docs.x.ai',
 	'arxiv.org',
 	'export.arxiv.org',
+	'finra-sec-data-visualizer-canvas.vercel.app',
+	'brokercheck.finra.org',
+	'api.brokercheck.finra.org',
+	'files.brokercheck.finra.org',
+	'adviserinfo.sec.gov',
+	'api.adviserinfo.sec.gov',
 ]);
-
 const FETCH_URL_MAX_BYTES = 512_000;
 const FETCH_URL_TIMEOUT_MS = 15_000;
 
@@ -241,8 +269,14 @@ async function fetchUrlForResearch(
 export async function runResearchTool(
 	name: string,
 	args: Record<string, unknown>,
+	context: { canvasSnapshot?: CanvasSnapshot | null } = {},
 ): Promise<{ ok: boolean; result: unknown }> {
 	const tool = String(name || '').trim() as ResearchToolName;
+
+	if (tool === 'inspect_canvas_graph') {
+		const inspected = inspectCanvasSnapshot(context.canvasSnapshot, args);
+		return { ok: inspected.ok, result: inspected.result };
+	}
 
 	if (tool === 'current_time') {
 		const now = new Date();
