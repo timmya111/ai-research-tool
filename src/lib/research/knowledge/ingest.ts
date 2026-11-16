@@ -117,7 +117,10 @@ export async function ingestNote(options: {
 	projectId: string;
 	title?: string;
 	text: string;
-}): Promise<{ id: string; projectId: string }> {
+	url?: string | null;
+	metadata?: Record<string, unknown>;
+	replaceIfSameUrlHash?: boolean;
+}): Promise<{ id: string; projectId: string; skipped?: boolean }> {
 	const text = String(options.text || '');
 	if (!text.trim()) throw new Error('text required');
 	if (text.length > MAX_DOCUMENT_CHARS) {
@@ -130,13 +133,29 @@ export async function ingestNote(options: {
 			.trim()
 			.slice(0, 120) || text.trim().slice(0, 80) || 'note';
 
+	const url = options.url != null ? String(options.url).trim() || null : null;
+	const planPreview = planChunks({ sourceText: text, header: `[note] ${title}` });
+	const contentHash = sha256Hex(planPreview.rawText);
+
+	if (url && options.replaceIfSameUrlHash !== false) {
+		const existing = getKnowledgeDb()
+			.prepare(
+				`SELECT id FROM documents WHERE project_id = ? AND url = ? AND content_hash = ? LIMIT 1`,
+			)
+			.get(options.projectId, url, contentHash) as { id?: string } | undefined;
+		if (existing?.id) {
+			return { id: existing.id, projectId: options.projectId, skipped: true };
+		}
+	}
+
 	const id = await commitDocument({
 		projectId: options.projectId,
 		sourceType: 'note',
 		title,
+		url,
 		rawText: text,
 		header: `[note] ${title}`,
-		metadata: { kind: 'note' },
+		metadata: { kind: 'note', ...(options.metadata || {}) },
 	});
 	return { id, projectId: options.projectId };
 }

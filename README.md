@@ -77,6 +77,32 @@ See `.env.example`.
 
 Knowledge routes are **localhost-only** unless both `RESEARCH_KNOWLEDGE_REMOTE=1` and `ALLOW_LOCAL_AI=1`. Wipe store: delete the folder shown in `status.knowledge.path` (default `.data/knowledge/`).
 
+## Bryan County real-time monitor
+
+Logs new filings from [okcountyrecords.com/real-time/bryan](https://okcountyrecords.com/real-time/bryan) into the knowledge project **Bryan County**, including **detail-page** fields (grantor, grantee, book, pages, fees, legal).
+
+Detail/feed HTML parsers are adapted from [ok-bryan-county-notify](https://github.com/timmya111/ok-bryan-county-notify). Pages are fetched through **FlareSolverr** (Docker) so Cloudflare is solved without a desktop browser/login window.
+
+```bash
+docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+pnpm add -D jsdom   # if needed
+pnpm dev            # app must be on :3333
+BRYAN_MONITOR_ONCE=1 pnpm bryan:monitor   # one poll
+pnpm bryan:monitor                        # every 60s (default)
+```
+
+| Env | Default | Purpose |
+| --- | --- | --- |
+| `RESEARCH_APP_URL` | `http://127.0.0.1:3333` | Knowledge ingest target |
+| `FLARESOLVERR_URL` | `http://127.0.0.1:8191` | FlareSolverr base URL |
+| `BRYAN_MONITOR_INTERVAL_MS` | `60000` | Poll interval |
+| `BRYAN_MONITOR_ONCE` | `0` | Set `1` for a single poll |
+| `BRYAN_MONITOR_DETAIL_LIMIT` | `5` | Max new detail pages per poll |
+
+Seen IDs live in `.data/monitors/bryan-seen.json`. Ask the research tool (project **Bryan County**, Auto-retrieve on) about new MTGs, grantors, etc.
+
+Ingest API: `POST /api/monitors/bryan/ingest` with `{ filings: BryanFilingDetail[] }`.
+
 ## Notes
 
 - Cloud Ollama tags (`*:cloud`) are filtered out of the picker.

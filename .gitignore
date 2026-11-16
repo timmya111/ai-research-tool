@@ -43,3 +43,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .playwright-mcp/*
+
+# Bryan monitor Python venv
+.venv-monitors/

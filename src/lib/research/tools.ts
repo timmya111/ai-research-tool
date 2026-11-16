@@ -107,6 +107,8 @@ const FETCH_URL_DEFAULT_HOSTS = new Set([
 	'files.brokercheck.finra.org',
 	'adviserinfo.sec.gov',
 	'api.adviserinfo.sec.gov',
+	'okcountyrecords.com',
+	'www.okcountyrecords.com',
 ]);
 const FETCH_URL_MAX_BYTES = 512_000;
 const FETCH_URL_TIMEOUT_MS = 15_000;

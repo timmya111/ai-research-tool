@@ -10,7 +10,10 @@
     "build": "next build",
     "start": "next start -p 3333",
     "lint": "eslint",
-    "knowledge:smoke": "node scripts/knowledge-smoke.mjs"
+    "knowledge:smoke": "node scripts/knowledge-smoke.mjs",
+    "bryan:monitor": "node scripts/bryan-realtime-monitor.mjs",
+    "bryan:monitor:setup": "uv venv .venv-monitors && uv pip install --python .venv-monitors/bin/python -r scripts/requirements-bryan.txt",
+    "bryan:monitor:python": ".venv-monitors/bin/python scripts/bryan_realtime_monitor.py"
   },
   "dependencies": {
     "next": "16.4.6",
@@ -24,6 +27,10 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
+    "jsdom": "^31.0.1",
+    "playwright": "^1.65.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "tailwindcss": "4.3.3",
     "typescript": "^5"
   },
