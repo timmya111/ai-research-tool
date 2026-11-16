@@ -1,8 +1,40 @@
 import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
+import { ensureDefaultProject } from '@/lib/research/knowledge/projects';
+import { retrieve } from '@/lib/research/knowledge/retrieve';
+import type { KnowledgeSourceType } from '@/lib/research/knowledge/types';
 
-export type ResearchToolName = 'fetch_url' | 'current_time' | 'inspect_canvas_graph';
+export type ResearchToolName = 'fetch_url' | 'current_time' | 'inspect_canvas_graph' | 'search_knowledge';
+
+export type ResearchToolContext = {
+	canvasSnapshot?: CanvasSnapshot | null;
+	projectId?: string | null;
+};
 
 export const RESEARCH_TOOL_DEFINITIONS = [
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_knowledge',
+			description:
+				'Search the local knowledge store for the active project (saved chats with tool digests, fetched pages, notes). Use for prior Q&A, CRDs, URLs, or notes. Local disk only.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Natural language or keyword query' },
+					limit: { type: 'number', description: 'Max hits (default 5, max 12)' },
+					sourceType: {
+						type: 'string',
+						description: 'Optional filter: chat | fetch | note | any (default any)',
+					},
+					projectId: {
+						type: 'string',
+						description: 'Optional; defaults to the active project from the request context',
+					},
+				},
+				required: ['query'],
+			},
+		},
+	},
 	{
 		type: 'function' as const,
 		function: {
@@ -266,12 +298,74 @@ async function fetchUrlForResearch(
 	}
 }
 
+async function runSearchKnowledge(
+	args: Record<string, unknown>,
+	context: ResearchToolContext,
+): Promise<{ ok: boolean; result: unknown }> {
+	const query = String(args.query || '').trim();
+	if (!query) {
+		return { ok: false, result: { error: 'query required' } };
+	}
+
+	let projectId = String(args.projectId || context.projectId || '').trim();
+	if (!projectId) {
+		try {
+			projectId = ensureDefaultProject().id;
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : String(error);
+			return { ok: false, result: { error: `projectId required (${message})` } };
+		}
+	}
+
+	const sourceTypeRaw = String(args.sourceType || 'any').trim().toLowerCase();
+	const sourceType = (
+		['chat', 'fetch', 'note', 'any'].includes(sourceTypeRaw) ? sourceTypeRaw : 'any'
+	) as KnowledgeSourceType | 'any';
+
+	try {
+		const hits = await retrieve(query, {
+			projectId,
+			limit: args.limit as number | undefined,
+			sourceType,
+		});
+		return {
+			ok: true,
+			result: {
+				ok: true,
+				query,
+				projectId,
+				returned: hits.length,
+				hits: hits.map((h) => ({
+					title: h.title,
+					sourceType: h.sourceType,
+					url: h.url,
+					snippet: h.snippet,
+					score: h.score,
+					documentId: h.documentId,
+					chunkId: h.chunkId,
+				})),
+				hint:
+					hits.length === 0
+						? 'No local knowledge hits. Save notes or enable persist flags (later PRs), or ask without relying on prior memory.'
+						: undefined,
+			},
+		};
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, result: { ok: false, error: message, query, projectId } };
+	}
+}
+
 export async function runResearchTool(
 	name: string,
 	args: Record<string, unknown>,
-	context: { canvasSnapshot?: CanvasSnapshot | null } = {},
+	context: ResearchToolContext = {},
 ): Promise<{ ok: boolean; result: unknown }> {
 	const tool = String(name || '').trim() as ResearchToolName;
+
+	if (tool === 'search_knowledge') {
+		return runSearchKnowledge(args, context);
+	}
 
 	if (tool === 'inspect_canvas_graph') {
 		const inspected = inspectCanvasSnapshot(context.canvasSnapshot, args);

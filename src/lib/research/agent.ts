@@ -5,6 +5,8 @@ import {
 	type OllamaChatMessage,
 } from '@/lib/research/ollama';
 import type { CanvasSnapshot } from '@/lib/research/canvasSnapshot';
+import { ensureDefaultProject } from '@/lib/research/knowledge/projects';
+import { formatSnippetsForPrompt, retrieve } from '@/lib/research/knowledge/retrieve';
 import { RESEARCH_TOOL_DEFINITIONS, runResearchTool } from '@/lib/research/tools';
 import {
 	RESEARCH_AUTO_MODEL,
@@ -17,6 +19,7 @@ function buildSystemPrompt(
 	snapshot?: CanvasSnapshot | null,
 	aboutNodeGraph = false,
 	workerFocus?: string,
+	knowledgeSnippets?: string,
 ) {
 	const canvasLine =
 		aboutNodeGraph && snapshot && snapshot.nodeCount > 0
@@ -26,13 +29,19 @@ function buildSystemPrompt(
 				: 'The user did not check "Question about node graph". Do not use inspect_canvas_graph unless they clearly ask about the attached canvas.';
 
 	const focusLine = workerFocus ? `\nWorker focus: ${workerFocus}\n` : '';
+	const knowledgeBlock =
+		knowledgeSnippets && knowledgeSnippets.trim()
+			? `\n${knowledgeSnippets.trim()}\n`
+			: '';
 
 	return `You are a local AI research assistant running on the developer's machine via Ollama.
-You help with research questions: summarizing sources, cross-checking URLs, comparing claims, drafting concise findings, and (when enabled) inspecting a FINRA canvas graph snapshot from the live visualizer.
+You help with research questions: summarizing sources, cross-checking URLs, comparing claims, drafting concise findings, searching a local knowledge store, and (when enabled) inspecting a FINRA canvas graph snapshot from the live visualizer.
 ${focusLine}
 Rules:
 - Use tools for facts when the user pastes a URL or asks you to look something up. Do not invent page contents, quotes, or citations.
 - When the user pastes an API endpoint or page URL, call fetch_url with that URL. Only allowlisted (or open-fetch public) hosts work. The live app host finra-sec-data-visualizer-canvas.vercel.app, BrokerCheck, and AdviserInfo are allowlisted.
+- Prefer search_knowledge before inventing prior facts from earlier sessions. Empty hits mean no local memory for that query.
+- Do not claim durable memory unless search_knowledge returned hits or knowledge snippets are attached below.
 - Only use inspect_canvas_graph when a canvas snapshot is attached for a node-graph question.
 - Prefer short, structured answers. Lead with the conclusion or list, then brief supporting notes.
 - If a tool fails or a host is blocked, say so clearly and suggest adding the host to RESEARCH_FETCH_HOSTS or enabling RESEARCH_OPEN_FETCH=1.
@@ -40,7 +49,7 @@ Rules:
 - When listing people from the canvas, use: Name :: CRD# 1234567
 - Keep answers concise.
 
-${canvasLine}`;
+${canvasLine}${knowledgeBlock}`;
 }
 
 export type ResearchAgentResult = {
@@ -58,6 +67,7 @@ export type ResearchAgentResult = {
 		toolTrace: ResearchAgentResult['toolTrace'];
 	}>;
 	canvas?: { source?: string; nodeCount?: number; linkCount?: number } | null;
+	knowledge?: { retrieved?: number; projectId?: string | null } | null;
 	error?: string;
 };
 async function runToolAgentLoop(options: {
@@ -68,6 +78,8 @@ async function runToolAgentLoop(options: {
 	useTools: boolean;
 	canvasSnapshot: CanvasSnapshot | null;
 	aboutNodeGraph: boolean;
+	projectId?: string | null;
+	knowledgeSnippets?: string;
 	workerFocus?: string;
 	priorContext?: string;
 }): Promise<{
@@ -85,12 +97,21 @@ async function runToolAgentLoop(options: {
 	const messages: OllamaChatMessage[] = [
 		{
 			role: 'system',
-			content: buildSystemPrompt(options.canvasSnapshot, options.aboutNodeGraph, options.workerFocus),
+			content: buildSystemPrompt(
+				options.canvasSnapshot,
+				options.aboutNodeGraph,
+				options.workerFocus,
+				options.knowledgeSnippets,
+			),
 		},
 		...options.history.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content),
 		{ role: 'user', content: userContent },
 	];
 	const toolTrace: ResearchAgentResult['toolTrace'] = [];
+	const toolContext = {
+		canvasSnapshot: options.canvasSnapshot,
+		projectId: options.projectId,
+	};
 
 	try {
 		for (let round = 0; round < options.maxRounds; round++) {
@@ -114,7 +135,7 @@ async function runToolAgentLoop(options: {
 			for (const call of toolCalls) {
 				const toolName = String(call?.function?.name || '').trim();
 				const args = normalizeToolCallArguments(call?.function?.arguments);
-				const ran = await runResearchTool(toolName, args, { canvasSnapshot: options.canvasSnapshot });
+				const ran = await runResearchTool(toolName, args, toolContext);
 				toolTrace.push({ tool: toolName, args, result: ran.result });
 				messages.push({
 					role: 'tool',
@@ -184,6 +205,9 @@ export async function runResearchAgent(options: {
 	availableModels?: string[];
 	canvasSnapshot?: CanvasSnapshot | null;
 	aboutNodeGraph?: boolean;
+	projectId?: string | null;
+	ragAuto?: boolean;
+	knowledgeSnippets?: string;
 }): Promise<ResearchAgentResult> {
 	const requested = String(options.model || RESEARCH_AUTO_MODEL).trim() || RESEARCH_AUTO_MODEL;
 	const route = await routeResearchModel({
@@ -206,6 +230,37 @@ export async function runResearchAgent(options: {
 					linkCount: canvasSnapshot.linkCount,
 				}
 			: null;
+	let projectId = options.projectId ? String(options.projectId).trim() : null;
+	if (!projectId) {
+		try {
+			projectId = ensureDefaultProject().id;
+		} catch {
+			projectId = null;
+		}
+	}
+
+	const ragAuto =
+		options.ragAuto === true ||
+		(options.ragAuto !== false && process.env.RESEARCH_RAG_AUTO === '1');
+
+	let knowledgeSnippets = options.knowledgeSnippets?.trim() || undefined;
+	let retrievedCount = 0;
+	if (!knowledgeSnippets && ragAuto && projectId) {
+		try {
+			const topK = Math.max(1, Math.min(12, Number(process.env.RESEARCH_RAG_TOP_K) || 4));
+			const hits = await retrieve(options.question, { projectId, limit: topK });
+			retrievedCount = hits.length;
+			knowledgeSnippets = formatSnippetsForPrompt(hits, { maxChars: 3500 }) || undefined;
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error('[knowledge] auto-retrieve failed', message);
+		}
+	}
+
+	const knowledgeMeta = {
+		retrieved: retrievedCount,
+		projectId,
+	};
 
 	if (!String(options.question || '').trim()) {
 		return {
@@ -216,6 +271,7 @@ export async function runResearchAgent(options: {
 			toolTrace: [],
 			route,
 			canvas: canvasMeta,
+			knowledge: knowledgeMeta,
 			error: 'question required',
 		};
 	}
@@ -235,6 +291,8 @@ export async function runResearchAgent(options: {
 			useTools: true,
 			canvasSnapshot,
 			aboutNodeGraph,
+			projectId,
+			knowledgeSnippets,
 		});
 		return {
 			ok: ran.ok,
@@ -244,6 +302,7 @@ export async function runResearchAgent(options: {
 			toolTrace: ran.toolTrace,
 			route,
 			canvas: canvasMeta,
+			knowledge: knowledgeMeta,
 			error: ran.error,
 		};
 	}
@@ -262,6 +321,8 @@ export async function runResearchAgent(options: {
 			useTools: worker.useTools,
 			canvasSnapshot,
 			aboutNodeGraph,
+			projectId,
+			knowledgeSnippets,
 			workerFocus: worker.focus,
 			priorContext: prior || undefined,
 		});
@@ -302,6 +363,7 @@ export async function runResearchAgent(options: {
 			route,
 			workerTraces,
 			canvas: canvasMeta,
+			knowledge: knowledgeMeta,
 			error: merged.error,
 		};
 	}
@@ -315,5 +377,6 @@ export async function runResearchAgent(options: {
 		route,
 		workerTraces,
 		canvas: canvasMeta,
+		knowledge: knowledgeMeta,
 	};
 }

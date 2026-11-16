@@ -2,11 +2,15 @@
   "name": "ai-research-tool",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "next dev -p 3333",
     "build": "next build",
     "start": "next start -p 3333",
-    "lint": "eslint"
+    "lint": "eslint",
+    "knowledge:smoke": "node scripts/knowledge-smoke.mjs"
   },
   "dependencies": {
     "next": "16.4.6",

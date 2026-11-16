@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import KnowledgePanel from '@/components/KnowledgePanel';
 import type { CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { parseCanvasSnapshotJson } from '@/lib/research/canvasSnapshot';
 import {
@@ -15,6 +16,11 @@ import { RESEARCH_AUTO_MODEL } from '@/lib/research/orchestrator';
 type ChatTurn = {
 	role: 'user' | 'assistant';
 	content: string;
+	/** Assistant turns: paired user question for per-turn Save */
+	question?: string;
+	toolTrace?: unknown[];
+	saved?: boolean;
+	saving?: boolean;
 };
 
 type StatusPayload = {
@@ -23,6 +29,18 @@ type StatusPayload = {
 	defaultModel?: string;
 	models?: string[];
 	error?: string | null;
+	knowledge?: {
+		ok?: boolean;
+		restricted?: boolean;
+		path?: string;
+		documentCount?: number;
+		chunkCount?: number;
+		projectCount?: number;
+		embedModel?: string;
+		embedModelInstalled?: boolean;
+		needsReindex?: boolean;
+		error?: string | null;
+	};
 };
 
 const EXAMPLES = [
@@ -32,6 +50,46 @@ const EXAMPLES = [
 	'Fetch https://en.wikipedia.org/wiki/Large_language_model and summarize the lead section in 5 bullets.',
 	'What time is it on this machine right now?',
 ];
+
+const LS_REMEMBER = 'research.persistChat';
+const LS_FETCHES = 'research.persistFetches';
+const LS_RAG = 'research.ragAuto';
+
+function countSuccessfulFetches(toolTrace: unknown): number {
+	if (!Array.isArray(toolTrace)) return 0;
+	let n = 0;
+	for (const entry of toolTrace) {
+		if (!entry || typeof entry !== 'object') continue;
+		const tool = String((entry as { tool?: string }).tool || '');
+		if (tool !== 'fetch_url') continue;
+		const result = (entry as { result?: Record<string, unknown> }).result;
+		if (!result || typeof result !== 'object') continue;
+		if (result.ok !== true) continue;
+		const status = result.status;
+		if (typeof status === 'number' && (status < 200 || status >= 400)) continue;
+		if (result.body == null) continue;
+		n += 1;
+	}
+	return n;
+}
+
+function readFlag(key: string, projectId: string | null): boolean {
+	if (!projectId || typeof window === 'undefined') return false;
+	try {
+		return window.localStorage.getItem(`${key}.${projectId}`) === '1';
+	} catch {
+		return false;
+	}
+}
+
+function writeFlag(key: string, projectId: string | null, value: boolean) {
+	if (!projectId || typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(`${key}.${projectId}`, value ? '1' : '0');
+	} catch {
+		/* ignore */
+	}
+}
 
 export default function ResearchClient() {
 	const [status, setStatus] = useState<StatusPayload | null>(null);
@@ -57,6 +115,16 @@ export default function ResearchClient() {
 	const [canvasSnapshot, setCanvasSnapshot] = useState<CanvasSnapshot | null>(null);
 	const [pastedJson, setPastedJson] = useState('');
 	const [showPaste, setShowPaste] = useState(false);
+	const [projectId, setProjectId] = useState<string | null>(null);
+	const [persistChat, setPersistChat] = useState(false);
+	const [persistFetches, setPersistFetches] = useState(false);
+	const [ragAuto, setRagAuto] = useState(false);
+	const [knowledgeRefreshToken, setKnowledgeRefreshToken] = useState(0);
+	const [fetchToast, setFetchToast] = useState<{
+		count: number;
+		toolTrace: unknown[];
+	} | null>(null);
+	const [savingFetches, setSavingFetches] = useState(false);
 	const liveWindowRef = useRef<Window | null>(null);
 
 	const preferredModels = useMemo(() => {
@@ -65,6 +133,12 @@ export default function ResearchClient() {
 		const ordered = [...prefer.filter((m) => models.includes(m)), ...models.filter((m) => !prefer.includes(m))];
 		return ordered.length ? ordered : prefer;
 	}, [status]);
+
+	useEffect(() => {
+		setPersistChat(readFlag(LS_REMEMBER, projectId));
+		setPersistFetches(readFlag(LS_FETCHES, projectId));
+		setRagAuto(readFlag(LS_RAG, projectId));
+	}, [projectId]);
 
 	const refreshCanvasInfo = useCallback(async () => {
 		try {
@@ -125,6 +199,10 @@ export default function ResearchClient() {
 		setShowPaste(false);
 	}, [pastedJson]);
 
+	const bumpKnowledge = useCallback(() => {
+		window.setTimeout(() => setKnowledgeRefreshToken((n) => n + 1), 2500);
+	}, []);
+
 	const ask = useCallback(async () => {
 		const q = question.trim();
 		if (!q || busy) return;
@@ -139,16 +217,21 @@ export default function ResearchClient() {
 			const snap: CanvasSnapshot | null = aboutNodeGraph ? await refreshCanvasInfo() : null;
 			if (!aboutNodeGraph) void refreshCanvasInfo();
 			const requestedModel = autoMode ? RESEARCH_AUTO_MODEL : model;
+			const canPersist = Boolean(projectId);
 			const res = await fetch('/api/chat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					question: q,
 					model: requestedModel,
-					history: history.slice(-8),
+					history: history.slice(-8).map((t) => ({ role: t.role, content: t.content })),
 					availableModels: status?.models || preferredModels,
 					aboutNodeGraph,
 					canvasSnapshot: snap,
+					projectId: projectId || undefined,
+					persistChat: canPersist && persistChat,
+					persistFetches: canPersist && persistFetches,
+					ragAuto: canPersist ? ragAuto : false,
 				}),
 			});
 			const data = await res.json();
@@ -168,15 +251,27 @@ export default function ResearchClient() {
 						}
 					: { mode: autoMode ? 'auto' : 'manual', model: data.model, pipeline: 'single' },
 			);
+			const trace = Array.isArray(data.toolTrace) ? data.toolTrace : [];
 			setHistory((prev) => [
 				...prev,
 				{
 					role: 'assistant',
 					content: String(data.answer || ''),
+					question: q,
+					toolTrace: trace,
+					saved: Boolean(data?.knowledge?.persistChat),
 				},
 			]);
-			setToolTrace(Array.isArray(data.toolTrace) ? data.toolTrace : []);
+			setToolTrace(trace);
 			setWorkerTraces(Array.isArray(data.workerTraces) ? data.workerTraces : null);
+			if (data?.knowledge?.persistScheduled) bumpKnowledge();
+
+			const fetchCount = countSuccessfulFetches(trace);
+			if (canPersist && !persistFetches && fetchCount > 0) {
+				setFetchToast({ count: fetchCount, toolTrace: trace });
+			} else {
+				setFetchToast(null);
+			}
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			setError(message);
@@ -187,14 +282,81 @@ export default function ResearchClient() {
 	}, [
 		aboutNodeGraph,
 		autoMode,
+		bumpKnowledge,
 		busy,
 		history,
 		model,
+		persistChat,
+		persistFetches,
 		preferredModels,
+		projectId,
 		question,
+		ragAuto,
 		refreshCanvasInfo,
 		status?.models,
 	]);
+
+	const savePendingFetches = useCallback(async () => {
+		if (!fetchToast || !projectId || savingFetches) return;
+		setSavingFetches(true);
+		setError(null);
+		try {
+			const res = await fetch('/api/knowledge/fetches', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					projectId,
+					toolTrace: fetchToast.toolTrace,
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || `save fetches failed (${res.status})`);
+			setFetchToast(null);
+			setKnowledgeRefreshToken((n) => n + 1);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingFetches(false);
+		}
+	}, [fetchToast, projectId, savingFetches]);
+
+	const saveTurn = useCallback(
+		async (index: number) => {
+			const turn = history[index];
+			if (!turn || turn.role !== 'assistant' || !turn.question || turn.saved || turn.saving) return;
+			if (!projectId) {
+				setError('Select a project before saving to the knowledge store.');
+				return;
+			}
+			setHistory((prev) => prev.map((t, i) => (i === index ? { ...t, saving: true } : t)));
+			setError(null);
+			try {
+				const res = await fetch('/api/knowledge/chat', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						projectId,
+						question: turn.question,
+						answer: turn.content,
+						toolTrace: turn.toolTrace || [],
+					}),
+				});
+				const data = await res.json();
+				if (!res.ok || !data?.ok) throw new Error(data?.error || `save failed (${res.status})`);
+				setHistory((prev) =>
+					prev.map((t, i) => (i === index ? { ...t, saving: false, saved: true } : t)),
+				);
+				setKnowledgeRefreshToken((n) => n + 1);
+			} catch (e: unknown) {
+				const message = e instanceof Error ? e.message : String(e);
+				setError(message);
+				setHistory((prev) => prev.map((t, i) => (i === index ? { ...t, saving: false } : t)));
+			}
+		},
+		[history, projectId],
+	);
+
+	const togglesDisabled = !projectId || busy;
 
 	return (
 		<main className="mx-auto max-w-[920px] px-4 py-5 pb-12 text-[var(--foreground)]">
@@ -203,9 +365,104 @@ export default function ResearchClient() {
 				<h1 className="my-1.5 text-[28px] font-semibold tracking-tight">AI Research Tool</h1>
 				<p className="m-0 leading-snug opacity-80">
 					Ask research questions, fetch the live FINRA app API via <code className="text-[0.95em]">fetch_url</code>
-					, and attach a canvas snapshot from the live graph window (or paste JSON).
+					, attach a canvas snapshot, and browse a local knowledge store (projects + notes).
 				</p>
 			</header>
+
+			<KnowledgePanel
+				knowledgeStatus={status?.knowledge}
+				projectId={projectId}
+				onProjectIdChange={setProjectId}
+				refreshToken={knowledgeRefreshToken}
+			/>
+
+			{fetchToast ? (
+				<section className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2.5 text-sm">
+					<span className="font-semibold">
+						Save {fetchToast.count} successful fetch{fetchToast.count === 1 ? '' : 'es'} to this project?
+					</span>
+					<button
+						type="button"
+						onClick={() => void savePendingFetches()}
+						disabled={savingFetches || !projectId}
+						className="cursor-pointer rounded-md border-none bg-[#F97316] px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+					>
+						{savingFetches ? 'Saving…' : 'Save fetches'}
+					</button>
+					<button
+						type="button"
+						onClick={() => setFetchToast(null)}
+						disabled={savingFetches}
+						className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2.5 py-1 text-xs dark:border-zinc-600"
+					>
+						Dismiss
+					</button>
+				</section>
+			) : null}
+
+			<section className="mb-4 space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2.5">
+				<p className="m-0 text-xs font-semibold text-amber-950 dark:text-amber-100">
+					Disk retention — toggles write research (including FINRA-related Q&amp;A) to local disk under the
+					active project
+					{status?.knowledge?.path ? (
+						<>
+							{' '}
+							(<code className="text-[0.95em]">{status.knowledge.path}</code>)
+						</>
+					) : null}
+					. Defaults stay off.
+				</p>
+				{!projectId ? (
+					<p className="m-0 text-xs opacity-80">Select a project above to enable remember / save toggles.</p>
+				) : null}
+				<div className="flex flex-wrap gap-x-4 gap-y-2">
+					<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
+						<input
+							type="checkbox"
+							checked={persistChat}
+							disabled={togglesDisabled}
+							onChange={(e) => {
+								const on = e.target.checked;
+								setPersistChat(on);
+								writeFlag(LS_REMEMBER, projectId, on);
+							}}
+							className="h-[15px] w-[15px]"
+						/>
+						<span>Remember answers</span>
+						<span className="font-normal opacity-70">save Q+A (+ tools) after each ask</span>
+					</label>
+					<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
+						<input
+							type="checkbox"
+							checked={persistFetches}
+							disabled={togglesDisabled}
+							onChange={(e) => {
+								const on = e.target.checked;
+								setPersistFetches(on);
+								writeFlag(LS_FETCHES, projectId, on);
+							}}
+							className="h-[15px] w-[15px]"
+						/>
+						<span>Save successful fetches</span>
+						<span className="font-normal opacity-70">index fetch_url bodies</span>
+					</label>
+					<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
+						<input
+							type="checkbox"
+							checked={ragAuto}
+							disabled={togglesDisabled}
+							onChange={(e) => {
+								const on = e.target.checked;
+								setRagAuto(on);
+								writeFlag(LS_RAG, projectId, on);
+							}}
+							className="h-[15px] w-[15px]"
+						/>
+						<span>Auto-retrieve</span>
+						<span className="font-normal opacity-70">inject local snippets before answering</span>
+					</label>
+				</div>
+			</section>
 
 			<label
 				className={`mb-4 flex cursor-pointer select-none items-center gap-2.5 rounded-lg border border-zinc-300 px-3 py-2.5 text-sm font-semibold dark:border-zinc-700 ${
@@ -371,7 +628,24 @@ export default function ResearchClient() {
 									: 'self-start bg-black/5 dark:bg-white/5'
 							}`}
 						>
-							<div className="mb-1 text-[11px] opacity-60">{turn.role === 'user' ? 'You' : 'Assistant'}</div>
+							<div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] opacity-60">
+								<span>{turn.role === 'user' ? 'You' : 'Assistant'}</span>
+								{turn.role === 'assistant' && turn.saved ? (
+									<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+										{persistChat ? 'Remembered' : 'Saved'}
+									</span>
+								) : null}
+								{turn.role === 'assistant' && turn.question && !turn.saved && !persistChat ? (
+									<button
+										type="button"
+										disabled={!projectId || turn.saving || busy}
+										onClick={() => void saveTurn(index)}
+										className="cursor-pointer rounded border border-zinc-300 bg-transparent px-1.5 py-0.5 text-[11px] font-semibold text-[var(--foreground)] opacity-100 disabled:opacity-40 dark:border-zinc-600"
+									>
+										{turn.saving ? 'Saving…' : 'Save to knowledge'}
+									</button>
+								) : null}
+							</div>
 							{turn.content}
 						</div>
 					))
