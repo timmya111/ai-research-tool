@@ -20,6 +20,8 @@ type ChatTurn = {
 	/** Assistant turns: paired user question for per-turn Save */
 	question?: string;
 	toolTrace?: unknown[];
+	/** Server-rendered chart image URLs from chart_filings */
+	chartUrls?: string[];
 	saved?: boolean;
 	saving?: boolean;
 };
@@ -78,11 +80,62 @@ const BRYAN_EXAMPLES = [
 		question:
 			'Using only the Bryan County knowledge store, summarize what kinds of Bryan County document types are present (MTG, WD, REL MTG, UCC, etc.) and give 3 example filings with full details each (instrument, type, recorded, grantor, grantee, book, pages, legal, detail URL).',
 	},
+	{
+		label: 'Chart: filings by month',
+		question:
+			'Create a chart of Bryan County filing volume by month for all stored recorded dates. Call chart_filings with kind=volume and period=month, embed the image, and briefly summarize the busiest months.',
+	},
+	{
+		label: 'Chart: filings by type',
+		question:
+			'Create a chart breaking down Bryan County filings by document type (MTG, WD, REL MTG, etc.). Call chart_filings with kind=by_type, embed the image, and list the top types with counts.',
+	},
+	{
+		label: 'Chart: MTG by month',
+		question:
+			'Create a monthly chart of Bryan County MTG (mortgage) filings only. Call chart_filings with kind=volume, period=month, docType=MTG, embed the image, and note any volume spikes.',
+	},
 ];
 
 const LS_REMEMBER = 'research.persistChat';
 const LS_FETCHES = 'research.persistFetches';
 const LS_RAG = 'research.ragAuto';
+
+function extractChartUrls(toolTrace: unknown, answer?: string): string[] {
+	const urls: string[] = [];
+	const seen = new Set<string>();
+	const push = (raw: unknown) => {
+		const u = String(raw || '').trim();
+		if (!u || seen.has(u)) return;
+		if (!u.startsWith('/api/charts/')) return;
+		seen.add(u);
+		urls.push(u);
+	};
+	if (Array.isArray(toolTrace)) {
+		for (const entry of toolTrace) {
+			if (!entry || typeof entry !== 'object') continue;
+			const tool = String((entry as { tool?: string }).tool || '');
+			if (tool !== 'chart_filings') continue;
+			const result = (entry as { result?: Record<string, unknown> }).result;
+			if (!result || typeof result !== 'object') continue;
+			push(result.imageUrl);
+		}
+	}
+	const text = String(answer || '');
+	const mdRe = /!\[[^\]]*]\((\/api\/charts\/[a-zA-Z0-9_-]+)\)/g;
+	let m: RegExpExecArray | null;
+	while ((m = mdRe.exec(text)) != null) push(m[1]);
+	return urls;
+}
+
+/** Strip markdown image syntax for charts (shown as <img>) so bubbles stay readable. */
+function displayAnswerContent(content: string, chartUrls: string[]): string {
+	let text = String(content || '');
+	if (chartUrls.length > 0) {
+		text = text.replace(/!\[[^\]]*]\(\/api\/charts\/[a-zA-Z0-9_-]+\)\s*/g, '').trim();
+	}
+	return text;
+}
 
 function countSuccessfulFetches(toolTrace: unknown): number {
 	if (!Array.isArray(toolTrace)) return 0;
@@ -289,13 +342,16 @@ export default function ResearchClient() {
 					: { mode: autoMode ? 'auto' : 'manual', model: data.model, pipeline: 'single' },
 			);
 			const trace = Array.isArray(data.toolTrace) ? data.toolTrace : [];
+			const answer = String(data.answer || '');
+			const chartUrls = extractChartUrls(trace, answer);
 			setHistory((prev) => [
 				...prev,
 				{
 					role: 'assistant',
-					content: String(data.answer || ''),
+					content: answer,
 					question: q,
 					toolTrace: trace,
+					chartUrls,
 					saved: Boolean(data?.knowledge?.persistChat),
 				},
 			]);
@@ -554,7 +610,27 @@ export default function ResearchClient() {
 									</button>
 								) : null}
 							</div>
-							{turn.content}
+							{displayAnswerContent(turn.content, turn.chartUrls || [])}
+							{turn.role === 'assistant' && turn.chartUrls && turn.chartUrls.length > 0 ? (
+								<div className="mt-2 flex flex-col gap-2">
+									{turn.chartUrls.map((url) => (
+										<a
+											key={url}
+											href={url}
+											target="_blank"
+											rel="noreferrer"
+											className="block overflow-hidden rounded-md border border-[var(--app-border)] bg-white"
+										>
+											{/* eslint-disable-next-line @next/next/no-img-element */}
+											<img
+												src={url}
+												alt="Bryan County filings chart"
+												className="block h-auto w-full max-w-full"
+											/>
+										</a>
+									))}
+								</div>
+							) : null}
 						</div>
 					))
 				)}

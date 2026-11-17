@@ -6,7 +6,7 @@ It keeps:
 
 - Ollama chat UI
 - Adaptive auto model routing (single specialist or tools/fetch + reason → merge)
-- Tool calling (`fetch_url`, `current_time`, `inspect_canvas_graph`, `search_knowledge`)
+- Tool calling (`fetch_url`, `current_time`, `inspect_canvas_graph`, `search_knowledge`, `chart_filings`)
 - Live FINRA app API fetch (Vercel host allowlisted)
 - Canvas snapshot attach from the live graph (postMessage window or pasted JSON)
 - Localhost-only guard by default
@@ -23,6 +23,8 @@ Redis/firm-roster specialist tools stay in the FINRA app’s `/local-ai` page.
 6. Ask questions on the home page
 
 Local knowledge store (SQLite under `.data/knowledge/`): project picker + notes browser; **Remember answers** / **Save fetches** / **Auto-retrieve** toggles (off by default); optional “Save N fetches?” toast; **Reindex** when the embed model changes; agent `search_knowledge`. Design: [`docs/knowledge-store-design.md`](docs/knowledge-store-design.md). Smoke: `pnpm knowledge:smoke`.
+
+Bryan County charts: agent tool `chart_filings` aggregates stored filings by recorded date (day/week/month) or document type, writes SVG under `.data/charts/`, and serves them at `GET /api/charts/<id>` (localhost). Suggested question chips include monthly volume, by-type, and MTG-only charts.
 
 ## Live FINRA app
 

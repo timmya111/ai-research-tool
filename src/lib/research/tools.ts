@@ -1,9 +1,15 @@
+import { createBryanFilingChart } from '@/lib/research/charts';
 import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
-import { ensureDefaultProject } from '@/lib/research/knowledge/projects';
+import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
 import type { KnowledgeSourceType } from '@/lib/research/knowledge/types';
 
-export type ResearchToolName = 'fetch_url' | 'current_time' | 'inspect_canvas_graph' | 'search_knowledge';
+export type ResearchToolName =
+	| 'fetch_url'
+	| 'current_time'
+	| 'inspect_canvas_graph'
+	| 'search_knowledge'
+	| 'chart_filings';
 
 export type ResearchToolContext = {
 	canvasSnapshot?: CanvasSnapshot | null;
@@ -11,6 +17,45 @@ export type ResearchToolContext = {
 };
 
 export const RESEARCH_TOOL_DEFINITIONS = [
+	{
+		type: 'function' as const,
+		function: {
+			name: 'chart_filings',
+			description:
+				'Build a server-rendered SVG chart of Bryan County OKCountyRecords filings from the local knowledge store (counts over time or by document type). Use when the user asks for trends, volume over a period, monthly/weekly/daily charts, or type breakdowns. Returns an imageUrl to embed as markdown ![title](url).',
+			parameters: {
+				type: 'object',
+				properties: {
+					kind: {
+						type: 'string',
+						description: 'volume (default: counts over time) | by_type (document type breakdown)',
+					},
+					period: {
+						type: 'string',
+						description: 'For volume charts: day | week | month (default month)',
+					},
+					from: {
+						type: 'string',
+						description: 'Optional start date YYYY-MM-DD or YYYY-MM',
+					},
+					to: {
+						type: 'string',
+						description: 'Optional end date YYYY-MM-DD or YYYY-MM',
+					},
+					docType: {
+						type: 'string',
+						description: 'Optional instrument filter, e.g. MTG, WD, REL MTG, UCC',
+					},
+					projectId: {
+						type: 'string',
+						description:
+							'Optional UUID or project name. Prefer omitting this so the active request project is used.',
+					},
+				},
+				required: [],
+			},
+		},
+	},
 	{
 		type: 'function' as const,
 		function: {
@@ -300,6 +345,29 @@ async function fetchUrlForResearch(
 	}
 }
 
+function resolveProjectId(args: Record<string, unknown>, context: ResearchToolContext): string {
+	const candidates = [
+		String(args.projectId || '').trim(),
+		String(context.projectId || '').trim(),
+	].filter(Boolean);
+
+	const projects = listProjects();
+	for (const raw of candidates) {
+		const byId = projects.find((p) => p.id === raw);
+		if (byId) return byId.id;
+		const byName = projects.find((p) => p.name.toLowerCase() === raw.toLowerCase());
+		if (byName) return byName.id;
+		// Tolerate "BryanCounty" / "bryan_county" style labels from the model
+		const compact = raw.toLowerCase().replace(/[\s_-]+/g, '');
+		const byCompact = projects.find((p) => p.name.toLowerCase().replace(/[\s_-]+/g, '') === compact);
+		if (byCompact) return byCompact.id;
+	}
+
+	const bryan = projects.find((p) => p.name.toLowerCase() === 'bryan county');
+	if (bryan) return bryan.id;
+	return ensureDefaultProject().id;
+}
+
 async function runSearchKnowledge(
 	args: Record<string, unknown>,
 	context: ResearchToolContext,
@@ -309,14 +377,12 @@ async function runSearchKnowledge(
 		return { ok: false, result: { error: 'query required' } };
 	}
 
-	let projectId = String(args.projectId || context.projectId || '').trim();
-	if (!projectId) {
-		try {
-			projectId = ensureDefaultProject().id;
-		} catch (error: unknown) {
-			const message = error instanceof Error ? error.message : String(error);
-			return { ok: false, result: { error: `projectId required (${message})` } };
-		}
+	let projectId: string;
+	try {
+		projectId = resolveProjectId(args, context);
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, result: { error: `projectId required (${message})` } };
 	}
 
 	const sourceTypeRaw = String(args.sourceType || 'any').trim().toLowerCase();
@@ -358,6 +424,29 @@ async function runSearchKnowledge(
 	}
 }
 
+function runChartFilings(
+	args: Record<string, unknown>,
+	context: ResearchToolContext,
+): { ok: boolean; result: unknown } {
+	try {
+		const projectId = resolveProjectId(args, context);
+		const chart = createBryanFilingChart({
+			projectId,
+			period: args.period as string | undefined,
+			kind: args.kind as string | undefined,
+			from: args.from != null ? String(args.from) : null,
+			to: args.to != null ? String(args.to) : null,
+			docType: args.docType != null ? String(args.docType) : null,
+			limitBuckets: args.limitBuckets as number | undefined,
+			limitTypes: args.limitTypes as number | undefined,
+		});
+		return { ok: true, result: chart };
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, result: { ok: false, error: message } };
+	}
+}
+
 export async function runResearchTool(
 	name: string,
 	args: Record<string, unknown>,
@@ -367,6 +456,10 @@ export async function runResearchTool(
 
 	if (tool === 'search_knowledge') {
 		return runSearchKnowledge(args, context);
+	}
+
+	if (tool === 'chart_filings') {
+		return runChartFilings(args, context);
 	}
 
 	if (tool === 'inspect_canvas_graph') {
