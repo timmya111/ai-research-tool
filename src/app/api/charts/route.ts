@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createBryanFilingChart } from '@/lib/research/charts';
+import { createBryanFilingChart, createLogo } from '@/lib/research/charts';
 import { rejectUnlessLocalResearch } from '@/lib/research/guard';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 
@@ -24,7 +24,7 @@ function resolveProjectId(explicit?: string | null): string {
 	return ensureDefaultProject().id;
 }
 
-/** Create a Bryan filings chart (localhost). Body: { kind?, period?, from?, to?, docType?, projectId? }. */
+/** Create a Bryan filings chart (localhost). Body: { kind?, period?, from?, to?, docType?, format?, projectId? }. */
 export async function POST(request: Request) {
 	const blocked = rejectUnlessLocalResearch(request);
 	if (blocked) return blocked;
@@ -37,14 +37,25 @@ export async function POST(request: Request) {
 	}
 
 	try {
+		const kind = String(body.type || body.mode || '').trim().toLowerCase();
+		if (kind === 'logo') {
+			const logo = await createLogo({
+				text: String(body.text || ''),
+				subtitle: body.subtitle != null ? String(body.subtitle) : null,
+				format: body.format as string | undefined,
+			});
+			return NextResponse.json(logo, { headers: { 'Cache-Control': 'no-store' } });
+		}
+
 		const projectId = resolveProjectId(body.projectId != null ? String(body.projectId) : null);
-		const chart = createBryanFilingChart({
+		const chart = await createBryanFilingChart({
 			projectId,
 			period: body.period as string | undefined,
 			kind: body.kind as string | undefined,
 			from: body.from != null ? String(body.from) : null,
 			to: body.to != null ? String(body.to) : null,
 			docType: body.docType != null ? String(body.docType) : null,
+			format: body.format as string | undefined,
 		});
 		return NextResponse.json(chart, { headers: { 'Cache-Control': 'no-store' } });
 	} catch (error: unknown) {

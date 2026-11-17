@@ -7,7 +7,14 @@ import {
 	type ChartKind,
 	type ChartPeriod,
 } from '@/lib/research/charts/aggregate';
-import { chartFilePath, ensureChartsDir } from '@/lib/research/charts/paths';
+import {
+	chartFilePath,
+	chartMimeType,
+	ensureChartsDir,
+	normalizeChartFormat,
+	type ChartImageFormat,
+} from '@/lib/research/charts/paths';
+import { rasterizeChartSvg } from '@/lib/research/charts/rasterize';
 import { renderBarChartSvg } from '@/lib/research/charts/svg';
 
 export type ChartFilingsArgs = {
@@ -19,6 +26,8 @@ export type ChartFilingsArgs = {
 	docType?: string | null;
 	limitBuckets?: number;
 	limitTypes?: number;
+	/** Default png (shareable). Use svg for logos/vector; jpeg also supported. */
+	format?: ChartImageFormat | string;
 };
 
 export type ChartFilingsResult = {
@@ -26,7 +35,8 @@ export type ChartFilingsResult = {
 	chartId: string;
 	imageUrl: string;
 	imagePath: string;
-	mimeType: 'image/svg+xml';
+	mimeType: string;
+	format: ChartImageFormat;
 	title: string;
 	subtitle: string;
 	kind: ChartKind;
@@ -52,14 +62,16 @@ function normalizeKind(raw: unknown): ChartKind {
 }
 
 /**
- * Aggregate Bryan filings, write an SVG under .data/charts, return a localhost image URL.
+ * Aggregate Bryan filings, write a shareable PNG (default) under .data/charts.
+ * Pass format=svg for vector/logo-style export, or jpeg for photos-style compression.
  */
-export function createBryanFilingChart(args: ChartFilingsArgs): ChartFilingsResult {
+export async function createBryanFilingChart(args: ChartFilingsArgs): Promise<ChartFilingsResult> {
 	const projectId = String(args.projectId || '').trim();
 	if (!projectId) {
 		throw new Error('projectId required');
 	}
 
+	const format = normalizeChartFormat(args.format, 'png');
 	const options: AggregateOptions = {
 		projectId,
 		period: normalizePeriod(args.period),
@@ -77,11 +89,12 @@ export function createBryanFilingChart(args: ChartFilingsArgs): ChartFilingsResu
 		subtitle: agg.subtitle,
 		buckets: agg.buckets,
 	});
+	const { buffer } = await rasterizeChartSvg(svg, format);
 
 	ensureChartsDir();
 	const chartId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-	const imagePath = chartFilePath(chartId);
-	fs.writeFileSync(imagePath, svg, 'utf8');
+	const imagePath = chartFilePath(chartId, format);
+	fs.writeFileSync(imagePath, buffer);
 
 	const imageUrl = `/api/charts/${chartId}`;
 
@@ -90,7 +103,8 @@ export function createBryanFilingChart(args: ChartFilingsArgs): ChartFilingsResu
 		chartId,
 		imageUrl,
 		imagePath,
-		mimeType: 'image/svg+xml',
+		mimeType: chartMimeType(format),
+		format,
 		title: agg.title,
 		subtitle: agg.subtitle,
 		kind: agg.kind,
@@ -99,9 +113,10 @@ export function createBryanFilingChart(args: ChartFilingsArgs): ChartFilingsResu
 		totalMatched: agg.totalMatched,
 		totalInProject: agg.totalInProject,
 		buckets: agg.buckets,
-		hint: `Include this markdown image in your answer so the user sees the chart: ![${agg.title}](${imageUrl}). Also summarize the bucket counts from the tool result (do not invent zeros).`,
+		hint: `Include this markdown image in your answer: ![${agg.title}](${imageUrl}). Default format is PNG for easy online sharing. Summarize bucket counts from the tool result (do not invent zeros).`,
 	};
 }
 
 export { aggregateBryanFilings } from '@/lib/research/charts/aggregate';
+export { createLogo } from '@/lib/research/charts/logo';
 export { renderBarChartSvg } from '@/lib/research/charts/svg';

@@ -3,6 +3,20 @@ import path from 'path';
 
 const DEFAULT_RELATIVE = path.join('.data', 'charts');
 
+export type ChartImageFormat = 'png' | 'jpeg' | 'svg';
+
+const FORMAT_EXT: Record<ChartImageFormat, string> = {
+	png: 'png',
+	jpeg: 'jpg',
+	svg: 'svg',
+};
+
+const MIME: Record<ChartImageFormat, string> = {
+	png: 'image/png',
+	jpeg: 'image/jpeg',
+	svg: 'image/svg+xml; charset=utf-8',
+};
+
 /** Absolute chart output directory (sibling of knowledge under .data when using defaults). */
 export function getChartsDir(): string {
 	const raw = String(process.env.RESEARCH_CHARTS_DIR || '').trim();
@@ -27,8 +41,45 @@ export function ensureChartsDir(): string {
 	return dir;
 }
 
-export function chartFilePath(chartId: string): string {
-	const safe = String(chartId || '').replace(/[^a-zA-Z0-9_-]/g, '');
-	if (!safe) throw new Error('invalid chart id');
-	return path.join(getChartsDir(), `${safe}.svg`);
+export function normalizeChartFormat(raw: unknown, fallback: ChartImageFormat = 'png'): ChartImageFormat {
+	const s = String(raw || '')
+		.trim()
+		.toLowerCase();
+	if (s === 'svg' || s === 'vector' || s === 'logo') return 'svg';
+	if (s === 'jpg' || s === 'jpeg') return 'jpeg';
+	if (s === 'png') return 'png';
+	return fallback;
+}
+
+export function chartExt(format: ChartImageFormat): string {
+	return FORMAT_EXT[format];
+}
+
+export function chartMimeType(format: ChartImageFormat): string {
+	return MIME[format];
+}
+
+export function sanitizeChartId(chartId: string): string {
+	const safe = String(chartId || '')
+		.replace(/\.(png|jpe?g|svg)$/i, '')
+		.replace(/[^a-zA-Z0-9_-]/g, '');
+	if (!safe || safe.length < 8) throw new Error('invalid chart id');
+	return safe;
+}
+
+export function chartFilePath(chartId: string, format: ChartImageFormat = 'png'): string {
+	const safe = sanitizeChartId(chartId);
+	return path.join(getChartsDir(), `${safe}.${chartExt(format)}`);
+}
+
+/** Resolve an existing chart file by id (tries png, jpg, svg). */
+export function resolveChartFile(chartId: string): { path: string; format: ChartImageFormat } | null {
+	const safe = sanitizeChartId(chartId);
+	const dir = getChartsDir();
+	const candidates: ChartImageFormat[] = ['png', 'jpeg', 'svg'];
+	for (const format of candidates) {
+		const filePath = path.join(dir, `${safe}.${chartExt(format)}`);
+		if (fs.existsSync(filePath)) return { path: filePath, format };
+	}
+	return null;
 }

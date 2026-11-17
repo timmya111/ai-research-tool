@@ -115,7 +115,7 @@ function extractChartUrls(toolTrace: unknown, answer?: string): string[] {
 		for (const entry of toolTrace) {
 			if (!entry || typeof entry !== 'object') continue;
 			const tool = String((entry as { tool?: string }).tool || '');
-			if (tool !== 'chart_filings') continue;
+			if (tool !== 'chart_filings' && tool !== 'make_logo') continue;
 			const result = (entry as { result?: Record<string, unknown> }).result;
 			if (!result || typeof result !== 'object') continue;
 			push(result.imageUrl);

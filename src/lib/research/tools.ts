@@ -1,4 +1,4 @@
-import { createBryanFilingChart } from '@/lib/research/charts';
+import { createBryanFilingChart, createLogo } from '@/lib/research/charts';
 import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
@@ -9,7 +9,8 @@ export type ResearchToolName =
 	| 'current_time'
 	| 'inspect_canvas_graph'
 	| 'search_knowledge'
-	| 'chart_filings';
+	| 'chart_filings'
+	| 'make_logo';
 
 export type ResearchToolContext = {
 	canvasSnapshot?: CanvasSnapshot | null;
@@ -22,7 +23,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'chart_filings',
 			description:
-				'Build a server-rendered SVG chart of Bryan County OKCountyRecords filings from the local knowledge store (counts over time or by document type). Use when the user asks for trends, volume over a period, monthly/weekly/daily charts, or type breakdowns. Returns an imageUrl to embed as markdown ![title](url).',
+				'Build a shareable chart image of Bryan County OKCountyRecords filings from the local knowledge store (counts over time or by document type). Default format is PNG for easy online sharing. Use format=jpeg for JPG, or format=svg only when the user wants a vector/logo-style export. Returns an imageUrl to embed as markdown ![title](url).',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -46,6 +47,10 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 						type: 'string',
 						description: 'Optional instrument filter, e.g. MTG, WD, REL MTG, UCC',
 					},
+					format: {
+						type: 'string',
+						description: 'png (default, shareable) | jpeg | svg (vector; prefer make_logo for logos)',
+					},
 					projectId: {
 						type: 'string',
 						description:
@@ -53,6 +58,26 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					},
 				},
 				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'make_logo',
+			description:
+				'Create a simple wordmark/logo image. Default format is SVG (vector) for logos. Pass format=png or jpeg when the user wants a raster logo to share online. Returns an imageUrl to embed as markdown.',
+			parameters: {
+				type: 'object',
+				properties: {
+					text: { type: 'string', description: 'Primary logo text / wordmark' },
+					subtitle: { type: 'string', description: 'Optional secondary line' },
+					format: {
+						type: 'string',
+						description: 'svg (default for logos) | png | jpeg',
+					},
+				},
+				required: ['text'],
 			},
 		},
 	},
@@ -424,13 +449,13 @@ async function runSearchKnowledge(
 	}
 }
 
-function runChartFilings(
+async function runChartFilings(
 	args: Record<string, unknown>,
 	context: ResearchToolContext,
-): { ok: boolean; result: unknown } {
+): Promise<{ ok: boolean; result: unknown }> {
 	try {
 		const projectId = resolveProjectId(args, context);
-		const chart = createBryanFilingChart({
+		const chart = await createBryanFilingChart({
 			projectId,
 			period: args.period as string | undefined,
 			kind: args.kind as string | undefined,
@@ -439,8 +464,23 @@ function runChartFilings(
 			docType: args.docType != null ? String(args.docType) : null,
 			limitBuckets: args.limitBuckets as number | undefined,
 			limitTypes: args.limitTypes as number | undefined,
+			format: args.format as string | undefined,
 		});
 		return { ok: true, result: chart };
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, result: { ok: false, error: message } };
+	}
+}
+
+async function runMakeLogo(args: Record<string, unknown>): Promise<{ ok: boolean; result: unknown }> {
+	try {
+		const logo = await createLogo({
+			text: String(args.text || ''),
+			subtitle: args.subtitle != null ? String(args.subtitle) : null,
+			format: args.format as string | undefined,
+		});
+		return { ok: true, result: logo };
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { ok: false, result: { ok: false, error: message } };
@@ -460,6 +500,10 @@ export async function runResearchTool(
 
 	if (tool === 'chart_filings') {
 		return runChartFilings(args, context);
+	}
+
+	if (tool === 'make_logo') {
+		return runMakeLogo(args);
 	}
 
 	if (tool === 'inspect_canvas_graph') {
