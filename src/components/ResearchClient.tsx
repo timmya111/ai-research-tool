@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import KnowledgePanel from '@/components/KnowledgePanel';
+import ThemeToggle from '@/components/ThemeToggle';
 import type { CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { parseCanvasSnapshotJson } from '@/lib/research/canvasSnapshot';
 import {
@@ -43,12 +44,40 @@ type StatusPayload = {
 	};
 };
 
-const EXAMPLES = [
-	'Summarize the nodes currently on my canvas.',
-	'Which people on the canvas connect to two different firms?',
-	'Fetch https://finra-sec-data-visualizer-canvas.vercel.app/api/finra/health and summarize status.',
-	'Fetch https://en.wikipedia.org/wiki/Large_language_model and summarize the lead section in 5 bullets.',
-	'What time is it on this machine right now?',
+const BRYAN_PROJECT_NAME = 'Bryan County';
+
+/** Default chips focused on OKCountyRecords Bryan filings stored in local knowledge. */
+const BRYAN_EXAMPLES = [
+	{
+		label: 'Latest filings (full fields)',
+		question:
+			'Using only the Bryan County knowledge store, list the 8 most recent Bryan County filings. For each filing, show the full details: instrument, type, county, recorded date, instrument date, grantor, grantee, book, pages, legal description, filing fees, mortgage amount, consideration, image count, record id, and detail URL.',
+	},
+	{
+		label: 'Mortgages to Vision Bank',
+		question:
+			'Using only the Bryan County knowledge store, find MTG (mortgage) filings where the grantee is VISION BANK. For each match, show the full filing details: instrument, type, recorded date, grantor, grantee, book, pages, legal description, images, and detail URL.',
+	},
+	{
+		label: 'Warranty deeds (WD)',
+		question:
+			'Using only the Bryan County knowledge store, find recent WD (warranty deed) filings. For each, display the full details: instrument, type, recorded date, grantor, grantee, book, pages, legal description, consideration, images, and detail URL.',
+	},
+	{
+		label: 'Lookup instrument I-2026-790823',
+		question:
+			'Using only the Bryan County knowledge store, look up instrument I-2026-790823 and display every stored field in full: instrument, type, county, recorded date, instrument date, grantor, grantee, book, pages, legal description, filing fees, mortgage amount, consideration, images, record id, scraped time, and detail URL.',
+	},
+	{
+		label: 'Search a grantor name',
+		question:
+			'Using only the Bryan County knowledge store, search filings involving grantor WESTSIDE BAPTIST CHURCH (or similar). For each hit, show the complete filing details: instrument, type, recorded, grantor, grantee, book, pages, legal, images, and detail URL.',
+	},
+	{
+		label: 'How many Bryan docs?',
+		question:
+			'Using only the Bryan County knowledge store, summarize what kinds of Bryan County document types are present (MTG, WD, REL MTG, UCC, etc.) and give 3 example filings with full details each (instrument, type, recorded, grantor, grantee, book, pages, legal, detail URL).',
+	},
 ];
 
 const LS_REMEMBER = 'research.persistChat';
@@ -100,6 +129,9 @@ export default function ResearchClient() {
 	const [history, setHistory] = useState<ChatTurn[]>([]);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	/** Sticky Q&A panel that fills the viewport above the ask bar. */
+	const [chatExpanded, setChatExpanded] = useState(false);
+	const chatScrollRef = useRef<HTMLDivElement | null>(null);
 	const [toolTrace, setToolTrace] = useState<unknown[] | null>(null);
 	const [lastRoute, setLastRoute] = useState<{
 		mode?: string;
@@ -203,8 +235,11 @@ export default function ResearchClient() {
 		window.setTimeout(() => setKnowledgeRefreshToken((n) => n + 1), 2500);
 	}, []);
 
-	const ask = useCallback(async () => {
-		const q = question.trim();
+	const ask = useCallback(async (
+		overrideQuestion?: string,
+		opts?: { projectId?: string | null; ragAuto?: boolean },
+	) => {
+		const q = String(overrideQuestion ?? question).trim();
 		if (!q || busy) return;
 		setBusy(true);
 		setError(null);
@@ -217,7 +252,9 @@ export default function ResearchClient() {
 			const snap: CanvasSnapshot | null = aboutNodeGraph ? await refreshCanvasInfo() : null;
 			if (!aboutNodeGraph) void refreshCanvasInfo();
 			const requestedModel = autoMode ? RESEARCH_AUTO_MODEL : model;
-			const canPersist = Boolean(projectId);
+			const activeProjectId = opts?.projectId !== undefined ? opts.projectId : projectId;
+			const activeRag = opts?.ragAuto !== undefined ? opts.ragAuto : ragAuto;
+			const canPersist = Boolean(activeProjectId);
 			const res = await fetch('/api/chat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -228,10 +265,10 @@ export default function ResearchClient() {
 					availableModels: status?.models || preferredModels,
 					aboutNodeGraph,
 					canvasSnapshot: snap,
-					projectId: projectId || undefined,
+					projectId: activeProjectId || undefined,
 					persistChat: canPersist && persistChat,
 					persistFetches: canPersist && persistFetches,
-					ragAuto: canPersist ? ragAuto : false,
+					ragAuto: canPersist ? activeRag : false,
 				}),
 			});
 			const data = await res.json();
@@ -296,6 +333,37 @@ export default function ResearchClient() {
 		status?.models,
 	]);
 
+	const applyBryanExample = useCallback(
+		async (exampleQuestion: string) => {
+			if (busy) return;
+			setError(null);
+			let bryanId: string | null = projectId;
+			try {
+				const res = await fetch('/api/knowledge/projects', { cache: 'no-store' });
+				const data = await res.json();
+				const list = Array.isArray(data?.projects) ? data.projects : [];
+				const bryan = list.find(
+					(p: { name?: string }) => String(p?.name || '') === BRYAN_PROJECT_NAME,
+				) as { id?: string } | undefined;
+				if (bryan?.id) {
+					bryanId = bryan.id;
+					setProjectId(bryan.id);
+					try {
+						window.localStorage.setItem('research.activeProjectId', bryan.id);
+					} catch {
+						/* ignore */
+					}
+				}
+			} catch {
+				/* keep current project */
+			}
+			setRagAuto(true);
+			if (bryanId) writeFlag(LS_RAG, bryanId, true);
+			await ask(exampleQuestion, { projectId: bryanId, ragAuto: true });
+		},
+		[ask, busy, projectId],
+	);
+
 	const savePendingFetches = useCallback(async () => {
 		if (!fetchToast || !projectId || savingFetches) return;
 		setSavingFetches(true);
@@ -358,14 +426,154 @@ export default function ResearchClient() {
 
 	const togglesDisabled = !projectId || busy;
 
+	useEffect(() => {
+		const el = chatScrollRef.current;
+		if (!el) return;
+		el.scrollTop = el.scrollHeight;
+	}, [history, busy, chatExpanded]);
+
+	useEffect(() => {
+		if (!chatExpanded) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') setChatExpanded(false);
+		};
+		window.addEventListener('keydown', onKey);
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			window.removeEventListener('keydown', onKey);
+			document.body.style.overflow = prev;
+		};
+	}, [chatExpanded]);
+
+	const askForm = (
+		<form
+			onSubmit={(e) => {
+				e.preventDefault();
+				void ask();
+			}}
+			className="mx-auto flex w-full max-w-[920px] items-end gap-2"
+		>
+			<textarea
+				value={question}
+				onChange={(e) => setQuestion(e.target.value)}
+				placeholder="Ask about Bryan County filings (grantor, grantee, instrument, legal…)…"
+				rows={2}
+				disabled={busy}
+				className="max-h-40 min-h-[52px] flex-1 resize-y rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5 font-[inherit] text-[var(--app-fg)]"
+				onKeyDown={(e) => {
+					if (e.key === 'Enter' && !e.shiftKey) {
+						e.preventDefault();
+						void ask();
+					}
+				}}
+			/>
+			<button
+				type="submit"
+				disabled={busy || !question.trim()}
+				className="min-h-[52px] min-w-[88px] rounded-lg border-none bg-[#F97316] px-3.5 py-2.5 font-semibold text-white disabled:cursor-wait"
+			>
+				{busy ? 'Working…' : 'Ask'}
+			</button>
+		</form>
+	);
+
+	const chatPanel = (
+		<section
+			className={
+				chatExpanded
+					? 'z-40 flex flex-col border-b border-[var(--app-border)]'
+					: 'relative mb-3 flex min-h-[280px] flex-col rounded-lg border border-[var(--app-border)]'
+			}
+			style={
+				chatExpanded
+					? {
+							position: 'fixed',
+							top: 0,
+							left: 0,
+							right: 0,
+							bottom: 'calc(5.75rem + env(safe-area-inset-bottom, 0px))',
+							zIndex: 40,
+							backgroundColor: 'var(--app-bg)',
+						}
+					: { backgroundColor: 'var(--app-surface)' }
+			}
+		>
+			<div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2">
+				<p className="m-0 text-xs font-semibold opacity-80">Q&amp;A</p>
+				<button
+					type="button"
+					onClick={() => setChatExpanded((v) => !v)}
+					title={chatExpanded ? 'Exit full-height chat (Esc)' : 'Make chat sticky and full height'}
+					aria-pressed={chatExpanded}
+					className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
+				>
+					{chatExpanded ? 'Exit full height' : 'Full height'}
+				</button>
+			</div>
+			<div
+				ref={chatScrollRef}
+				className="flex flex-col gap-3 overflow-y-auto px-3 py-3"
+				style={
+					chatExpanded
+						? { flex: '1 1 auto', minHeight: 0, height: '100%' }
+						: { minHeight: 240, maxHeight: 'min(60vh, 560px)' }
+				}
+			>
+				{history.length === 0 ? (
+					<p className="m-0 opacity-60">
+						No messages yet. Pick a Bryan County suggested question above (with Auto-retrieve on) to see
+						full filing details from the local knowledge store.
+					</p>
+				) : (
+					history.map((turn, index) => (
+						<div
+							key={`${turn.role}-${index}`}
+							className={`max-w-[92%] rounded-[10px] px-3 py-2.5 leading-snug whitespace-pre-wrap ${
+								turn.role === 'user' ? 'self-end' : 'self-start'
+							}`}
+							style={{
+								background: turn.role === 'user' ? 'var(--app-chat-user)' : 'var(--app-chat-assistant)',
+							}}
+						>
+							<div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] opacity-60">
+								<span>{turn.role === 'user' ? 'You' : 'Assistant'}</span>
+								{turn.role === 'assistant' && turn.saved ? (
+									<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+										{persistChat ? 'Remembered' : 'Saved'}
+									</span>
+								) : null}
+								{turn.role === 'assistant' && turn.question && !turn.saved && !persistChat ? (
+									<button
+										type="button"
+										disabled={!projectId || turn.saving || busy}
+										onClick={() => void saveTurn(index)}
+										className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[11px] font-semibold text-[var(--app-fg)] opacity-100 disabled:opacity-40"
+									>
+										{turn.saving ? 'Saving…' : 'Save to knowledge'}
+									</button>
+								) : null}
+							</div>
+							{turn.content}
+						</div>
+					))
+				)}
+			</div>
+		</section>
+	);
+
 	return (
-		<main className="mx-auto max-w-[920px] px-4 py-5 pb-12 text-[var(--foreground)]">
+		<main className="mx-auto max-w-[920px] px-4 py-5 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-[var(--app-fg)]">
 			<header className="mb-4">
-				<p className="m-0 text-[13px] opacity-70">local only · Ollama</p>
+				<div className="flex items-start justify-between gap-3">
+					<p className="m-0 text-[13px] opacity-70">local only · Ollama</p>
+					<ThemeToggle />
+				</div>
 				<h1 className="my-1.5 text-[28px] font-semibold tracking-tight">AI Research Tool</h1>
 				<p className="m-0 leading-snug opacity-80">
-					Ask research questions, fetch the live FINRA app API via <code className="text-[0.95em]">fetch_url</code>
-					, attach a canvas snapshot, and browse a local knowledge store (projects + notes).
+					Focus for now: query local <strong>Bryan County</strong> OKCountyRecords filings (grantor, grantee,
+					legal, book/pages, and detail URLs). Select that project, turn on <strong>Auto-retrieve</strong>,
+					then use the suggested questions below. FINRA/SEC canvas integration comes next.
 				</p>
 			</header>
 
@@ -601,88 +809,56 @@ export default function ResearchClient() {
 				</section>
 			) : null}
 
-			<section className="mb-4 flex flex-wrap gap-2">
-				{EXAMPLES.map((example) => (
-					<button
-						key={example}
-						type="button"
-						disabled={busy}
-						onClick={() => setQuestion(example)}
-						className="max-w-full cursor-pointer rounded-full border border-zinc-300 bg-transparent px-2.5 py-1.5 text-left text-xs dark:border-zinc-600"
-					>
-						{example}
-					</button>
-				))}
-			</section>
-
-			<section className="mb-3 flex min-h-[280px] flex-col gap-3 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
-				{history.length === 0 ? (
-					<p className="m-0 opacity-60">No messages yet. Try an example above.</p>
-				) : (
-					history.map((turn, index) => (
-						<div
-							key={`${turn.role}-${index}`}
-							className={`max-w-[92%] rounded-[10px] px-3 py-2.5 leading-snug whitespace-pre-wrap ${
-								turn.role === 'user'
-									? 'self-end bg-orange-500/15'
-									: 'self-start bg-black/5 dark:bg-white/5'
-							}`}
+			<section className="mb-4 rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3 py-3">
+				<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+					<p className="m-0 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
+						Bryan County · suggested questions
+					</p>
+					<p className="m-0 text-[11px] opacity-70">
+						Click to ask immediately · Auto-retrieve on · Bryan County project
+					</p>
+				</div>
+				<div className="flex flex-wrap gap-2">
+					{BRYAN_EXAMPLES.map((example) => (
+						<button
+							key={example.label}
+							type="button"
+							disabled={busy}
+							title={example.question}
+							onClick={() => void applyBryanExample(example.question)}
+							className="max-w-full cursor-pointer rounded-full border border-emerald-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-emerald-950 dark:border-emerald-400/30 dark:bg-zinc-950/60 dark:text-emerald-50"
 						>
-							<div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] opacity-60">
-								<span>{turn.role === 'user' ? 'You' : 'Assistant'}</span>
-								{turn.role === 'assistant' && turn.saved ? (
-									<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
-										{persistChat ? 'Remembered' : 'Saved'}
-									</span>
-								) : null}
-								{turn.role === 'assistant' && turn.question && !turn.saved && !persistChat ? (
-									<button
-										type="button"
-										disabled={!projectId || turn.saving || busy}
-										onClick={() => void saveTurn(index)}
-										className="cursor-pointer rounded border border-zinc-300 bg-transparent px-1.5 py-0.5 text-[11px] font-semibold text-[var(--foreground)] opacity-100 disabled:opacity-40 dark:border-zinc-600"
-									>
-										{turn.saving ? 'Saving…' : 'Save to knowledge'}
-									</button>
-								) : null}
-							</div>
-							{turn.content}
-						</div>
-					))
-				)}
+							{example.label}
+						</button>
+					))}
+				</div>
 			</section>
 
-			<form
-				onSubmit={(e) => {
-					e.preventDefault();
-					void ask();
-				}}
-				className="flex items-start gap-2"
-			>
-				<textarea
-					value={question}
-					onChange={(e) => setQuestion(e.target.value)}
-					placeholder="Ask a research question, paste a live API URL, or ask about the canvas…"
-					rows={3}
-					disabled={busy}
-					className="flex-1 resize-y rounded-lg border border-zinc-300 bg-transparent p-2.5 font-[inherit] dark:border-zinc-600"
-					onKeyDown={(e) => {
-						if (e.key === 'Enter' && !e.shiftKey) {
-							e.preventDefault();
-							void ask();
-						}
+			{/* Opaque scrim so page body (header, knowledge, chips) cannot show through. */}
+			{chatExpanded ? (
+				<div
+					aria-hidden="true"
+					onClick={() => setChatExpanded(false)}
+					style={{
+						position: 'fixed',
+						inset: 0,
+						zIndex: 35,
+						backgroundColor: 'var(--app-bg)',
+						opacity: 1,
 					}}
 				/>
-				<button
-					type="submit"
-					disabled={busy || !question.trim()}
-					className="min-w-[88px] rounded-lg border-none bg-[#F97316] px-3.5 py-2.5 font-semibold text-white disabled:cursor-wait"
+			) : null}
+			{/* Spacer keeps page scroll position when chat is pulled into the overlay. */}
+			{chatExpanded ? (
+				<div
+					aria-hidden="true"
+					className="mb-3 min-h-[280px] rounded-lg border border-dashed border-[var(--app-border)] px-3 py-6 text-center text-xs opacity-60"
 				>
-					{busy ? 'Working…' : 'Ask'}
-				</button>
-			</form>
-
-			{error ? <p className="mt-2.5 text-red-700 dark:text-red-400">{error}</p> : null}
+					Q&amp;A is in full-height mode. Use <strong>Exit full height</strong> or Esc to restore the inline
+					panel.
+				</div>
+			) : null}
+			{chatPanel}
 
 			{workerTraces && workerTraces.length > 0 ? (
 				<details className="mt-4">
@@ -711,6 +887,20 @@ export default function ResearchClient() {
 					</pre>
 				</details>
 			) : null}
+
+			<div
+				className="fixed inset-x-0 bottom-0 z-50 border-t border-[var(--app-border)] px-4 pt-3 backdrop-blur"
+				style={{
+					paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
+					background: 'var(--app-ask-bar-bg)',
+					boxShadow: 'var(--app-ask-bar-shadow)',
+				}}
+			>
+				{error ? (
+					<p className="mx-auto mb-2 max-w-[920px] text-sm text-red-700 dark:text-red-400">{error}</p>
+				) : null}
+				{askForm}
+			</div>
 		</main>
 	);
 }

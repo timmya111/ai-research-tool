@@ -247,10 +247,11 @@ export async function runResearchAgent(options: {
 	let retrievedCount = 0;
 	if (!knowledgeSnippets && ragAuto && projectId) {
 		try {
-			const topK = Math.max(1, Math.min(12, Number(process.env.RESEARCH_RAG_TOP_K) || 4));
+			const topK = Math.max(1, Math.min(12, Number(process.env.RESEARCH_RAG_TOP_K) || 8));
 			const hits = await retrieve(options.question, { projectId, limit: topK });
 			retrievedCount = hits.length;
-			knowledgeSnippets = formatSnippetsForPrompt(hits, { maxChars: 3500 }) || undefined;
+			// Larger budget so Bryan filing notes can include full field lists in answers.
+			knowledgeSnippets = formatSnippetsForPrompt(hits, { maxChars: 8000 }) || undefined;
 		} catch (error: unknown) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error('[knowledge] auto-retrieve failed', message);

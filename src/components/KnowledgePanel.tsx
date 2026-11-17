@@ -77,7 +77,9 @@ export default function KnowledgePanel({
 
 		const stored =
 			typeof window !== 'undefined' ? window.localStorage.getItem(LS_PROJECT_KEY) : null;
+		// Prefer Bryan County filings project for the current focus of the app.
 		const preferred =
+			list.find((p) => p.name === 'Bryan County')?.id ||
 			(stored && list.find((p) => p.id === stored)?.id) ||
 			list.find((p) => p.name === 'Default')?.id ||
 			list[0]?.id ||
