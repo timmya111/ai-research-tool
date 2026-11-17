@@ -289,8 +289,27 @@ async function postFilings(filings) {
 	return data;
 }
 
+async function resetFlareSession(reason) {
+	log(`resetting FlareSolverr session (${reason})`);
+	if (flareSessionId) {
+		await flareRequest('sessions.destroy', { session: flareSessionId }).catch(() => {});
+		flareSessionId = null;
+	}
+}
+
 async function pollOnce(seen) {
-	const feed = await scrapeFeed();
+	let feed;
+	try {
+		feed = await scrapeFeed();
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		if (/ERR_NAME_NOT_RESOLVED|challenge|timeout|ECONNREFUSED|fetch failed/i.test(msg)) {
+			await resetFlareSession(msg.slice(0, 80));
+			feed = await scrapeFeed();
+		} else {
+			throw error;
+		}
+	}
 	const fresh = feed.filter((f) => f.id && !seen.has(f.id));
 	if (!fresh.length) {
 		log('no new filings');
@@ -308,7 +327,11 @@ async function pollOnce(seen) {
 				`detail ${detail.instrument} ${detail.docType} grantor=${detail.grantor} grantee=${detail.grantee} book=${detail.book}`,
 			);
 		} catch (error) {
-			log(`detail failed ${item.instrument}:`, error instanceof Error ? error.message : error);
+			const msg = error instanceof Error ? error.message : String(error);
+			log(`detail failed ${item.instrument}:`, msg);
+			if (/ERR_NAME_NOT_RESOLVED|challenge|timeout|ECONNREFUSED/i.test(msg)) {
+				await resetFlareSession(msg.slice(0, 80));
+			}
 		}
 	}
 
