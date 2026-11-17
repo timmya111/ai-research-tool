@@ -100,6 +100,8 @@ const BRYAN_EXAMPLES = [
 const LS_REMEMBER = 'research.persistChat';
 const LS_FETCHES = 'research.persistFetches';
 const LS_RAG = 'research.ragAuto';
+/** Collapsible block under KnowledgePanel (toggles, model, canvas, suggested questions). */
+const LS_BELOW_KNOWLEDGE = 'research.belowKnowledgeOpen';
 
 function extractChartUrls(toolTrace: unknown, answer?: string): string[] {
 	const urls: string[] = [];
@@ -210,7 +212,31 @@ export default function ResearchClient() {
 		toolTrace: unknown[];
 	} | null>(null);
 	const [savingFetches, setSavingFetches] = useState(false);
+	/** Options / suggested questions under knowledge store; remembered in localStorage. */
+	const [belowKnowledgeOpen, setBelowKnowledgeOpen] = useState(true);
 	const liveWindowRef = useRef<Window | null>(null);
+
+	useEffect(() => {
+		try {
+			const v = window.localStorage.getItem(LS_BELOW_KNOWLEDGE);
+			if (v === '0') setBelowKnowledgeOpen(false);
+			else if (v === '1') setBelowKnowledgeOpen(true);
+		} catch {
+			/* ignore */
+		}
+	}, []);
+
+	const toggleBelowKnowledge = useCallback(() => {
+		setBelowKnowledgeOpen((prev) => {
+			const next = !prev;
+			try {
+				window.localStorage.setItem(LS_BELOW_KNOWLEDGE, next ? '1' : '0');
+			} catch {
+				/* ignore */
+			}
+			return next;
+		});
+	}, []);
 
 	const preferredModels = useMemo(() => {
 		const models = filterFreeLocalOllamaModels(status?.models || []);
@@ -684,230 +710,253 @@ export default function ResearchClient() {
 				</section>
 			) : null}
 
-			<section className="mb-4 space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2.5">
-				<p className="m-0 text-xs font-semibold text-amber-950 dark:text-amber-100">
-					Disk retention — toggles write research (including FINRA-related Q&amp;A) to local disk under the
-					active project
-					{status?.knowledge?.path ? (
-						<>
-							{' '}
-							(<code className="text-[0.95em]">{status.knowledge.path}</code>)
-						</>
-					) : null}
-					. Defaults stay off.
-				</p>
-				{!projectId ? (
-					<p className="m-0 text-xs opacity-80">Select a project above to enable remember / save toggles.</p>
-				) : null}
-				<div className="flex flex-wrap gap-x-4 gap-y-2">
-					<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
-						<input
-							type="checkbox"
-							checked={persistChat}
-							disabled={togglesDisabled}
-							onChange={(e) => {
-								const on = e.target.checked;
-								setPersistChat(on);
-								writeFlag(LS_REMEMBER, projectId, on);
-							}}
-							className="h-[15px] w-[15px]"
-						/>
-						<span>Remember answers</span>
-						<span className="font-normal opacity-70">save Q+A (+ tools) after each ask</span>
-					</label>
-					<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
-						<input
-							type="checkbox"
-							checked={persistFetches}
-							disabled={togglesDisabled}
-							onChange={(e) => {
-								const on = e.target.checked;
-								setPersistFetches(on);
-								writeFlag(LS_FETCHES, projectId, on);
-							}}
-							className="h-[15px] w-[15px]"
-						/>
-						<span>Save successful fetches</span>
-						<span className="font-normal opacity-70">index fetch_url bodies</span>
-					</label>
-					<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
-						<input
-							type="checkbox"
-							checked={ragAuto}
-							disabled={togglesDisabled}
-							onChange={(e) => {
-								const on = e.target.checked;
-								setRagAuto(on);
-								writeFlag(LS_RAG, projectId, on);
-							}}
-							className="h-[15px] w-[15px]"
-						/>
-						<span>Auto-retrieve</span>
-						<span className="font-normal opacity-70">inject local snippets before answering</span>
-					</label>
-				</div>
-			</section>
-
-			<label
-				className={`mb-4 flex cursor-pointer select-none items-center gap-2.5 rounded-lg border border-zinc-300 px-3 py-2.5 text-sm font-semibold dark:border-zinc-700 ${
-					aboutNodeGraph ? 'bg-orange-500/10' : 'bg-zinc-50 dark:bg-zinc-900/60'
-				}`}
-			>
-				<input
-					type="checkbox"
-					checked={aboutNodeGraph}
-					onChange={(e) => setAboutNodeGraph(e.target.checked)}
-					disabled={busy}
-					className="h-4 w-4"
-				/>
-				<span>Question about node graph</span>
-				<span className="text-xs font-normal opacity-70">
-					{aboutNodeGraph
-						? 'Attaches live/pasted canvas · uses inspect_canvas_graph'
-						: 'Off · general research / API fetch only'}
-				</span>
-			</label>
-
-			<section className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-zinc-300 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900/60">
-				<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
-					<input
-						type="checkbox"
-						checked={autoMode}
-						onChange={(e) => {
-							const on = e.target.checked;
-							setAutoMode(on);
-							if (on) setShowAdvancedModel(false);
-						}}
-						disabled={busy}
-						className="h-[15px] w-[15px]"
-					/>
-					<span>Auto model</span>
-					<span className="font-normal opacity-70">
-						{autoMode ? 'plans single or tools+reason→merge' : 'manual override'}
+			<section className="mb-4 overflow-hidden rounded-lg border border-zinc-300 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/60">
+				<button
+					type="button"
+					onClick={toggleBelowKnowledge}
+					aria-expanded={belowKnowledgeOpen}
+					aria-controls="research-options-panel"
+					className="flex w-full cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-sm font-semibold"
+				>
+					<span>Options &amp; suggested questions</span>
+					<span className="text-xs font-normal opacity-70">
+						{belowKnowledgeOpen ? 'Hide' : 'Show'}
 					</span>
-				</label>
-				{!autoMode || showAdvancedModel ? (
-					<label className="flex items-center gap-2">
-						<span className="text-[13px] opacity-80">Model</span>
-						<select
-							value={model}
-							onChange={(e) => {
-								setModel(e.target.value);
-								setAutoMode(false);
-							}}
-							disabled={busy}
-							className="min-w-[180px] rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-950"
-						>
-							{preferredModels.map((m) => (
-								<option key={m} value={m}>
-									{m}
-								</option>
-							))}
-						</select>
-					</label>
-				) : (
-					<button
-						type="button"
-						onClick={() => {
-							setShowAdvancedModel(true);
-							setAutoMode(false);
-						}}
-						disabled={busy}
-						className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+				</button>
+				{belowKnowledgeOpen ? (
+					<div
+						id="research-options-panel"
+						className="space-y-3 border-t border-zinc-300 px-3 py-3 dark:border-zinc-700"
 					>
-						Advanced…
-					</button>
-				)}
-				<span className="text-[13px] opacity-75">
-					{status == null
-						? 'Checking Ollama…'
-						: status.ok
-							? `Ollama ok · ${status.models?.length || 0} free models`
-							: `Ollama unreachable: ${status.error || 'unknown error'}`}
-				</span>
-				<span className="text-[13px] opacity-75">{canvasInfo}</span>
-				{lastRoute?.model ? (
-					<span className="max-w-full text-xs opacity-85">
-						Last route:{' '}
-						{lastRoute.pipeline === 'multi'
-							? `Auto multi → ${(lastRoute.workers || []).map((w) => `${w.role}:${w.model}`).join(' + ')} → merge:${lastRoute.mergeModel || lastRoute.model}`
-							: lastRoute.mode === 'auto'
-								? `Auto → ${lastRoute.model}`
-								: lastRoute.model}
-						{lastRoute.reason ? ` · ${lastRoute.reason}` : ''}
-					</span>
+						<section className="space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2.5">
+							<p className="m-0 text-xs font-semibold text-amber-950 dark:text-amber-100">
+								Disk retention — toggles write research (including FINRA-related Q&amp;A) to local disk
+								under the active project
+								{status?.knowledge?.path ? (
+									<>
+										{' '}
+										(<code className="text-[0.95em]">{status.knowledge.path}</code>)
+									</>
+								) : null}
+								. Defaults stay off.
+							</p>
+							{!projectId ? (
+								<p className="m-0 text-xs opacity-80">
+									Select a project above to enable remember / save toggles.
+								</p>
+							) : null}
+							<div className="flex flex-wrap gap-x-4 gap-y-2">
+								<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
+									<input
+										type="checkbox"
+										checked={persistChat}
+										disabled={togglesDisabled}
+										onChange={(e) => {
+											const on = e.target.checked;
+											setPersistChat(on);
+											writeFlag(LS_REMEMBER, projectId, on);
+										}}
+										className="h-[15px] w-[15px]"
+									/>
+									<span>Remember answers</span>
+									<span className="font-normal opacity-70">save Q+A (+ tools) after each ask</span>
+								</label>
+								<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
+									<input
+										type="checkbox"
+										checked={persistFetches}
+										disabled={togglesDisabled}
+										onChange={(e) => {
+											const on = e.target.checked;
+											setPersistFetches(on);
+											writeFlag(LS_FETCHES, projectId, on);
+										}}
+										className="h-[15px] w-[15px]"
+									/>
+									<span>Save successful fetches</span>
+									<span className="font-normal opacity-70">index fetch_url bodies</span>
+								</label>
+								<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
+									<input
+										type="checkbox"
+										checked={ragAuto}
+										disabled={togglesDisabled}
+										onChange={(e) => {
+											const on = e.target.checked;
+											setRagAuto(on);
+											writeFlag(LS_RAG, projectId, on);
+										}}
+										className="h-[15px] w-[15px]"
+									/>
+									<span>Auto-retrieve</span>
+									<span className="font-normal opacity-70">inject local snippets before answering</span>
+								</label>
+							</div>
+						</section>
+
+						<label
+							className={`flex cursor-pointer select-none items-center gap-2.5 rounded-lg border border-zinc-300 px-3 py-2.5 text-sm font-semibold dark:border-zinc-700 ${
+								aboutNodeGraph ? 'bg-orange-500/10' : 'bg-zinc-50 dark:bg-zinc-900/60'
+							}`}
+						>
+							<input
+								type="checkbox"
+								checked={aboutNodeGraph}
+								onChange={(e) => setAboutNodeGraph(e.target.checked)}
+								disabled={busy}
+								className="h-4 w-4"
+							/>
+							<span>Question about node graph</span>
+							<span className="text-xs font-normal opacity-70">
+								{aboutNodeGraph
+									? 'Attaches live/pasted canvas · uses inspect_canvas_graph'
+									: 'Off · general research / API fetch only'}
+							</span>
+						</label>
+
+						<section className="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-300 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900/60">
+							<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
+								<input
+									type="checkbox"
+									checked={autoMode}
+									onChange={(e) => {
+										const on = e.target.checked;
+										setAutoMode(on);
+										if (on) setShowAdvancedModel(false);
+									}}
+									disabled={busy}
+									className="h-[15px] w-[15px]"
+								/>
+								<span>Auto model</span>
+								<span className="font-normal opacity-70">
+									{autoMode ? 'plans single or tools+reason→merge' : 'manual override'}
+								</span>
+							</label>
+							{!autoMode || showAdvancedModel ? (
+								<label className="flex items-center gap-2">
+									<span className="text-[13px] opacity-80">Model</span>
+									<select
+										value={model}
+										onChange={(e) => {
+											setModel(e.target.value);
+											setAutoMode(false);
+										}}
+										disabled={busy}
+										className="min-w-[180px] rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-950"
+									>
+										{preferredModels.map((m) => (
+											<option key={m} value={m}>
+												{m}
+											</option>
+										))}
+									</select>
+								</label>
+							) : (
+								<button
+									type="button"
+									onClick={() => {
+										setShowAdvancedModel(true);
+										setAutoMode(false);
+									}}
+									disabled={busy}
+									className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+								>
+									Advanced…
+								</button>
+							)}
+							<span className="text-[13px] opacity-75">
+								{status == null
+									? 'Checking Ollama…'
+									: status.ok
+										? `Ollama ok · ${status.models?.length || 0} free models`
+										: `Ollama unreachable: ${status.error || 'unknown error'}`}
+							</span>
+							<span className="text-[13px] opacity-75">{canvasInfo}</span>
+							{lastRoute?.model ? (
+								<span className="max-w-full text-xs opacity-85">
+									Last route:{' '}
+									{lastRoute.pipeline === 'multi'
+										? `Auto multi → ${(lastRoute.workers || []).map((w) => `${w.role}:${w.model}`).join(' + ')} → merge:${lastRoute.mergeModel || lastRoute.model}`
+										: lastRoute.mode === 'auto'
+											? `Auto → ${lastRoute.model}`
+											: lastRoute.model}
+									{lastRoute.reason ? ` · ${lastRoute.reason}` : ''}
+								</span>
+							) : null}
+							<button
+								type="button"
+								onClick={connectLiveGraph}
+								disabled={busy}
+								className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+							>
+								Connect live graph
+							</button>
+							<button
+								type="button"
+								onClick={() => void refreshCanvasInfo()}
+								disabled={busy}
+								className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+							>
+								Refresh canvas
+							</button>
+							<button
+								type="button"
+								onClick={() => setShowPaste((v) => !v)}
+								disabled={busy}
+								className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+							>
+								{showPaste ? 'Hide paste' : 'Paste snapshot'}
+							</button>
+						</section>
+
+						{showPaste ? (
+							<section className="rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+								<p className="mb-2 text-xs opacity-70">
+									Paste canvas snapshot JSON from the live app (Copy canvas for research), then Apply.
+								</p>
+								<textarea
+									value={pastedJson}
+									onChange={(e) => setPastedJson(e.target.value)}
+									rows={5}
+									placeholder='{"nodeCount":…,"nodes":[…],…}'
+									className="mb-2 w-full resize-y rounded-md border border-zinc-300 bg-transparent p-2 font-mono text-xs dark:border-zinc-600"
+								/>
+								<button
+									type="button"
+									onClick={applyPastedJson}
+									className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2.5 py-1.5 text-xs font-semibold dark:border-zinc-600"
+								>
+									Apply pasted snapshot
+								</button>
+							</section>
+						) : null}
+
+						<section className="rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3 py-3">
+							<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+								<p className="m-0 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
+									Bryan County · suggested questions
+								</p>
+								<p className="m-0 text-[11px] opacity-70">
+									Click to ask immediately · Auto-retrieve on · Bryan County project
+								</p>
+							</div>
+							<div className="flex flex-wrap gap-2">
+								{BRYAN_EXAMPLES.map((example) => (
+									<button
+										key={example.label}
+										type="button"
+										disabled={busy}
+										title={example.question}
+										onClick={() => void applyBryanExample(example.question)}
+										className="max-w-full cursor-pointer rounded-full border border-emerald-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-emerald-950 dark:border-emerald-400/30 dark:bg-zinc-950/60 dark:text-emerald-50"
+									>
+										{example.label}
+									</button>
+								))}
+							</div>
+						</section>
+					</div>
 				) : null}
-				<button
-					type="button"
-					onClick={connectLiveGraph}
-					disabled={busy}
-					className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
-				>
-					Connect live graph
-				</button>
-				<button
-					type="button"
-					onClick={() => void refreshCanvasInfo()}
-					disabled={busy}
-					className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
-				>
-					Refresh canvas
-				</button>
-				<button
-					type="button"
-					onClick={() => setShowPaste((v) => !v)}
-					disabled={busy}
-					className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
-				>
-					{showPaste ? 'Hide paste' : 'Paste snapshot'}
-				</button>
-			</section>
-
-			{showPaste ? (
-				<section className="mb-4 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
-					<p className="mb-2 text-xs opacity-70">
-						Paste canvas snapshot JSON from the live app (Copy canvas for research), then Apply.
-					</p>
-					<textarea
-						value={pastedJson}
-						onChange={(e) => setPastedJson(e.target.value)}
-						rows={5}
-						placeholder='{"nodeCount":…,"nodes":[…],…}'
-						className="mb-2 w-full resize-y rounded-md border border-zinc-300 bg-transparent p-2 font-mono text-xs dark:border-zinc-600"
-					/>
-					<button
-						type="button"
-						onClick={applyPastedJson}
-						className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2.5 py-1.5 text-xs font-semibold dark:border-zinc-600"
-					>
-						Apply pasted snapshot
-					</button>
-				</section>
-			) : null}
-
-			<section className="mb-4 rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3 py-3">
-				<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-					<p className="m-0 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
-						Bryan County · suggested questions
-					</p>
-					<p className="m-0 text-[11px] opacity-70">
-						Click to ask immediately · Auto-retrieve on · Bryan County project
-					</p>
-				</div>
-				<div className="flex flex-wrap gap-2">
-					{BRYAN_EXAMPLES.map((example) => (
-						<button
-							key={example.label}
-							type="button"
-							disabled={busy}
-							title={example.question}
-							onClick={() => void applyBryanExample(example.question)}
-							className="max-w-full cursor-pointer rounded-full border border-emerald-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-emerald-950 dark:border-emerald-400/30 dark:bg-zinc-950/60 dark:text-emerald-50"
-						>
-							{example.label}
-						</button>
-					))}
-				</div>
 			</section>
 
 			{/* Opaque scrim so page body (header, knowledge, chips) cannot show through. */}

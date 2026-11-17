@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 const LS_PROJECT_KEY = 'research.activeProjectId';
+const LS_PANEL_OPEN_KEY = 'research.knowledgePanelOpen';
 
 export type KnowledgeProject = {
 	id: string;
@@ -67,6 +68,28 @@ export default function KnowledgePanel({
 	const [previewId, setPreviewId] = useState<string | null>(null);
 	const [previewText, setPreviewText] = useState<string | null>(null);
 	const [reindexing, setReindexing] = useState(false);
+
+	useEffect(() => {
+		try {
+			const v = window.localStorage.getItem(LS_PANEL_OPEN_KEY);
+			if (v === '0') setOpen(false);
+			else if (v === '1') setOpen(true);
+		} catch {
+			/* ignore */
+		}
+	}, []);
+
+	const toggleOpen = useCallback(() => {
+		setOpen((prev) => {
+			const next = !prev;
+			try {
+				window.localStorage.setItem(LS_PANEL_OPEN_KEY, next ? '1' : '0');
+			} catch {
+				/* ignore */
+			}
+			return next;
+		});
+	}, []);
 
 	const loadProjects = useCallback(async () => {
 		const res = await fetch('/api/knowledge/projects', { cache: 'no-store' });
@@ -321,7 +344,8 @@ export default function KnowledgePanel({
 			<button
 				type="button"
 				className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-semibold"
-				onClick={() => setOpen((v) => !v)}
+				onClick={toggleOpen}
+				aria-expanded={open}
 			>
 				<span>Knowledge store {projectId ? `(${total} docs)` : ''}</span>
 				<span className="text-xs font-normal opacity-70">{open ? 'Hide' : 'Show'}</span>
