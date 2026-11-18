@@ -12,6 +12,7 @@ import { RESEARCH_TOOL_DEFINITIONS, runResearchTool } from '@/lib/research/tools
 import {
 	RESEARCH_AUTO_MODEL,
 	routeResearchModel,
+	shouldHeuristicMulti,
 	type ResearchRouteDecision,
 	type ResearchWorkerPlan,
 } from '@/lib/research/orchestrator';
@@ -215,6 +216,59 @@ Rules:
 	}
 }
 
+/**
+ * Lightweight claim check with bespoke-minicheck (or similar). Appends a short
+ * "Fact-check" note when the specialist flags unsupported claims; never replaces
+ * the primary answer on failure.
+ */
+async function maybeFactCheckAnswer(options: {
+	question: string;
+	answer: string;
+	factCheckModel?: string | null;
+	toolTrace?: ResearchAgentResult['toolTrace'];
+}): Promise<string> {
+	const model = String(options.factCheckModel || '').trim();
+	const answer = String(options.answer || '').trim();
+	if (!model || !answer || answer.startsWith('(empty')) return options.answer;
+
+	const evidence = (options.toolTrace || [])
+		.slice(0, 6)
+		.map((t) => {
+			const body = JSON.stringify(t.result);
+			return `- ${t.tool}: ${body.slice(0, 500)}`;
+		})
+		.join('\n');
+
+	try {
+		const { message } = await ollamaChat({
+			model,
+			numCtx: 8192,
+			messages: [
+				{
+					role: 'system',
+					content: `You are a strict fact-check specialist. Given a question, a draft answer, and optional tool evidence, reply with ONLY:
+SUPPORTED — if key claims are backed by the evidence or are clearly general knowledge appropriate to the question
+UNSUPPORTED: <one short sentence> — if important claims lack evidence or contradict the tools
+MIXED: <one short sentence> — if partly supported
+Do not rewrite the answer. Do not invent new facts.`,
+				},
+				{
+					role: 'user',
+					content: `Question:\n${options.question}\n\nDraft answer:\n${answer.slice(0, 4000)}\n\nTool evidence:\n${evidence || '(none)'}\n\nVerdict:`,
+				},
+			],
+		});
+		const verdict = assistantMessageText(message).trim();
+		if (!verdict) return options.answer;
+		if (/^SUPPORTED\b/i.test(verdict)) return options.answer;
+		return `${options.answer}\n\n_Fact-check (${model}):_ ${verdict}`;
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error('[factcheck] skipped', message);
+		return options.answer;
+	}
+}
+
 export async function runResearchAgent(options: {
 	question: string;
 	model?: string;
@@ -313,10 +367,22 @@ export async function runResearchAgent(options: {
 			projectId,
 			knowledgeSnippets,
 		});
+		const shouldCheck =
+			ran.ok &&
+			Boolean(route.factCheckModel) &&
+			(route.pipeline === 'multi' || shouldHeuristicMulti(options.question) || /compar|analy|explain why|versus|pros and cons/i.test(options.question));
+		const answer = shouldCheck
+			? await maybeFactCheckAnswer({
+					question: options.question,
+					answer: ran.answer,
+					factCheckModel: route.factCheckModel,
+					toolTrace: ran.toolTrace,
+				})
+			: ran.answer;
 		return {
 			ok: ran.ok,
 			model,
-			answer: ran.answer,
+			answer,
 			messages: ran.messages,
 			toolTrace: ran.toolTrace,
 			route,
@@ -387,10 +453,17 @@ export async function runResearchAgent(options: {
 		};
 	}
 
+	const checked = await maybeFactCheckAnswer({
+		question: options.question,
+		answer: merged.answer,
+		factCheckModel: route.factCheckModel,
+		toolTrace: allToolTrace,
+	});
+
 	return {
 		ok: true,
 		model: mergeModel,
-		answer: merged.answer,
+		answer: checked,
 		messages: lastMessages,
 		toolTrace: allToolTrace,
 		route,

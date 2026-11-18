@@ -11,8 +11,12 @@ import {
 	openLiveFinraGraphWindow,
 } from '@/lib/research/captureCanvasSnapshotClient';
 import { getFinraAppOrigin } from '@/lib/research/finraApp';
-import { filterFreeLocalOllamaModels, PREFERRED_CHAT_MODELS } from '@/lib/research/ollama';
-import { RESEARCH_AUTO_MODEL } from '@/lib/research/orchestrator';
+import {
+	DEFAULT_RESEARCH_MODEL,
+	filterFreeLocalOllamaModels,
+	PREFERRED_CHAT_MODELS,
+} from '@/lib/research/ollama';
+import { isResearchChatModel, RESEARCH_AUTO_MODEL } from '@/lib/research/orchestrator';
 
 type ChatTurn = {
 	role: 'user' | 'assistant';
@@ -178,7 +182,7 @@ function writeFlag(key: string, projectId: string | null, value: boolean) {
 export default function ResearchClient() {
 	const [status, setStatus] = useState<StatusPayload | null>(null);
 	const [autoMode, setAutoMode] = useState(true);
-	const [model, setModel] = useState('qwen2.5:7b');
+	const [model, setModel] = useState(DEFAULT_RESEARCH_MODEL);
 	const [showAdvancedModel, setShowAdvancedModel] = useState(false);
 	const [question, setQuestion] = useState('');
 	const [history, setHistory] = useState<ChatTurn[]>([]);
@@ -239,7 +243,7 @@ export default function ResearchClient() {
 	}, []);
 
 	const preferredModels = useMemo(() => {
-		const models = filterFreeLocalOllamaModels(status?.models || []);
+		const models = filterFreeLocalOllamaModels(status?.models || []).filter(isResearchChatModel);
 		const prefer = [...PREFERRED_CHAT_MODELS];
 		const ordered = [...prefer.filter((m) => models.includes(m)), ...models.filter((m) => !prefer.includes(m))];
 		return ordered.length ? ordered : prefer;
@@ -275,9 +279,9 @@ export default function ResearchClient() {
 				const data = (await res.json()) as StatusPayload;
 				if (cancelled) return;
 				setStatus(data);
-				const free = filterFreeLocalOllamaModels(data.models || []);
+				const free = filterFreeLocalOllamaModels(data.models || []).filter(isResearchChatModel);
 				if (data.defaultModel && free.includes(data.defaultModel)) setModel(data.defaultModel);
-				else if (free.includes('qwen2.5:7b')) setModel('qwen2.5:7b');
+				else if (free.includes(DEFAULT_RESEARCH_MODEL)) setModel(DEFAULT_RESEARCH_MODEL);
 				else if (free[0]) setModel(free[0]);
 			} catch (e: unknown) {
 				if (!cancelled) {

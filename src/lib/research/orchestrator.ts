@@ -5,15 +5,17 @@ import {
 	ollamaChat,
 	ollamaTags,
 	PREFERRED_CHAT_MODELS,
+	PREFERRED_FACTCHECK_MODELS,
 	PREFERRED_REASON_MODELS,
 	PREFERRED_ROUTER_MODELS,
 	PREFERRED_TOOLS_MODELS,
+	resolveInstalledModel,
 } from '@/lib/research/ollama';
 
 export const RESEARCH_AUTO_MODEL = 'auto';
 
 /** Models that are free/local but not useful as the chat+tools worker. */
-const NON_CHAT_MODEL_RE = /(embed|nomic-embed|whisper|tts|clip)/i;
+const NON_CHAT_MODEL_RE = /(embed|nomic-embed|whisper|tts|clip|minicheck)/i;
 
 export type ResearchWorkerRole = 'tools' | 'reason' | 'fetch' | 'critique';
 
@@ -35,6 +37,8 @@ export type ResearchRouteDecision = {
 	pipeline?: 'single' | 'multi';
 	workers?: ResearchWorkerPlan[];
 	mergeModel?: string;
+	/** Optional post-answer fact-check model (e.g. bespoke-minicheck). */
+	factCheckModel?: string | null;
 };
 
 const TOOLISH_RE =
@@ -42,6 +46,9 @@ const TOOLISH_RE =
 const HARD_RE =
 	/\b(compar|analy[sz]e|explain why|synthesize|multi[- ]step|strategy|cross[- ]ref|reconcile|debate|summarize (all|everything)|complex|versus|vs\.?|pros and cons|trade-?offs?)\b/i;
 const URL_RE = /https?:\/\/[^\s]+/i;
+/** Local Bryan / knowledge / chart questions need tools even when phrased analytically. */
+const LOCAL_DATA_RE =
+	/\b(bryan|filing|filings|mortgage|\bmtg\b|warranty deed|\bwd\b|grantor|grantee|chart|okcounty|recorded|instrument|book\/pages|knowledge store|search_knowledge|chart_filings)\b/i;
 
 export function isResearchChatModel(name: string): boolean {
 	const n = String(name || '').trim();
@@ -59,7 +66,8 @@ export function listAutoChatCandidates(installed: string[]): string[] {
 
 function pickAvailable(candidates: string[], preferred: readonly string[], fallback: string): string {
 	for (const p of preferred) {
-		if (candidates.includes(p)) return p;
+		const resolved = resolveInstalledModel(p, candidates);
+		if (resolved) return resolved;
 	}
 	return candidates[0] || fallback;
 }
@@ -72,12 +80,30 @@ function reasonModelOf(candidates: string[]): string {
 	return pickAvailable(candidates, PREFERRED_REASON_MODELS, toolsModelOf(candidates));
 }
 
-function shouldHeuristicMulti(question: string): boolean {
+function factCheckModelOf(installed: string[]): string | null {
+	const flag = String(process.env.RESEARCH_FACTCHECK || '1').trim().toLowerCase();
+	if (flag === '0' || flag === 'false' || flag === 'off' || flag === 'no') return null;
+	const free = filterFreeLocalOllamaModels(installed);
+	for (const p of PREFERRED_FACTCHECK_MODELS) {
+		const resolved = resolveInstalledModel(p, free);
+		if (resolved) return resolved;
+	}
+	return null;
+}
+
+export function shouldHeuristicMulti(question: string): boolean {
 	const q = String(question || '');
 	if (URL_RE.test(q) && TOOLISH_RE.test(q)) return true;
 	if (HARD_RE.test(q) && TOOLISH_RE.test(q)) return true;
 	if (HARD_RE.test(q) && URL_RE.test(q)) return true;
+	// Analytical Bryan/filing/chart questions need tools+reason, not reason-only.
+	if (HARD_RE.test(q) && LOCAL_DATA_RE.test(q)) return true;
 	return false;
+}
+
+function needsTools(question: string): boolean {
+	const q = String(question || '');
+	return TOOLISH_RE.test(q) || URL_RE.test(q) || LOCAL_DATA_RE.test(q);
 }
 
 function buildMultiPlan(
@@ -85,6 +111,7 @@ function buildMultiPlan(
 	candidates: string[],
 	reason: string,
 	routerModel?: string,
+	factCheckModel?: string | null,
 ): ResearchRouteDecision {
 	const toolsModel = toolsModelOf(candidates);
 	const reasonModel = reasonModelOf(candidates);
@@ -96,7 +123,9 @@ function buildMultiPlan(
 			model: toolsModel,
 			focus: hasUrl
 				? 'Use tools (including fetch_url) to gather facts from allowlisted URLs and local helpers.'
-				: 'Use tools to gather exact facts. Do not invent sources or numbers.',
+				: LOCAL_DATA_RE.test(question)
+					? 'Use search_knowledge and/or chart_filings for Bryan County / local store facts. Do not invent filings or dates.'
+					: 'Use tools to gather exact facts. Do not invent sources or numbers.',
 			useTools: true,
 		},
 		{
@@ -117,34 +146,44 @@ function buildMultiPlan(
 		reason,
 		routerModel,
 		candidates,
+		factCheckModel: factCheckModel ?? null,
 	};
 }
 
 /** Fast deterministic route when the LLM planner is skipped or fails. */
-export function heuristicRouteModel(question: string, candidates: string[]): ResearchRouteDecision {
+export function heuristicRouteModel(
+	question: string,
+	candidates: string[],
+	factCheckModel?: string | null,
+): ResearchRouteDecision {
 	const q = String(question || '');
 	const toolsModel = toolsModelOf(candidates);
 	const reasonModel = reasonModelOf(candidates);
+	const fc = factCheckModel ?? null;
 
 	if (shouldHeuristicMulti(q)) {
-		return buildMultiPlan(q, candidates, 'heuristic: adaptive multi — tools/fetch + reason + merge', undefined);
+		return buildMultiPlan(q, candidates, 'heuristic: adaptive multi — tools/fetch + reason + merge', undefined, fc);
 	}
-	if (HARD_RE.test(q)) {
+	if (HARD_RE.test(q) && !LOCAL_DATA_RE.test(q)) {
 		return {
 			mode: 'auto',
 			pipeline: 'single',
 			model: reasonModel,
 			reason: 'heuristic: open-ended / analytical question → stronger single model',
 			candidates,
+			factCheckModel: fc,
 		};
 	}
-	if (TOOLISH_RE.test(q) || URL_RE.test(q)) {
+	if (needsTools(q)) {
 		return {
 			mode: 'auto',
 			pipeline: 'single',
 			model: toolsModel,
-			reason: 'heuristic: tool / fetch style question → fast single tools model',
+			reason: LOCAL_DATA_RE.test(q)
+				? 'heuristic: local filing/chart/knowledge question → tools model'
+				: 'heuristic: tool / fetch style question → fast single tools model',
 			candidates,
+			factCheckModel: fc,
 		};
 	}
 	return {
@@ -153,6 +192,7 @@ export function heuristicRouteModel(question: string, candidates: string[]): Res
 		model: toolsModel,
 		reason: 'heuristic: default → fast single tools model',
 		candidates,
+		factCheckModel: fc,
 	};
 }
 
@@ -180,15 +220,19 @@ function sanitizePlannerPlan(
 	question: string,
 	candidates: string[],
 	routerModel: string,
+	factCheckModel: string | null,
 ): ResearchRouteDecision | null {
 	const mode = String(parsed.mode || '').trim().toLowerCase();
 	const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : 'planner decision';
 
 	if (mode === 'single') {
-		const model =
-			typeof parsed.model === 'string' && candidates.includes(parsed.model.trim())
-				? parsed.model.trim()
-				: heuristicRouteModel(question, candidates).model;
+		let model =
+			resolveInstalledModel(typeof parsed.model === 'string' ? parsed.model : null, candidates) ||
+			heuristicRouteModel(question, candidates, factCheckModel).model;
+		// Planner sometimes picks a reason-only model for toolish / local-data questions.
+		if (needsTools(question) && model === reasonModelOf(candidates) && toolsModelOf(candidates) !== model) {
+			model = toolsModelOf(candidates);
+		}
 		return {
 			mode: 'auto',
 			pipeline: 'single',
@@ -196,6 +240,7 @@ function sanitizePlannerPlan(
 			reason,
 			routerModel,
 			candidates,
+			factCheckModel,
 		};
 	}
 
@@ -211,7 +256,10 @@ function sanitizePlannerPlan(
 				role === 'reason' || role === 'critique'
 					? [String(rec.model || ''), ...PREFERRED_REASON_MODELS]
 					: [String(rec.model || ''), ...PREFERRED_TOOLS_MODELS];
-			const model = pickAvailable(candidates, preferred.filter(Boolean), toolsModelOf(candidates));
+			const resolvedPrefs = preferred
+				.map((p) => resolveInstalledModel(p, candidates) || p)
+				.filter(Boolean);
+			const model = pickAvailable(candidates, resolvedPrefs, toolsModelOf(candidates));
 			workers.push({
 				id: `w${workers.length + 1}`,
 				role,
@@ -220,23 +268,39 @@ function sanitizePlannerPlan(
 				useTools: rec.useTools === false ? false : role === 'reason' || role === 'critique' ? false : true,
 			});
 		}
+		// Ensure multi plans are tools+reason, not two tools workers.
+		if (workers.length === 2 && workers[0]!.useTools && workers[1]!.useTools) {
+			workers[1] = {
+				id: 'w2',
+				role: 'reason',
+				model: reasonModelOf(candidates),
+				focus: 'Analyze/compare the tools worker findings. Do not invent citations.',
+				useTools: false,
+			};
+		}
 		if (workers.length < 2) {
 			if (shouldHeuristicMulti(question)) {
-				return buildMultiPlan(question, candidates, reason || 'planner multi (completed by heuristic)', routerModel);
+				return buildMultiPlan(
+					question,
+					candidates,
+					reason || 'planner multi (completed by heuristic)',
+					routerModel,
+					factCheckModel,
+				);
 			}
 			return {
 				mode: 'auto',
 				pipeline: 'single',
-				model: reasonModelOf(candidates),
+				model: needsTools(question) ? toolsModelOf(candidates) : reasonModelOf(candidates),
 				reason: `${reason} (planner multi incomplete → single)`,
 				routerModel,
 				candidates,
+				factCheckModel,
 			};
 		}
 		const mergeModel =
-			typeof parsed.mergeModel === 'string' && candidates.includes(parsed.mergeModel.trim())
-				? parsed.mergeModel.trim()
-				: reasonModelOf(candidates);
+			resolveInstalledModel(typeof parsed.mergeModel === 'string' ? parsed.mergeModel : null, candidates) ||
+			reasonModelOf(candidates);
 		return {
 			mode: 'auto',
 			pipeline: 'multi',
@@ -246,6 +310,7 @@ function sanitizePlannerPlan(
 			reason,
 			routerModel,
 			candidates,
+			factCheckModel,
 		};
 	}
 
@@ -263,12 +328,16 @@ export async function routeResearchModel(options: {
 }): Promise<ResearchRouteDecision> {
 	const forced = String(options.forceModel || '').trim();
 	if (forced && forced !== RESEARCH_AUTO_MODEL) {
+		const installed = options.availableModels?.length
+			? options.availableModels
+			: (await ollamaTags(getOllamaBaseUrl())).models;
 		return {
 			mode: 'manual',
 			pipeline: 'single',
-			model: forced,
+			model: resolveInstalledModel(forced, installed) || forced,
 			reason: 'manual model selection',
-			candidates: [forced],
+			candidates: [resolveInstalledModel(forced, installed) || forced],
+			factCheckModel: factCheckModelOf(installed),
 		};
 	}
 
@@ -278,7 +347,8 @@ export async function routeResearchModel(options: {
 		installed = tags.models;
 	}
 	const candidates = listAutoChatCandidates(installed || []);
-	const fallback = heuristicRouteModel(options.question, candidates);
+	const factCheckModel = factCheckModelOf(installed || []);
+	const fallback = heuristicRouteModel(options.question, candidates, factCheckModel);
 	const routerModel = pickAvailable(candidates, PREFERRED_ROUTER_MODELS, DEFAULT_RESEARCH_MODEL);
 
 	try {
@@ -290,10 +360,12 @@ export async function routeResearchModel(options: {
 					content: `You are a planner for a local multi-model research agent. Choose ONE path.
 
 Prefer mode "single" for simple lookups, fetches, or short answers.
-Use mode "pipeline" only when the question needs both tool facts AND analysis/cross-check (e.g. compare sources, reconcile a pasted URL with claims, multi-part synthesis). Max 2 workers.
+Use mode "pipeline" only when the question needs both tool facts AND analysis/cross-check (e.g. compare sources, reconcile a pasted URL with claims, multi-part synthesis, compare Bryan filing trends). Max 2 workers.
 
-Worker roles: tools|fetch (useTools true, prefer qwen2.5:7b or qwen3.5:9b/ornith/granite4.2), reason|critique (useTools false, prefer nemotron-3.5-lightning or qwen2.5:14b).
-mergeModel should be a strong free model (prefer nemotron-3.5-lightning or qwen2.5:14b).
+For Bryan County filings, charts, mortgages, grantor/grantee, or knowledge-store questions: workers[0] must be tools/fetch with useTools true (prefer ornith:latest or granite4.2:8b/qwen3.5:9b). Never answer filing facts without tools.
+
+Worker roles: tools|fetch (useTools true, prefer ornith:latest or qwen3.5:9b/granite4.2/qwen2.5:7b), reason|critique (useTools false, prefer nemotron-3.5-lightning:latest or qwen2.5:14b).
+mergeModel should be a strong free model (prefer nemotron-3.5-lightning:latest or qwen2.5:14b). Use exact candidate names from the list.
 
 Reply JSON only, one of:
 {"mode":"single","model":"<name>","reason":"<short>"}
@@ -305,11 +377,15 @@ Reply JSON only, one of:
 				},
 			],
 		});
-		const parsed = parseJsonObject(String(message.content || ''));
+		const parsed = parseJsonObject(String(message.content || message.thinking || ''));
 		if (parsed) {
-			const plan = sanitizePlannerPlan(parsed, options.question, candidates, routerModel);
+			const plan = sanitizePlannerPlan(parsed, options.question, candidates, routerModel, factCheckModel);
 			if (plan) {
-				if (plan.pipeline === 'multi' && !shouldHeuristicMulti(options.question) && !HARD_RE.test(options.question)) {
+				if (
+					plan.pipeline === 'multi' &&
+					!shouldHeuristicMulti(options.question) &&
+					!HARD_RE.test(options.question)
+				) {
 					return {
 						mode: 'auto',
 						pipeline: 'single',
@@ -317,6 +393,7 @@ Reply JSON only, one of:
 						reason: `${plan.reason} (adaptive: collapsed multi → single tools)`,
 						routerModel,
 						candidates,
+						factCheckModel,
 					};
 				}
 				return plan;

@@ -17,7 +17,7 @@ Redis/firm-roster specialist tools stay in the FINRA app’s `/local-ai` page.
 
 1. **Node.js ≥ 22.13** (uses built-in `node:sqlite` for the knowledge store)
 2. Install deps: `pnpm install`
-3. Run [Ollama](https://ollama.com) locally and pull a chat model, e.g. `ollama pull qwen2.5:7b`
+3. Run [Ollama](https://ollama.com) locally and pull a chat model, e.g. `ollama pull ornith:latest`
 4. Optional for knowledge/RAG: `ollama pull nomic-embed-text`
 5. Start the app: `pnpm dev` (http://localhost:3333)
 6. Ask questions on the home page
@@ -54,6 +54,7 @@ See `.env.example`.
 | `RESEARCH_OLLAMA_NUM_CTX` | Chat/tools `num_ctx` (default `32768`) |
 | `RESEARCH_TOOL_RESULT_MAX_CHARS` | Max JSON chars per tool result fed back to the model (default `8000`) |
 | `RESEARCH_SEARCH_SNIPPET_CHARS` | Per-hit snippet length for `search_knowledge` (default `400`) |
+| `RESEARCH_FACTCHECK` | Post-answer check via `bespoke-minicheck` when installed (default on; set `0` to disable) |
 | `ALLOW_LOCAL_AI` | Set `1` to allow non-localhost access |
 | `RESEARCH_FETCH_HOSTS` | Extra comma-separated hosts for `fetch_url` |
 | `RESEARCH_OPEN_FETCH` | Set `1` to allow any public https host (private IPs still blocked) |
