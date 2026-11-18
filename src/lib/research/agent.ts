@@ -1,4 +1,5 @@
 import {
+	assistantMessageText,
 	DEFAULT_RESEARCH_MODEL,
 	normalizeToolCallArguments,
 	ollamaChat,
@@ -14,6 +15,21 @@ import {
 	type ResearchRouteDecision,
 	type ResearchWorkerPlan,
 } from '@/lib/research/orchestrator';
+
+/** Cap tool JSON fed back into the model so 4k–32k contexts survive large knowledge/fetch dumps. */
+const TOOL_RESULT_MAX_CHARS = (() => {
+	const n = Number(process.env.RESEARCH_TOOL_RESULT_MAX_CHARS || 8000);
+	if (!Number.isFinite(n)) return 8000;
+	return Math.max(1500, Math.min(48_000, Math.floor(n)));
+})();
+
+function stringifyToolResultForModel(result: unknown): string {
+	const full = JSON.stringify(result);
+	if (full.length <= TOOL_RESULT_MAX_CHARS) return full;
+	const marker = `\n…[truncated ${full.length - TOOL_RESULT_MAX_CHARS} chars for model context; ask a narrower query or URL]`;
+	const budget = Math.max(200, TOOL_RESULT_MAX_CHARS - marker.length);
+	return `${full.slice(0, budget)}${marker}`;
+}
 
 function buildSystemPrompt(
 	snapshot?: CanvasSnapshot | null,
@@ -128,7 +144,7 @@ async function runToolAgentLoop(options: {
 			if (!toolCalls.length || !options.useTools) {
 				return {
 					ok: true,
-					answer: String(message.content || '').trim() || '(empty model response)',
+					answer: assistantMessageText(message) || '(empty model response)',
 					messages,
 					toolTrace,
 				};
@@ -142,7 +158,7 @@ async function runToolAgentLoop(options: {
 				messages.push({
 					role: 'tool',
 					tool_name: toolName,
-					content: JSON.stringify(ran.result),
+					content: stringifyToolResultForModel(ran.result),
 				});
 			}
 		}
@@ -192,7 +208,7 @@ Rules:
 				},
 			],
 		});
-		return { ok: true, answer: String(message.content || '').trim() || '(empty merge response)' };
+		return { ok: true, answer: assistantMessageText(message) || '(empty merge response)' };
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { ok: false, answer: '', error: message };

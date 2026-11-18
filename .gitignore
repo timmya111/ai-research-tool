@@ -46,3 +46,10 @@ next-env.d.ts
 
 # Bryan monitor Python venv
 .venv-monitors/
+data/.local_user_id
+scripts/bryan-2026-backfill.mjs
+.gitignore
+scripts/bryan-backfill-2016-current.mjs
+scripts/bryan-2026-backfill.mjs
+scripts/bryan-2026-backfill.mjs
+scripts/bryan-2026-backfill.mjs

@@ -24,7 +24,10 @@ const END =
 const MAX_PAGES = Math.max(0, Number(process.env.BRYAN_BACKFILL_MAX_PAGES) || 0); // 0 = all
 const BATCH_SIZE = Math.max(1, Math.min(50, Number(process.env.BRYAN_BACKFILL_BATCH) || 15));
 const STATE_DIR = process.env.BRYAN_MONITOR_STATE_DIR || path.join(process.cwd(), '.data', 'monitors');
-const STATE_PATH = path.join(STATE_DIR, 'bryan-2026-backfill.json');
+// Per-range checkpoint so a 2016 run cannot clobber the finished 2026 state.
+const STATE_PATH =
+	process.env.BRYAN_BACKFILL_STATE ||
+	path.join(STATE_DIR, `bryan-backfill-${START}_${END}.json`);
 const PAGE_TIMEOUT_MS = Math.max(30_000, Number(process.env.BRYAN_BACKFILL_TIMEOUT_MS) || 180_000);
 const PAGE_DELAY_MS = Math.max(0, Number(process.env.BRYAN_BACKFILL_DELAY_MS) || 1500);
 const EMPTY_BACKOFF_MS = Math.max(5_000, Number(process.env.BRYAN_BACKFILL_EMPTY_BACKOFF_MS) || 45_000);
@@ -229,7 +232,7 @@ async function main() {
 
 	const processed = new Set(state.processedIds.map(String));
 	log(
-		`starting 2026 backfill range=${START}→${END} nextPage=${state.nextPage} saved=${state.saved} skipped=${state.skipped}`,
+		`starting backfill range=${START}→${END} state=${STATE_PATH} nextPage=${state.nextPage} saved=${state.saved} skipped=${state.skipped}`,
 	);
 
 	let page = state.nextPage || 1;

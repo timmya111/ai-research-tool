@@ -4,6 +4,10 @@ import {
 	getOllamaBaseUrl,
 	ollamaChat,
 	ollamaTags,
+	PREFERRED_CHAT_MODELS,
+	PREFERRED_REASON_MODELS,
+	PREFERRED_ROUTER_MODELS,
+	PREFERRED_TOOLS_MODELS,
 } from '@/lib/research/ollama';
 
 export const RESEARCH_AUTO_MODEL = 'auto';
@@ -48,12 +52,12 @@ export function isResearchChatModel(name: string): boolean {
 
 export function listAutoChatCandidates(installed: string[]): string[] {
 	const free = filterFreeLocalOllamaModels(installed).filter(isResearchChatModel);
-	const prefer = ['qwen2.5:7b', 'qwen2.5:14b', 'qwen3.6:latest', 'llama3.2:latest', 'gemma4:26b'];
+	const prefer = [...PREFERRED_CHAT_MODELS];
 	const ordered = [...prefer.filter((m) => free.includes(m)), ...free.filter((m) => !prefer.includes(m))];
 	return ordered;
 }
 
-function pickAvailable(candidates: string[], preferred: string[], fallback: string): string {
+function pickAvailable(candidates: string[], preferred: readonly string[], fallback: string): string {
 	for (const p of preferred) {
 		if (candidates.includes(p)) return p;
 	}
@@ -61,15 +65,11 @@ function pickAvailable(candidates: string[], preferred: string[], fallback: stri
 }
 
 function toolsModelOf(candidates: string[]): string {
-	return pickAvailable(candidates, ['qwen2.5:7b', 'qwen3.6:latest', 'llama3.2:latest'], DEFAULT_RESEARCH_MODEL);
+	return pickAvailable(candidates, PREFERRED_TOOLS_MODELS, DEFAULT_RESEARCH_MODEL);
 }
 
 function reasonModelOf(candidates: string[]): string {
-	return pickAvailable(
-		candidates,
-		['qwen2.5:14b', 'gemma4:26b', 'qwen3.6:latest', 'qwen2.5:7b'],
-		toolsModelOf(candidates),
-	);
+	return pickAvailable(candidates, PREFERRED_REASON_MODELS, toolsModelOf(candidates));
 }
 
 function shouldHeuristicMulti(question: string): boolean {
@@ -209,8 +209,8 @@ function sanitizePlannerPlan(
 			const role = normalizeWorkerRole(rec.role);
 			const preferred =
 				role === 'reason' || role === 'critique'
-					? [String(rec.model || ''), ...['qwen2.5:14b', 'gemma4:26b', 'qwen3.6:latest', 'qwen2.5:7b']]
-					: [String(rec.model || ''), ...['qwen2.5:7b', 'qwen3.6:latest', 'llama3.2:latest']];
+					? [String(rec.model || ''), ...PREFERRED_REASON_MODELS]
+					: [String(rec.model || ''), ...PREFERRED_TOOLS_MODELS];
 			const model = pickAvailable(candidates, preferred.filter(Boolean), toolsModelOf(candidates));
 			workers.push({
 				id: `w${workers.length + 1}`,
@@ -279,11 +279,7 @@ export async function routeResearchModel(options: {
 	}
 	const candidates = listAutoChatCandidates(installed || []);
 	const fallback = heuristicRouteModel(options.question, candidates);
-	const routerModel = pickAvailable(
-		candidates,
-		['qwen2.5:7b', 'llama3.2:latest', 'qwen3.6:latest'],
-		DEFAULT_RESEARCH_MODEL,
-	);
+	const routerModel = pickAvailable(candidates, PREFERRED_ROUTER_MODELS, DEFAULT_RESEARCH_MODEL);
 
 	try {
 		const { message } = await ollamaChat({
@@ -296,8 +292,8 @@ export async function routeResearchModel(options: {
 Prefer mode "single" for simple lookups, fetches, or short answers.
 Use mode "pipeline" only when the question needs both tool facts AND analysis/cross-check (e.g. compare sources, reconcile a pasted URL with claims, multi-part synthesis). Max 2 workers.
 
-Worker roles: tools|fetch (useTools true, prefer qwen2.5:7b), reason|critique (useTools false, prefer qwen2.5:14b).
-mergeModel should be a strong free model (prefer qwen2.5:14b).
+Worker roles: tools|fetch (useTools true, prefer qwen2.5:7b or qwen3.5:9b/ornith/granite4.2), reason|critique (useTools false, prefer nemotron-3.5-lightning or qwen2.5:14b).
+mergeModel should be a strong free model (prefer nemotron-3.5-lightning or qwen2.5:14b).
 
 Reply JSON only, one of:
 {"mode":"single","model":"<name>","reason":"<short>"}

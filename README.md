@@ -51,6 +51,9 @@ See `.env.example`.
 | Variable | Purpose |
 | --- | --- |
 | `OLLAMA_BASE_URL` | Ollama base URL (default `http://127.0.0.1:11434`) |
+| `RESEARCH_OLLAMA_NUM_CTX` | Chat/tools `num_ctx` (default `32768`) |
+| `RESEARCH_TOOL_RESULT_MAX_CHARS` | Max JSON chars per tool result fed back to the model (default `8000`) |
+| `RESEARCH_SEARCH_SNIPPET_CHARS` | Per-hit snippet length for `search_knowledge` (default `400`) |
 | `ALLOW_LOCAL_AI` | Set `1` to allow non-localhost access |
 | `RESEARCH_FETCH_HOSTS` | Extra comma-separated hosts for `fetch_url` |
 | `RESEARCH_OPEN_FETCH` | Set `1` to allow any public https host (private IPs still blocked) |

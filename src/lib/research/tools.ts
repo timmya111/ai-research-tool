@@ -138,7 +138,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					url: { type: 'string', description: 'Absolute http(s) URL to fetch' },
 					maxChars: {
 						type: 'number',
-						description: 'Max characters of body to return (default 24000, max 48000)',
+						description: 'Max characters of body to return (default 8000, max 48000)',
 					},
 				},
 				required: ['url'],
@@ -268,7 +268,8 @@ async function fetchUrlForResearch(
 	rawUrl: unknown,
 	maxCharsRaw: unknown,
 ): Promise<{ ok: boolean; result: Record<string, unknown> }> {
-	const maxChars = Math.max(1000, Math.min(48_000, Number(maxCharsRaw) || 24_000));
+	// Default 8k keeps tool rounds inside typical laptop GPU contexts (was 24k).
+	const maxChars = Math.max(1000, Math.min(48_000, Number(maxCharsRaw) || 8_000));
 	let parsed: URL;
 	try {
 		parsed = new URL(String(rawUrl || '').trim());
@@ -421,26 +422,62 @@ async function runSearchKnowledge(
 			limit: args.limit as number | undefined,
 			sourceType,
 		});
+		const snippetMax = (() => {
+			const n = Number(process.env.RESEARCH_SEARCH_SNIPPET_CHARS || 400);
+			if (!Number.isFinite(n)) return 400;
+			return Math.max(120, Math.min(800, Math.floor(n)));
+		})();
+		const payloadMax = (() => {
+			const n = Number(process.env.RESEARCH_TOOL_RESULT_MAX_CHARS || 8000);
+			if (!Number.isFinite(n)) return 8000;
+			return Math.max(1500, Math.min(48_000, Math.floor(n)));
+		})();
+
+		const compactSnippet = (text: string) => {
+			const one = String(text || '').trim();
+			if (one.length <= snippetMax) return one;
+			return `${one.slice(0, snippetMax - 1)}…`;
+		};
+
+		let mapped = hits.map((h) => ({
+			title: h.title,
+			sourceType: h.sourceType,
+			url: h.url,
+			snippet: compactSnippet(h.snippet),
+			score: Number(h.score?.toFixed?.(4) ?? h.score),
+			documentId: h.documentId,
+			chunkId: h.chunkId,
+		}));
+
+		let truncatedHits = false;
+		while (mapped.length > 1 && JSON.stringify(mapped).length > payloadMax - 400) {
+			mapped = mapped.slice(0, -1);
+			truncatedHits = true;
+		}
+		if (mapped.length === 1 && JSON.stringify(mapped).length > payloadMax - 400) {
+			mapped = [
+				{
+					...mapped[0]!,
+					snippet: compactSnippet(mapped[0]!.snippet.slice(0, Math.max(120, snippetMax / 2))),
+				},
+			];
+			truncatedHits = true;
+		}
+
 		return {
 			ok: true,
 			result: {
 				ok: true,
 				query,
 				projectId,
-				returned: hits.length,
-				hits: hits.map((h) => ({
-					title: h.title,
-					sourceType: h.sourceType,
-					url: h.url,
-					snippet: h.snippet,
-					score: h.score,
-					documentId: h.documentId,
-					chunkId: h.chunkId,
-				})),
+				returned: mapped.length,
+				hits: mapped,
 				hint:
 					hits.length === 0
 						? 'No local knowledge hits. Save notes or enable persist flags (later PRs), or ask without relying on prior memory.'
-						: undefined,
+						: truncatedHits
+							? `Truncated to ${mapped.length} of ${hits.length} hits for model context; narrow the query for more detail.`
+							: undefined,
 			},
 		};
 	} catch (error: unknown) {

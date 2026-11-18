@@ -11,7 +11,7 @@ import {
 	openLiveFinraGraphWindow,
 } from '@/lib/research/captureCanvasSnapshotClient';
 import { getFinraAppOrigin } from '@/lib/research/finraApp';
-import { filterFreeLocalOllamaModels } from '@/lib/research/ollama';
+import { filterFreeLocalOllamaModels, PREFERRED_CHAT_MODELS } from '@/lib/research/ollama';
 import { RESEARCH_AUTO_MODEL } from '@/lib/research/orchestrator';
 
 type ChatTurn = {
@@ -240,7 +240,7 @@ export default function ResearchClient() {
 
 	const preferredModels = useMemo(() => {
 		const models = filterFreeLocalOllamaModels(status?.models || []);
-		const prefer = ['qwen2.5:7b', 'qwen2.5:14b', 'qwen3.6:latest', 'llama3.2:latest'];
+		const prefer = [...PREFERRED_CHAT_MODELS];
 		const ordered = [...prefer.filter((m) => models.includes(m)), ...models.filter((m) => !prefer.includes(m))];
 		return ordered.length ? ordered : prefer;
 	}, [status]);
