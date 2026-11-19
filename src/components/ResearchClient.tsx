@@ -52,52 +52,68 @@ type StatusPayload = {
 
 const BRYAN_PROJECT_NAME = 'Bryan County';
 
-/** Default chips focused on OKCountyRecords Bryan filings stored in local knowledge. */
-const BRYAN_EXAMPLES = [
+type SuggestedExample = {
+	label: string;
+	question: string;
+	/** Capture FINRA canvas + treat as node-graph question when clicked. */
+	useCanvas?: boolean;
+};
+
+/**
+ * Suggested research chips: Bryan OKCR knowledge (2016→current), charts, and
+ * FINRA/SEC canvas ↔ deed / unclaimed-name pattern crosswalks.
+ */
+const BRYAN_EXAMPLES: SuggestedExample[] = [
+	{
+		label: 'CRD ↔ deed / unclaimed names',
+		useCanvas: true,
+		question:
+			'Cross-check FINRA/SEC CRD names against Bryan County deed parties and unclaimed-property-style name patterns. Steps: (1) If a canvas snapshot is attached, call inspect_canvas_graph (list/search people and firms) and collect Name :: CRD# lines. (2) For each distinctive person or firm name (and obvious variants: last-first, initials, LLC/Inc suffixes), call search_knowledge in the Bryan County store for grantor/grantee hits on WD, QCD, MTG, REL MTG, and similar deed instruments. (3) Also search for the same names with unclaimed / treasurer / escheat / abandoned property wording, and note any Bryan filings whose party strings look like nominee, trustee, or shell-style patterns that could also appear on Oklahoma unclaimed-property ads. (4) Report matches and near-matches in a table: CRD name, CRD#, Bryan instrument + type + recorded date + grantor/grantee, and whether the string looks like an unclaimed-property / nominee pattern. Say clearly when canvas is empty or knowledge has no hit. Do not invent CRDs or filings.',
+	},
 	{
 		label: 'Latest filings (full fields)',
 		question:
-			'Using only the Bryan County knowledge store, list the 8 most recent Bryan County filings. For each filing, show the full details: instrument, type, county, recorded date, instrument date, grantor, grantee, book, pages, legal description, filing fees, mortgage amount, consideration, image count, record id, and detail URL.',
+			'Using the Bryan County knowledge store (filings roughly 2016 through current), list the 8 most recent Bryan County filings by recorded date. For each, show full details: instrument, type, county, recorded date, instrument date, grantor, grantee, book, pages, legal description, filing fees, mortgage amount, consideration, image count, record id, and detail URL.',
+	},
+	{
+		label: 'MTG vs WD volume (chart)',
+		question:
+			'Compare Bryan County mortgage (MTG) vs warranty deed (WD) filing volume over time. Call chart_filings twice (or with filters) for kind=volume period=month docType=MTG and docType=WD, embed the chart image(s), and explain months where the two series diverge.',
 	},
 	{
 		label: 'Mortgages to Vision Bank',
 		question:
-			'Using only the Bryan County knowledge store, find MTG (mortgage) filings where the grantee is VISION BANK. For each match, show the full filing details: instrument, type, recorded date, grantor, grantee, book, pages, legal description, images, and detail URL.',
+			'Using the Bryan County knowledge store, find MTG (mortgage) filings where the grantee is VISION BANK. For each match, show full filing details: instrument, type, recorded date, grantor, grantee, book, pages, legal description, images, and detail URL.',
 	},
 	{
-		label: 'Warranty deeds (WD)',
+		label: 'Recent warranty deeds (WD)',
 		question:
-			'Using only the Bryan County knowledge store, find recent WD (warranty deed) filings. For each, display the full details: instrument, type, recorded date, grantor, grantee, book, pages, legal description, consideration, images, and detail URL.',
-	},
-	{
-		label: 'Lookup instrument I-2026-790823',
-		question:
-			'Using only the Bryan County knowledge store, look up instrument I-2026-790823 and display every stored field in full: instrument, type, county, recorded date, instrument date, grantor, grantee, book, pages, legal description, filing fees, mortgage amount, consideration, images, record id, scraped time, and detail URL.',
+			'Using the Bryan County knowledge store, find recent WD (warranty deed) filings. For each, show: instrument, type, recorded date, grantor, grantee, book, pages, legal description, consideration, images, and detail URL.',
 	},
 	{
 		label: 'Search a grantor name',
 		question:
-			'Using only the Bryan County knowledge store, search filings involving grantor WESTSIDE BAPTIST CHURCH (or similar). For each hit, show the complete filing details: instrument, type, recorded, grantor, grantee, book, pages, legal, images, and detail URL.',
+			'Using the Bryan County knowledge store, search filings involving grantor WESTSIDE BAPTIST CHURCH (or close variants). For each hit, show complete filing details: instrument, type, recorded, grantor, grantee, book, pages, legal, images, and detail URL.',
 	},
 	{
-		label: 'How many Bryan docs?',
+		label: 'Nominee / shell-looking parties',
 		question:
-			'Using only the Bryan County knowledge store, summarize what kinds of Bryan County document types are present (MTG, WD, REL MTG, UCC, etc.) and give 3 example filings with full details each (instrument, type, recorded, grantor, grantee, book, pages, legal, detail URL).',
+			'Using the Bryan County knowledge store, search for grantor/grantee strings that look like nominee, trustee, LLC mill, or shell patterns (e.g. numbered LLCs, “as trustee”, generic holding names) on WD, QCD, and MTG filings. List the strongest examples with instrument, type, recorded date, grantor, grantee, and detail URL, and note any names that repeat across many instruments.',
+	},
+	{
+		label: 'Doc-type mix + examples',
+		question:
+			'Using the Bryan County knowledge store, summarize which document types are present (MTG, WD, REL MTG, UCC, QCD, etc.) now that 2016→current is backfilled. Call chart_filings with kind=by_type, embed the image, and give 3 example filings with full details each.',
 	},
 	{
 		label: 'Chart: filings by month',
 		question:
-			'Create a chart of Bryan County filing volume by month for all stored recorded dates. Call chart_filings with kind=volume and period=month, embed the image, and briefly summarize the busiest months.',
+			'Create a chart of Bryan County filing volume by month across the full stored history. Call chart_filings with kind=volume and period=month, embed the image, and briefly summarize the busiest months.',
 	},
 	{
 		label: 'Chart: filings by type',
 		question:
-			'Create a chart breaking down Bryan County filings by document type (MTG, WD, REL MTG, etc.). Call chart_filings with kind=by_type, embed the image, and list the top types with counts.',
-	},
-	{
-		label: 'Chart: MTG by month',
-		question:
-			'Create a monthly chart of Bryan County MTG (mortgage) filings only. Call chart_filings with kind=volume, period=month, docType=MTG, embed the image, and note any volume spikes.',
+			'Create a chart breaking down Bryan County filings by document type. Call chart_filings with kind=by_type, embed the image, and list the top types with counts.',
 	},
 ];
 
@@ -320,7 +336,7 @@ export default function ResearchClient() {
 
 	const ask = useCallback(async (
 		overrideQuestion?: string,
-		opts?: { projectId?: string | null; ragAuto?: boolean },
+		opts?: { projectId?: string | null; ragAuto?: boolean; aboutNodeGraph?: boolean },
 	) => {
 		const q = String(overrideQuestion ?? question).trim();
 		if (!q || busy) return;
@@ -332,8 +348,10 @@ export default function ResearchClient() {
 		setHistory((prev) => [...prev, { role: 'user', content: q }]);
 		setQuestion('');
 		try {
-			const snap: CanvasSnapshot | null = aboutNodeGraph ? await refreshCanvasInfo() : null;
-			if (!aboutNodeGraph) void refreshCanvasInfo();
+			const useGraph =
+				opts?.aboutNodeGraph !== undefined ? opts.aboutNodeGraph : aboutNodeGraph;
+			const snap: CanvasSnapshot | null = useGraph ? await refreshCanvasInfo() : null;
+			if (!useGraph) void refreshCanvasInfo();
 			const requestedModel = autoMode ? RESEARCH_AUTO_MODEL : model;
 			const activeProjectId = opts?.projectId !== undefined ? opts.projectId : projectId;
 			const activeRag = opts?.ragAuto !== undefined ? opts.ragAuto : ragAuto;
@@ -346,7 +364,7 @@ export default function ResearchClient() {
 					model: requestedModel,
 					history: history.slice(-8).map((t) => ({ role: t.role, content: t.content })),
 					availableModels: status?.models || preferredModels,
-					aboutNodeGraph,
+					aboutNodeGraph: useGraph,
 					canvasSnapshot: snap,
 					projectId: activeProjectId || undefined,
 					persistChat: canPersist && persistChat,
@@ -420,7 +438,7 @@ export default function ResearchClient() {
 	]);
 
 	const applyBryanExample = useCallback(
-		async (exampleQuestion: string) => {
+		async (example: SuggestedExample) => {
 			if (busy) return;
 			setError(null);
 			let bryanId: string | null = projectId;
@@ -445,9 +463,14 @@ export default function ResearchClient() {
 			}
 			setRagAuto(true);
 			if (bryanId) writeFlag(LS_RAG, bryanId, true);
-			await ask(exampleQuestion, { projectId: bryanId, ragAuto: true });
+			if (example.useCanvas) setAboutNodeGraph(true);
+			await ask(example.question, {
+				projectId: bryanId,
+				ragAuto: true,
+				aboutNodeGraph: Boolean(example.useCanvas) || aboutNodeGraph,
+			});
 		},
-		[ask, busy, projectId],
+		[aboutNodeGraph, ask, busy, projectId],
 	);
 
 	const savePendingFetches = useCallback(async () => {
@@ -608,7 +631,7 @@ export default function ResearchClient() {
 			>
 				{history.length === 0 ? (
 					<p className="m-0 opacity-60">
-						No messages yet. Pick a Bryan County suggested question above (with Auto-retrieve on) to see
+						No messages yet. Pick a suggested question above (with Auto-retrieve on) to see
 						full filing details from the local knowledge store.
 					</p>
 				) : (
@@ -677,9 +700,10 @@ export default function ResearchClient() {
 				</div>
 				<h1 className="my-1.5 text-[28px] font-semibold tracking-tight">AI Research Tool</h1>
 				<p className="m-0 leading-snug opacity-80">
-					Focus for now: query local <strong>Bryan County</strong> OKCountyRecords filings (grantor, grantee,
-					legal, book/pages, and detail URLs). Select that project, turn on <strong>Auto-retrieve</strong>,
-					then use the suggested questions below. FINRA/SEC canvas integration comes next.
+					Query local <strong>Bryan County</strong> OKCountyRecords filings (2016→current): grantor, grantee,
+					legal, book/pages, charts, and detail URLs. Connect the <strong>FINRA/SEC canvas</strong> and use{' '}
+					<strong>CRD ↔ deed / unclaimed names</strong> to hunt shared name patterns. Select the Bryan
+					project, turn on <strong>Auto-retrieve</strong>, then pick a suggested question below.
 				</p>
 			</header>
 
@@ -938,10 +962,10 @@ export default function ResearchClient() {
 						<section className="rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3 py-3">
 							<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
 								<p className="m-0 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
-									Bryan County · suggested questions
+									Suggested research questions
 								</p>
 								<p className="m-0 text-[11px] opacity-70">
-									Click to ask immediately · Auto-retrieve on · Bryan County project
+									Click to ask · Auto-retrieve on · Bryan project · CRD chip also captures canvas
 								</p>
 							</div>
 							<div className="flex flex-wrap gap-2">
@@ -951,8 +975,12 @@ export default function ResearchClient() {
 										type="button"
 										disabled={busy}
 										title={example.question}
-										onClick={() => void applyBryanExample(example.question)}
-										className="max-w-full cursor-pointer rounded-full border border-emerald-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-emerald-950 dark:border-emerald-400/30 dark:bg-zinc-950/60 dark:text-emerald-50"
+										onClick={() => void applyBryanExample(example)}
+										className={`max-w-full cursor-pointer rounded-full border px-2.5 py-1.5 text-left text-xs font-medium ${
+											example.useCanvas
+												? 'border-orange-700/40 bg-orange-500/15 text-orange-950 dark:border-orange-400/40 dark:bg-orange-500/10 dark:text-orange-50'
+												: 'border-emerald-700/30 bg-white/80 text-emerald-950 dark:border-emerald-400/30 dark:bg-zinc-950/60 dark:text-emerald-50'
+										}`}
 									>
 										{example.label}
 									</button>
