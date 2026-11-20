@@ -17,7 +17,9 @@
     "bryan:backfill:2026": "node scripts/bryan-2026-backfill.mjs",
     "bryan:backfill:2016-current": "node scripts/bryan-backfill-2016-current.mjs",
     "seismic:download": "node scripts/seismic-usgs-download.mjs",
-    "seismic:ingest": "node scripts/seismic-ingest-knowledge.mjs"
+    "seismic:ingest": "node scripts/seismic-ingest-knowledge.mjs",
+    "tornado:download": "node scripts/tornado-spc-ncei-download.mjs",
+    "tornado:ingest": "node scripts/tornado-ingest-knowledge.mjs"
   },
   "dependencies": {
     "next": "16.4.6",

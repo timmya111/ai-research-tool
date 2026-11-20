@@ -62,6 +62,7 @@ type SuggestedExample = {
 
 const BRYAN_PROJECT_NAME = 'Bryan County';
 const SEISMIC_PROJECT_NAME = 'OK TX Seismic';
+const TORNADO_PROJECT_NAME = 'OK TX Tornadoes';
 
 /**
  * Suggested research chips: Bryan OKCR knowledge (2016→current), charts, and
@@ -155,6 +156,43 @@ const SEISMIC_EXAMPLES: SuggestedExample[] = [
 		projectName: SEISMIC_PROJECT_NAME,
 		question:
 			'Using the OK TX Seismic knowledge store, search for earthquakes near Waynoka, Oklahoma (and close place-name variants). List time, magnitude, place, depth, and USGS URL for each hit.',
+	},
+];
+
+/**
+ * NOAA SPC + NCEI tornado chips (Oklahoma + Texas since 2016).
+ * Prefer the "OK TX Tornadoes" knowledge project with Auto-retrieve on.
+ */
+const TORNADO_EXAMPLES: SuggestedExample[] = [
+	{
+		label: 'OK tornadoes since 2016',
+		projectName: TORNADO_PROJECT_NAME,
+		question:
+			'Using the OK TX Tornadoes knowledge store (NOAA SPC actual tracks + NCEI narratives since 2016), summarize Oklahoma tornado activity: yearly counts if present, EF breakdown, fatalities/injuries, and notable EF2+ or fatal events. Cite digest titles. Do not invent counts.',
+	},
+	{
+		label: 'TX tornadoes since 2016',
+		projectName: TORNADO_PROJECT_NAME,
+		question:
+			'Using the OK TX Tornadoes knowledge store (NOAA SPC + NCEI since 2016), summarize Texas tornado activity: yearly pattern, EF ratings, fatalities, and strongest events with county/date when present. Do not invent counts.',
+	},
+	{
+		label: 'EF2+ / fatal tornadoes',
+		projectName: TORNADO_PROJECT_NAME,
+		question:
+			'From the OK TX Tornadoes knowledge store, list notable Oklahoma and Texas tornadoes that were EF2+ or caused fatalities since 2016. For each: date, state, EF rating, path/length if present, fatalities/injuries, and any NCEI narrative snippets.',
+	},
+	{
+		label: 'Compare OK vs TX tornado years',
+		projectName: TORNADO_PROJECT_NAME,
+		question:
+			'Using OK TX Tornadoes SPC yearly summaries, compare Oklahoma vs Texas tornado counts and fatalities by year since 2016. Make a compact year table from the stored digests only.',
+	},
+	{
+		label: 'Search a county (e.g. Murray OK)',
+		projectName: TORNADO_PROJECT_NAME,
+		question:
+			'Using the OK TX Tornadoes knowledge store, search for tornadoes in Murray County, Oklahoma (and close variants). Prefer NCEI narrative digests for county context and SPC digests for track/EF details.',
 	},
 ];
 
@@ -502,6 +540,11 @@ export default function ResearchClient() {
 				} else if (wantedName === SEISMIC_PROJECT_NAME) {
 					setError(
 						`Knowledge project "${SEISMIC_PROJECT_NAME}" not found. Run pnpm seismic:download && pnpm seismic:ingest.`,
+					);
+					return;
+				} else if (wantedName === TORNADO_PROJECT_NAME) {
+					setError(
+						`Knowledge project "${TORNADO_PROJECT_NAME}" not found. Run pnpm tornado:download && pnpm tornado:ingest.`,
 					);
 					return;
 				}
@@ -1062,6 +1105,30 @@ export default function ResearchClient() {
 											title={example.question}
 											onClick={() => void applyBryanExample(example)}
 											className="max-w-full cursor-pointer rounded-full border border-sky-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-sky-950 dark:border-sky-400/30 dark:bg-zinc-950/60 dark:text-sky-50"
+										>
+											{example.label}
+										</button>
+									))}
+								</div>
+							</div>
+							<div className="mt-3 border-t border-emerald-700/20 pt-3 dark:border-emerald-400/20">
+								<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+									<p className="m-0 text-sm font-semibold text-amber-950 dark:text-amber-100">
+										Oklahoma / Texas tornadoes (SPC + NCEI)
+									</p>
+									<p className="m-0 text-[11px] opacity-70">
+										Select project <strong>OK TX Tornadoes</strong> · Auto-retrieve on · since 2016
+									</p>
+								</div>
+								<div className="flex flex-wrap gap-2">
+									{TORNADO_EXAMPLES.map((example) => (
+										<button
+											key={example.label}
+											type="button"
+											disabled={busy}
+											title={example.question}
+											onClick={() => void applyBryanExample(example)}
+											className="max-w-full cursor-pointer rounded-full border border-amber-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-amber-950 dark:border-amber-400/30 dark:bg-zinc-950/60 dark:text-amber-50"
 										>
 											{example.label}
 										</button>

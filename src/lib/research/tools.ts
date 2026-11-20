@@ -213,6 +213,10 @@ const FETCH_URL_DEFAULT_HOSTS = new Set([
 	'www.okcountyrecords.com',
 	'earthquake.usgs.gov',
 	'www.earthquake.usgs.gov',
+	'spc.noaa.gov',
+	'www.spc.noaa.gov',
+	'ncei.noaa.gov',
+	'www.ncei.noaa.gov',
 ]);
 const FETCH_URL_MAX_BYTES = 512_000;
 const FETCH_URL_TIMEOUT_MS = 15_000;
@@ -423,8 +427,15 @@ function resolveProjectId(args: Record<string, unknown>, context: ResearchToolCo
 		if (byCompact) return byCompact.id;
 	}
 
-	const seismic = projects.find((p) => /seismic/i.test(p.name));
 	const queryHint = String(args.query || args.q || '').toLowerCase();
+	const tornado = projects.find((p) => /tornado/i.test(p.name));
+	if (
+		tornado &&
+		/\b(tornado|tornadoes|tornadic|ef[0-5]|efu|spc|ncei|storm events)\b/i.test(queryHint)
+	) {
+		return tornado.id;
+	}
+	const seismic = projects.find((p) => /seismic/i.test(p.name));
 	if (
 		seismic &&
 		/\b(seismic|earthquake|earthquakes|comcat|usgs|magnitude|quake)\b/i.test(queryHint)

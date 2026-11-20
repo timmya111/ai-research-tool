@@ -48,7 +48,7 @@ const HARD_RE =
 const URL_RE = /https?:\/\/[^\s]+/i;
 /** Local Bryan / knowledge / chart questions need tools even when phrased analytically. */
 const LOCAL_DATA_RE =
-	/\b(bryan|filing|filings|mortgage|\bmtg\b|warranty deed|\bwd\b|grantor|grantee|chart|okcounty|recorded|instrument|book\/pages|knowledge store|search_knowledge|chart_filings|seismic|earthquake|earthquakes|comcat|usgs|oklahoma quake|texas quake|magnitude|\bm[2-9](\.\d)?\b)\b/i;
+	/\b(bryan|filing|filings|mortgage|\bmtg\b|warranty deed|\bwd\b|grantor|grantee|chart|okcounty|recorded|instrument|book\/pages|knowledge store|search_knowledge|chart_filings|seismic|earthquake|earthquakes|comcat|usgs|oklahoma quake|texas quake|magnitude|\bm[2-9](\.\d)?\b|tornado|tornadoes|tornadic|\bef[0-5]\b|\befu\b|spc|ncei|storm events)\b/i;
 
 export function isResearchChatModel(name: string): boolean {
 	const n = String(name || '').trim();

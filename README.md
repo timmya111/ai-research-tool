@@ -94,6 +94,17 @@ pnpm seismic:ingest     # → knowledge project "OK TX Seismic" (app must be on 
 
 In the UI: select **OK TX Seismic**, turn on **Auto-retrieve**, then use the sky-colored seismic suggested questions. Source: [USGS FDSN Event API](https://earthquake.usgs.gov/fdsnws/event/1/) (public domain).
 
+## Oklahoma / Texas tornadoes (SPC + NCEI)
+
+Local mirror of NOAA **SPC actual tornado tracks** (through latest published year) plus **NCEI Storm Events** tornado narratives for Oklahoma and Texas since 2016, ingested into knowledge project **OK TX Tornadoes**.
+
+```bash
+pnpm tornado:download   # → .data/tornadoes/
+pnpm tornado:ingest     # → knowledge project "OK TX Tornadoes" (app must be on :3333)
+```
+
+In the UI: select **OK TX Tornadoes**, turn on **Auto-retrieve**, then use the amber tornado suggested questions. Sources: [SPC WCM data](https://www.spc.noaa.gov/wcm/#data) and [NCEI Storm Events CSV](https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/).
+
 ## Bryan County real-time monitor
 
 Logs new filings from [okcountyrecords.com/real-time/bryan](https://okcountyrecords.com/real-time/bryan) into the knowledge project **Bryan County**, including **detail-page** fields (grantor, grantee, book, pages, fees, legal).
