@@ -10,6 +10,7 @@ export { planChunks, sha256Hex } from '@/lib/research/knowledge/chunk';
 export { closeKnowledgeDbForTests, getKnowledgeDb, withKnowledgeTransaction } from '@/lib/research/knowledge/db';
 export { deleteDocument, getDocument, knowledgeCounts, listDocuments } from '@/lib/research/knowledge/documents';
 export { canExposeKnowledgeStatusDetail, rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
+export { ingestPastedContent, ingestUploadedFile } from '@/lib/research/knowledge/attachments';
 export { ingestChatPair, ingestFetchFromToolTrace, ingestNote } from '@/lib/research/knowledge/ingest';
 export { ensureKnowledgeDir, getKnowledgeDir, getKnowledgeSqlitePath } from '@/lib/research/knowledge/paths';
 export {

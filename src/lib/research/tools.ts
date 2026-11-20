@@ -96,7 +96,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					limit: { type: 'number', description: 'Max hits (default 5, max 12)' },
 					sourceType: {
 						type: 'string',
-						description: 'Optional filter: chat | fetch | note | any (default any)',
+						description: 'Optional filter: chat | fetch | note | file | image | any (default any)',
 					},
 					projectId: {
 						type: 'string',
@@ -445,7 +445,9 @@ async function runSearchKnowledge(
 
 	const sourceTypeRaw = String(args.sourceType || 'any').trim().toLowerCase();
 	const sourceType = (
-		['chat', 'fetch', 'note', 'any'].includes(sourceTypeRaw) ? sourceTypeRaw : 'any'
+		['chat', 'fetch', 'note', 'file', 'image', 'any'].includes(sourceTypeRaw)
+			? sourceTypeRaw
+			: 'any'
 	) as KnowledgeSourceType | 'any';
 
 	try {

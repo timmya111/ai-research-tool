@@ -47,6 +47,8 @@ type Props = {
 function badgeClass(sourceType: string): string {
 	if (sourceType === 'chat') return 'bg-sky-500/15 text-sky-800 dark:text-sky-200';
 	if (sourceType === 'fetch') return 'bg-violet-500/15 text-violet-800 dark:text-violet-200';
+	if (sourceType === 'file') return 'bg-amber-500/15 text-amber-900 dark:text-amber-200';
+	if (sourceType === 'image') return 'bg-fuchsia-500/15 text-fuchsia-900 dark:text-fuchsia-200';
 	return 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-200';
 }
 

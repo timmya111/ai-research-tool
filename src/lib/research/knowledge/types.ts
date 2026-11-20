@@ -1,4 +1,4 @@
-export type KnowledgeSourceType = 'chat' | 'fetch' | 'note';
+export type KnowledgeSourceType = 'chat' | 'fetch' | 'note' | 'file' | 'image';
 
 export type KnowledgeProject = {
 	id: string;

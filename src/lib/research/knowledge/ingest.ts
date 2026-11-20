@@ -120,21 +120,23 @@ export async function ingestNote(options: {
 	url?: string | null;
 	metadata?: Record<string, unknown>;
 	replaceIfSameUrlHash?: boolean;
-}): Promise<{ id: string; projectId: string; skipped?: boolean }> {
+	sourceType?: Extract<KnowledgeSourceType, 'note' | 'file' | 'image'>;
+}): Promise<{ id: string; projectId: string; skipped?: boolean; title: string }> {
 	const text = String(options.text || '');
 	if (!text.trim()) throw new Error('text required');
 	if (text.length > MAX_DOCUMENT_CHARS) {
 		throw new Error(`text exceeds ${MAX_DOCUMENT_CHARS} characters; split or shorten the note`);
 	}
 
+	const sourceType = options.sourceType || 'note';
 	const title =
 		String(options.title || '')
 			.replace(/\s+/g, ' ')
 			.trim()
-			.slice(0, 120) || text.trim().slice(0, 80) || 'note';
+			.slice(0, 120) || text.trim().slice(0, 80) || sourceType;
 
 	const url = options.url != null ? String(options.url).trim() || null : null;
-	const planPreview = planChunks({ sourceText: text, header: `[note] ${title}` });
+	const planPreview = planChunks({ sourceText: text, header: `[${sourceType}] ${title}` });
 	const contentHash = sha256Hex(planPreview.rawText);
 
 	if (url && options.replaceIfSameUrlHash !== false) {
@@ -144,20 +146,20 @@ export async function ingestNote(options: {
 			)
 			.get(options.projectId, url, contentHash) as { id?: string } | undefined;
 		if (existing?.id) {
-			return { id: existing.id, projectId: options.projectId, skipped: true };
+			return { id: existing.id, projectId: options.projectId, skipped: true, title };
 		}
 	}
 
 	const id = await commitDocument({
 		projectId: options.projectId,
-		sourceType: 'note',
+		sourceType,
 		title,
 		url,
 		rawText: text,
-		header: `[note] ${title}`,
-		metadata: { kind: 'note', ...(options.metadata || {}) },
+		header: `[${sourceType}] ${title}`,
+		metadata: { kind: sourceType, ...(options.metadata || {}) },
 	});
-	return { id, projectId: options.projectId };
+	return { id, projectId: options.projectId, title };
 }
 
 export async function ingestChatPair(options: {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ComposerAttach } from '@/components/ComposerAttach';
 import KnowledgePanel from '@/components/KnowledgePanel';
 import ThemeToggle from '@/components/ThemeToggle';
 import type { CanvasSnapshot } from '@/lib/research/canvasSnapshot';
@@ -577,13 +578,24 @@ export default function ResearchClient() {
 					}
 				}}
 			/>
-			<button
-				type="submit"
-				disabled={busy || !question.trim()}
-				className="min-h-[52px] min-w-[88px] rounded-lg border-none bg-[#F97316] px-3.5 py-2.5 font-semibold text-white disabled:cursor-wait"
-			>
-				{busy ? 'Working…' : 'Ask'}
-			</button>
+			<div className="flex flex-col items-center gap-1.5">
+				<ComposerAttach
+					projectId={projectId}
+					disabled={busy}
+					onAttached={() => {
+						setKnowledgeRefreshToken((n) => n + 1);
+						setError(null);
+					}}
+					onError={(message) => setError(message)}
+				/>
+				<button
+					type="submit"
+					disabled={busy || !question.trim()}
+					className="min-h-[36px] min-w-[64px] cursor-pointer rounded-md border-none bg-[#F97316] px-2.5 py-1.5 text-sm font-semibold text-white disabled:cursor-wait"
+				>
+					{busy ? '…' : 'Ask'}
+				</button>
+			</div>
 		</form>
 	);
 
