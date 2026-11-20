@@ -58,7 +58,7 @@ See `.env.example`.
 | `ALLOW_LOCAL_AI` | Set `1` to allow non-localhost access |
 | `RESEARCH_FETCH_HOSTS` | Extra comma-separated hosts for `fetch_url` |
 | `RESEARCH_OPEN_FETCH` | Set `1` to allow any public https host (private IPs still blocked) |
-| `NEXT_PUBLIC_FINRA_APP_ORIGIN` | Live visualizer origin for Connect + postMessage |
+| `NEXT_PUBLIC_FINRA_APP_ORIGIN` | Live visualizer origin for Connect, postMessage, and `search_finra_sidecar` (prod flat-file CRD index) |
 | `RESEARCH_DATA_DIR` | Absolute or relative knowledge store root (default `.data/knowledge`) |
 | `RESEARCH_EMBED_MODEL` | Ollama embed model (default `nomic-embed-text`) |
 | `RESEARCH_EMBED_CONCURRENCY` | Parallel embeds during ingest (default `4`) |

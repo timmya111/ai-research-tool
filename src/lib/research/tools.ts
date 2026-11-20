@@ -1,5 +1,6 @@
 import { createBryanFilingChart, createLogo } from '@/lib/research/charts';
 import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
+import { searchFinraSidecar } from '@/lib/research/finraSidecarSearch';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
 import type { KnowledgeSourceType } from '@/lib/research/knowledge/types';
@@ -8,6 +9,7 @@ export type ResearchToolName =
 	| 'fetch_url'
 	| 'current_time'
 	| 'inspect_canvas_graph'
+	| 'search_finra_sidecar'
 	| 'search_knowledge'
 	| 'chart_filings'
 	| 'make_logo';
@@ -108,9 +110,39 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 	{
 		type: 'function' as const,
 		function: {
+			name: 'search_finra_sidecar',
+			description:
+				'Search the production FINRA/SEC visualizer flat-file search index (gzip sidecars via /api/finra/search and /api/finra/sec-search). Use for CRD / person / firm name lookup across the full shipped corpus — not only nodes on the current canvas. Prefer this for FINRA identity; use inspect_canvas_graph only for what is on-screen.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: {
+						type: 'string',
+						description: 'Person/firm name or numeric CRD to look up',
+					},
+					registry: {
+						type: 'string',
+						description: 'finra | sec | both (default both)',
+					},
+					entity: {
+						type: 'string',
+						description: 'individual | firm | both (default both)',
+					},
+					limit: {
+						type: 'number',
+						description: 'Max hits to return (default 8, max 25)',
+					},
+				},
+				required: ['query'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
 			name: 'inspect_canvas_graph',
 			description:
-				"Inspect the user's FINRA canvas graph snapshot (nodes/links from the live graph window or pasted JSON). Use for questions about what is on the graph right now. Actions: summary, list_people, list_firms, selection_log, neighbors, dual_on_canvas, search.",
+				"Inspect the user's FINRA canvas graph snapshot (nodes/links from the live graph window or pasted JSON). Use for questions about what is on the graph right now. Actions: summary, list_people, list_firms, selection_log, neighbors, dual_on_canvas, search. For full CRD corpus search use search_finra_sidecar instead.",
 			parameters: {
 				type: 'object',
 				properties: {
@@ -546,6 +578,10 @@ export async function runResearchTool(
 	if (tool === 'inspect_canvas_graph') {
 		const inspected = inspectCanvasSnapshot(context.canvasSnapshot, args);
 		return { ok: inspected.ok, result: inspected.result };
+	}
+
+	if (tool === 'search_finra_sidecar') {
+		return searchFinraSidecar(args);
 	}
 
 	if (tool === 'current_time') {

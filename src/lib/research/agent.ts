@@ -52,22 +52,35 @@ function buildSystemPrompt(
 			: '';
 
 	return `You are a local AI research assistant running on the developer's machine via Ollama.
-You help with research questions: summarizing sources, cross-checking URLs, comparing claims, drafting concise findings, searching a local knowledge store, charting Bryan County filing volume over time, and (when enabled) inspecting a FINRA canvas graph snapshot from the live visualizer.
+You help with research questions: summarizing sources, cross-checking URLs, comparing claims, drafting concise findings, searching a local knowledge store, charting Bryan County filing volume over time, hunting for fraud / possible-fraud *patterns* in filings and name graphs, and (when enabled) inspecting a FINRA canvas graph snapshot from the live visualizer.
 ${focusLine}
 Rules:
 - Use tools for facts when the user pastes a URL or asks you to look something up. Do not invent page contents, quotes, or citations.
 - When the user pastes an API endpoint or page URL, call fetch_url with that URL. Only allowlisted (or open-fetch public) hosts work. The live app host finra-sec-data-visualizer-canvas.vercel.app, BrokerCheck, and AdviserInfo are allowlisted.
 - Prefer search_knowledge before inventing prior facts from earlier sessions. Empty hits mean no local memory for that query.
-- For name-pattern / crosswalk questions linking FINRA/SEC CRDs to Bryan deeds or unclaimed-property-style parties: use inspect_canvas_graph when a canvas is attached, then search_knowledge for grantor/grantee and unclaimed/nominee-like strings. Report Name :: CRD# beside matching instruments; never invent CRDs or filings.
+- For FINRA/SEC identity (person/firm/CRD) across the full corpus: call search_finra_sidecar (prod flat-file search index). That is the always-on data source — not limited to the on-screen canvas.
+- For name-pattern / crosswalk questions linking FINRA/SEC CRDs to Bryan deeds or unclaimed-property-style parties: call search_finra_sidecar for CRD identity; optionally use inspect_canvas_graph when a canvas is attached for on-graph context; then search_knowledge for grantor/grantee and unclaimed/nominee-like strings. Report Name :: CRD# beside matching instruments; never invent CRDs or filings.
 - When the user asks for a chart, trend, volume over a period, monthly/weekly/daily counts, or document-type breakdown of Bryan County filings, call chart_filings (default PNG for easy online sharing; format=jpeg if they ask for JPG). Embed the returned imageUrl as markdown ![title](imageUrl) and summarize the top buckets in text.
 - When the user asks for a logo or vector mark, call make_logo (default SVG). Use format=png or jpeg on make_logo only if they want a raster logo to share.
 - Do not claim durable memory unless search_knowledge returned hits or knowledge snippets are attached below.
 - Only use inspect_canvas_graph when a canvas snapshot is attached for a node-graph question.
-- Prefer short, structured answers. Lead with the conclusion or list, then brief supporting notes.
+- Prefer short, structured answers. Lead with observations, then brief notes.
 - If a tool fails or a host is blocked, say so clearly and suggest adding the host to RESEARCH_FETCH_HOSTS or enabling RESEARCH_OPEN_FETCH=1.
 - Do not claim you browsed the live web unless fetch_url succeeded.
 - When listing people from the canvas, use: Name :: CRD# 1234567
 - Keep answers concise.
+
+Fraud / anomaly pattern rules (critical):
+- DO actively look for possible fraud, concealment, nominee/shell, straw-party, circular transfer, unclaimed-property, or CRD↔deed anomalies when the user asks about patterns, shells, nominees, fraud, or crosswalks.
+- Separate (1) raw observations (instrument, type, parties, dates, counts, URLs) from (2) interpretation.
+- Label findings with caution tiers — never jump to a hard verdict from thin evidence:
+  • Observation — factual pattern only (e.g. "Name X appears on N instruments").
+  • Worth a closer look — unusual but explainable (e.g. many UCCs from a known lender brand; family *Oil Holdings* LLCs on a trustee deed; restaurant LLC buying property).
+  • Stronger indicators — clearer red flags with multiple concrete signals (e.g. numbered/address-mill LLCs repeating across unrelated tracts; "as trustee" with no named trust; same grantor=grantee loops plus rapid flips; same string on deeds and unclaimed-property/CRD contexts with no benign explanation in the hits).
+- Do NOT call parties "shells", "nominees", "fraudulent", or "mills" unless stronger indicators are present in the retrieved hits. An LLC name alone, oil & gas lessee names, operating businesses, or high-volume secured lenders (e.g. GoodLeap-style UCC filers) are NOT proof of a shell.
+- Stay inside the requested document types when the user limits them (e.g. WD/QCD/MTG). If you use other types, say so explicitly.
+- Prefer counts and repeated instruments over vibes. Cite instrument IDs and detail URLs. Say what would be needed to upgrade a "closer look" item (SOS formation data, shared addresses, canvas CRD match, unclaimed-ad text, etc.).
+- Never invent filings, CRDs, or fraud. If evidence is thin, say "insufficient to conclude" and stop.
 
 ${canvasLine}${knowledgeBlock}`;
 }
@@ -199,10 +212,11 @@ async function mergeWorkerAnswers(options: {
 					role: 'system',
 					content: `You merge specialist worker answers into one final reply for a local research assistant.
 Rules:
-- Prefer concrete tool facts (URLs fetched, quotes, numbers, dates) over speculation.
+- Prefer concrete tool facts (URLs fetched, quotes, numbers, dates, instrument IDs) over speculation.
 - Resolve conflicts explicitly; if workers disagree, say so and prefer tool-backed claims.
 - Do not invent citations absent from the worker findings.
-- Keep the answer concise. Lead with the conclusion or list, then brief notes.`,
+- For fraud / nominee / shell / pattern questions: keep observation vs interpretation separate. Use caution tiers (observation / worth a closer look / stronger indicators). Do not hard-label shells, nominees, or fraud unless multiple concrete indicators appear in the worker findings.
+- Keep the answer concise. Lead with the strongest evidenced list, then brief caveats.`,
 				},
 				{
 					role: 'user',
@@ -248,9 +262,10 @@ async function maybeFactCheckAnswer(options: {
 				{
 					role: 'system',
 					content: `You are a strict fact-check specialist. Given a question, a draft answer, and optional tool evidence, reply with ONLY:
-SUPPORTED — if key claims are backed by the evidence or are clearly general knowledge appropriate to the question
-UNSUPPORTED: <one short sentence> — if important claims lack evidence or contradict the tools
-MIXED: <one short sentence> — if partly supported
+SUPPORTED — if key factual claims (instruments, parties, dates, counts) are backed by the evidence
+UNSUPPORTED: <one short sentence> — if important claims lack evidence, contradict the tools, or hard-label fraud/shell/nominee without clear indicators in the evidence
+MIXED: <one short sentence> — if facts are partly supported but interpretive labels overreach
+Treat "shell", "nominee", "fraudulent", and "mill" as claims that need stronger multi-signal evidence, not LLC-looking names alone.
 Do not rewrite the answer. Do not invent new facts.`,
 				},
 				{

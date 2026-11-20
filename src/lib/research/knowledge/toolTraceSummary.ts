@@ -58,6 +58,17 @@ function lineForEntry(entry: TraceEntry): string {
 		return `- inspect_canvas_graph ok=${ok}${action} :: ${digest}`;
 	}
 
+	if (tool === 'search_finra_sidecar') {
+		const hits =
+			typeof (result as { returned?: unknown }).returned === 'number'
+				? ` hits=${(result as { returned: number }).returned}`
+				: Array.isArray((result as { hits?: unknown[] }).hits)
+					? ` hits=${((result as { hits: unknown[] }).hits).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		return `- search_finra_sidecar ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
 	if (tool === 'search_knowledge') {
 		const hits =
 			typeof (result as { returned?: unknown }).returned === 'number'

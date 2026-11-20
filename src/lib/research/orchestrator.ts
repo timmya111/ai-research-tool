@@ -42,7 +42,7 @@ export type ResearchRouteDecision = {
 };
 
 const TOOLISH_RE =
-	/\b(fetch|url|http|https|lookup|look up|search|scrape|read (the )?page|open (the )?link|source|cite|citation|document|pdf|api)\b/i;
+	/\b(fetch|url|http|https|lookup|look up|search|scrape|read (the )?page|open (the )?link|source|cite|citation|document|pdf|api|crd|brokercheck|finra|sidecar)\b/i;
 const HARD_RE =
 	/\b(compar|analy[sz]e|explain why|synthesize|multi[- ]step|strategy|cross[- ]ref|reconcile|debate|summarize (all|everything)|complex|versus|vs\.?|pros and cons|trade-?offs?)\b/i;
 const URL_RE = /https?:\/\/[^\s]+/i;
@@ -133,7 +133,7 @@ function buildMultiPlan(
 			role: 'reason',
 			model: reasonModel,
 			focus:
-				'Using the facts from the tools worker, analyze/compare/cross-check. Flag gaps or conflicts. Do not invent citations.',
+				'Using the facts from the tools worker, analyze/compare/cross-check. Flag gaps or conflicts. For fraud/nominee pattern questions: separate observations from interpretation; use caution tiers; do not hard-label shells/fraud without multiple concrete indicators. Do not invent citations.',
 			useTools: false,
 		},
 	];
@@ -274,7 +274,8 @@ function sanitizePlannerPlan(
 				id: 'w2',
 				role: 'reason',
 				model: reasonModelOf(candidates),
-				focus: 'Analyze/compare the tools worker findings. Do not invent citations.',
+				focus:
+					'Analyze/compare the tools worker findings. Separate observations from fraud/nominee interpretation; no hard labels without multiple indicators. Do not invent citations.',
 				useTools: false,
 			};
 		}

@@ -68,7 +68,7 @@ const BRYAN_EXAMPLES: SuggestedExample[] = [
 		label: 'CRD ↔ deed / unclaimed names',
 		useCanvas: true,
 		question:
-			'Cross-check FINRA/SEC CRD names against Bryan County deed parties and unclaimed-property-style name patterns. Steps: (1) If a canvas snapshot is attached, call inspect_canvas_graph (list/search people and firms) and collect Name :: CRD# lines. (2) For each distinctive person or firm name (and obvious variants: last-first, initials, LLC/Inc suffixes), call search_knowledge in the Bryan County store for grantor/grantee hits on WD, QCD, MTG, REL MTG, and similar deed instruments. (3) Also search for the same names with unclaimed / treasurer / escheat / abandoned property wording, and note any Bryan filings whose party strings look like nominee, trustee, or shell-style patterns that could also appear on Oklahoma unclaimed-property ads. (4) Report matches and near-matches in a table: CRD name, CRD#, Bryan instrument + type + recorded date + grantor/grantee, and whether the string looks like an unclaimed-property / nominee pattern. Say clearly when canvas is empty or knowledge has no hit. Do not invent CRDs or filings.',
+			'Cross-check FINRA/SEC CRD names against Bryan County deed parties and unclaimed-property-style name patterns. Steps: (1) Call search_finra_sidecar for distinctive person/firm names (and variants) to resolve Name :: CRD# from the full prod flat-file index — not only the on-screen canvas. If a canvas snapshot is attached, you may also call inspect_canvas_graph for on-graph context. (2) For each CRD hit, call search_knowledge for grantor/grantee matches on WD, QCD, MTG, REL MTG, and similar deeds. (3) Also search unclaimed / treasurer / escheat / abandoned wording. (4) Report a table: CRD name, CRD#, Bryan instrument + type + recorded + grantor/grantee, match strength. Use caution tiers: observation / worth a closer look / stronger indicators. Do not call anyone a shell, nominee, or fraud unless multiple concrete indicators appear. Say when sidecar or knowledge is empty. Do not invent CRDs or filings.',
 	},
 	{
 		label: 'Latest filings (full fields)',
@@ -96,9 +96,9 @@ const BRYAN_EXAMPLES: SuggestedExample[] = [
 			'Using the Bryan County knowledge store, search filings involving grantor WESTSIDE BAPTIST CHURCH (or close variants). For each hit, show complete filing details: instrument, type, recorded, grantor, grantee, book, pages, legal, images, and detail URL.',
 	},
 	{
-		label: 'Nominee / shell-looking parties',
+		label: 'Possible fraud / nominee patterns',
 		question:
-			'Using the Bryan County knowledge store, search for grantor/grantee strings that look like nominee, trustee, LLC mill, or shell patterns (e.g. numbered LLCs, “as trustee”, generic holding names) on WD, QCD, and MTG filings. List the strongest examples with instrument, type, recorded date, grantor, grantee, and detail URL, and note any names that repeat across many instruments.',
+			'Using the Bryan County knowledge store, hunt for possible fraud or concealment patterns on WD, QCD, and MTG filings (stay on those types unless you explicitly note extras). Look for: numbered or address-mill LLCs; “as trustee” with no named trust; same grantor=grantee loops; rapid flip chains; generic holding names that repeat across unrelated tracts. For each hit give instrument, type, recorded date, grantor, grantee, detail URL, and how often the name repeats. Structure the answer as (1) observations with counts, (2) worth a closer look, (3) stronger indicators only if multiple concrete signals appear. Do NOT hard-label parties as shells, nominees, or fraudulent from an LLC name alone, oil & gas lessees, restaurants, or high-volume UCC lenders. Prefer “insufficient to conclude” when evidence is thin.',
 	},
 	{
 		label: 'Doc-type mix + examples',
