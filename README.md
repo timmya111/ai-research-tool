@@ -83,6 +83,17 @@ See `.env.example`.
 
 Knowledge routes are **localhost-only** unless both `RESEARCH_KNOWLEDGE_REMOTE=1` and `ALLOW_LOCAL_AI=1`. Wipe store: delete the folder shown in `status.knowledge.path` (default `.data/knowledge/`).
 
+## Oklahoma / Texas seismic (USGS ComCat)
+
+Local mirror of USGS earthquakes **M≥2.5 since 2016** for Oklahoma and Texas (bbox query + place-name filter), ingested as monthly/yearly digests into knowledge project **OK TX Seismic**.
+
+```bash
+pnpm seismic:download   # → .data/seismic/
+pnpm seismic:ingest     # → knowledge project "OK TX Seismic" (app must be on :3333)
+```
+
+In the UI: select **OK TX Seismic**, turn on **Auto-retrieve**, then use the sky-colored seismic suggested questions. Source: [USGS FDSN Event API](https://earthquake.usgs.gov/fdsnws/event/1/) (public domain).
+
 ## Bryan County real-time monitor
 
 Logs new filings from [okcountyrecords.com/real-time/bryan](https://okcountyrecords.com/real-time/bryan) into the knowledge project **Bryan County**, including **detail-page** fields (grantor, grantee, book, pages, fees, legal).

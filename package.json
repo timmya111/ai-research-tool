@@ -15,7 +15,9 @@
     "bryan:monitor:setup": "uv venv .venv-monitors && uv pip install --python .venv-monitors/bin/python -r scripts/requirements-bryan.txt",
     "bryan:monitor:python": ".venv-monitors/bin/python scripts/bryan_realtime_monitor.py",
     "bryan:backfill:2026": "node scripts/bryan-2026-backfill.mjs",
-    "bryan:backfill:2016-current": "node scripts/bryan-backfill-2016-current.mjs"
+    "bryan:backfill:2016-current": "node scripts/bryan-backfill-2016-current.mjs",
+    "seismic:download": "node scripts/seismic-usgs-download.mjs",
+    "seismic:ingest": "node scripts/seismic-ingest-knowledge.mjs"
   },
   "dependencies": {
     "next": "16.4.6",

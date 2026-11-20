@@ -51,14 +51,17 @@ type StatusPayload = {
 	};
 };
 
-const BRYAN_PROJECT_NAME = 'Bryan County';
-
 type SuggestedExample = {
 	label: string;
 	question: string;
 	/** Capture FINRA canvas + treat as node-graph question when clicked. */
 	useCanvas?: boolean;
+	/** Prefer this knowledge project name when the chip is clicked. */
+	projectName?: string;
 };
+
+const BRYAN_PROJECT_NAME = 'Bryan County';
+const SEISMIC_PROJECT_NAME = 'OK TX Seismic';
 
 /**
  * Suggested research chips: Bryan OKCR knowledge (2016→current), charts, and
@@ -115,6 +118,43 @@ const BRYAN_EXAMPLES: SuggestedExample[] = [
 		label: 'Chart: filings by type',
 		question:
 			'Create a chart breaking down Bryan County filings by document type. Call chart_filings with kind=by_type, embed the image, and list the top types with counts.',
+	},
+];
+
+/**
+ * USGS ComCat seismic chips (Oklahoma + Texas, M≥2.5 since 2016).
+ * Prefer the "OK TX Seismic" knowledge project with Auto-retrieve on.
+ */
+const SEISMIC_EXAMPLES: SuggestedExample[] = [
+	{
+		label: 'OK seismic overview since 2016',
+		projectName: SEISMIC_PROJECT_NAME,
+		question:
+			'Using the OK TX Seismic knowledge store (USGS ComCat M≥2.5 since 2016), summarize Oklahoma earthquake activity: total events if stated, strongest years, max magnitudes, and notable M≥4 events. Cite digest titles/months. Do not invent counts.',
+	},
+	{
+		label: 'TX seismic overview since 2016',
+		projectName: SEISMIC_PROJECT_NAME,
+		question:
+			'Using the OK TX Seismic knowledge store (USGS ComCat M≥2.5 since 2016), summarize Texas earthquake activity: yearly pattern, max magnitudes, and notable M≥4 events with place and USGS links when present. Do not invent counts.',
+	},
+	{
+		label: 'Strongest OK/TX quakes',
+		projectName: SEISMIC_PROJECT_NAME,
+		question:
+			'From the OK TX Seismic knowledge store, list the strongest Oklahoma and Texas earthquakes since 2016 (prefer M≥4). For each: time, magnitude, place, depth if present, and USGS event URL.',
+	},
+	{
+		label: 'Compare OK vs TX by year',
+		projectName: SEISMIC_PROJECT_NAME,
+		question:
+			'Using OK TX Seismic yearly summaries in the knowledge store, compare Oklahoma vs Texas earthquake counts and max magnitudes by year since 2016. Make a compact year table from the stored digests only.',
+	},
+	{
+		label: 'Search a place (e.g. Waynoka)',
+		projectName: SEISMIC_PROJECT_NAME,
+		question:
+			'Using the OK TX Seismic knowledge store, search for earthquakes near Waynoka, Oklahoma (and close place-name variants). List time, magnitude, place, depth, and USGS URL for each hit.',
 	},
 ];
 
@@ -442,31 +482,37 @@ export default function ResearchClient() {
 		async (example: SuggestedExample) => {
 			if (busy) return;
 			setError(null);
-			let bryanId: string | null = projectId;
+			const wantedName = example.projectName || BRYAN_PROJECT_NAME;
+			let activeId: string | null = projectId;
 			try {
 				const res = await fetch('/api/knowledge/projects', { cache: 'no-store' });
 				const data = await res.json();
 				const list = Array.isArray(data?.projects) ? data.projects : [];
-				const bryan = list.find(
-					(p: { name?: string }) => String(p?.name || '') === BRYAN_PROJECT_NAME,
+				const wanted = list.find(
+					(p: { name?: string }) => String(p?.name || '') === wantedName,
 				) as { id?: string } | undefined;
-				if (bryan?.id) {
-					bryanId = bryan.id;
-					setProjectId(bryan.id);
+				if (wanted?.id) {
+					activeId = wanted.id;
+					setProjectId(wanted.id);
 					try {
-						window.localStorage.setItem('research.activeProjectId', bryan.id);
+						window.localStorage.setItem('research.activeProjectId', wanted.id);
 					} catch {
 						/* ignore */
 					}
+				} else if (wantedName === SEISMIC_PROJECT_NAME) {
+					setError(
+						`Knowledge project "${SEISMIC_PROJECT_NAME}" not found. Run pnpm seismic:download && pnpm seismic:ingest.`,
+					);
+					return;
 				}
 			} catch {
 				/* keep current project */
 			}
 			setRagAuto(true);
-			if (bryanId) writeFlag(LS_RAG, bryanId, true);
+			if (activeId) writeFlag(LS_RAG, activeId, true);
 			if (example.useCanvas) setAboutNodeGraph(true);
 			await ask(example.question, {
-				projectId: bryanId,
+				projectId: activeId,
 				ragAuto: true,
 				aboutNodeGraph: Boolean(example.useCanvas) || aboutNodeGraph,
 			});
@@ -997,6 +1043,30 @@ export default function ResearchClient() {
 										{example.label}
 									</button>
 								))}
+							</div>
+							<div className="mt-3 border-t border-emerald-700/20 pt-3 dark:border-emerald-400/20">
+								<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+									<p className="m-0 text-sm font-semibold text-sky-950 dark:text-sky-100">
+										Oklahoma / Texas seismic (USGS)
+									</p>
+									<p className="m-0 text-[11px] opacity-70">
+										Select project <strong>OK TX Seismic</strong> · Auto-retrieve on · M≥2.5 since 2016
+									</p>
+								</div>
+								<div className="flex flex-wrap gap-2">
+									{SEISMIC_EXAMPLES.map((example) => (
+										<button
+											key={example.label}
+											type="button"
+											disabled={busy}
+											title={example.question}
+											onClick={() => void applyBryanExample(example)}
+											className="max-w-full cursor-pointer rounded-full border border-sky-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-sky-950 dark:border-sky-400/30 dark:bg-zinc-950/60 dark:text-sky-50"
+										>
+											{example.label}
+										</button>
+									))}
+								</div>
 							</div>
 						</section>
 					</div>

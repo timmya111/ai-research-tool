@@ -211,6 +211,8 @@ const FETCH_URL_DEFAULT_HOSTS = new Set([
 	'api.adviserinfo.sec.gov',
 	'okcountyrecords.com',
 	'www.okcountyrecords.com',
+	'earthquake.usgs.gov',
+	'www.earthquake.usgs.gov',
 ]);
 const FETCH_URL_MAX_BYTES = 512_000;
 const FETCH_URL_TIMEOUT_MS = 15_000;
@@ -419,6 +421,15 @@ function resolveProjectId(args: Record<string, unknown>, context: ResearchToolCo
 		const compact = raw.toLowerCase().replace(/[\s_-]+/g, '');
 		const byCompact = projects.find((p) => p.name.toLowerCase().replace(/[\s_-]+/g, '') === compact);
 		if (byCompact) return byCompact.id;
+	}
+
+	const seismic = projects.find((p) => /seismic/i.test(p.name));
+	const queryHint = String(args.query || args.q || '').toLowerCase();
+	if (
+		seismic &&
+		/\b(seismic|earthquake|earthquakes|comcat|usgs|magnitude|quake)\b/i.test(queryHint)
+	) {
+		return seismic.id;
 	}
 
 	const bryan = projects.find((p) => p.name.toLowerCase() === 'bryan county');
