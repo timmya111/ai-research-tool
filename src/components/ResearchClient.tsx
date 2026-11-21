@@ -946,7 +946,7 @@ export default function ResearchClient() {
 							<span className="text-xs font-normal opacity-70">
 								{aboutNodeGraph
 									? 'Attaches live/pasted canvas · uses inspect_canvas_graph'
-									: 'Off · general research / API fetch only'}
+									: 'Off · leave unchecked for CRD / firm roster / BrokerCheck'}
 							</span>
 						</label>
 

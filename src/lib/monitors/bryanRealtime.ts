@@ -87,11 +87,13 @@ export function parseDetailFromText(text: string, base: BryanFeedItem): BryanFil
 
 export function formatBryanFilingNote(detail: BryanFilingDetail): { title: string; text: string; url: string } {
 	const title = `${detail.docType} ${detail.instrument}`.trim();
+	const countyLabel = detail.county || 'Oklahoma County Records';
+	const site = detail.site || 'bryan';
 	const lines = [
-		'## Bryan County real-time filing',
+		`## ${countyLabel} OKCR filing`,
 		`- Instrument: ${detail.instrument}`,
 		`- Type: ${detail.docType}`,
-		`- County: ${detail.county}`,
+		`- County: ${countyLabel}`,
 		`- Recorded: ${detail.recorded || 'unknown'}`,
 		`- Instrument date: ${detail.instrumentDate || 'unknown'}`,
 		`- Grantor: ${detail.grantor || 'unknown'}`,
@@ -107,7 +109,7 @@ export function formatBryanFilingNote(detail: BryanFilingDetail): { title: strin
 		`- Record id: ${detail.id}`,
 		`- Scraped at: ${detail.scrapedAt}`,
 		'',
-		'Source: https://okcountyrecords.com/real-time/bryan',
+		`Source: https://okcountyrecords.com/real-time/${site}`,
 	];
 	return { title, text: lines.join('\n'), url: detail.href };
 }

@@ -16,6 +16,10 @@
     "bryan:monitor:python": ".venv-monitors/bin/python scripts/bryan_realtime_monitor.py",
     "bryan:backfill:2026": "node scripts/bryan-2026-backfill.mjs",
     "bryan:backfill:2016-current": "node scripts/bryan-backfill-2016-current.mjs",
+    "okcr:backfill:county": "node scripts/okcr-county-backfill.mjs",
+    "okcr:backfill:east-i35": "node scripts/okcr-east-i35-backfill.mjs",
+    "okcr:backfill:cherokee": "OKCR_SITES=cherokee node scripts/okcr-east-i35-backfill.mjs",
+
     "seismic:download": "node scripts/seismic-usgs-download.mjs",
     "seismic:ingest": "node scripts/seismic-ingest-knowledge.mjs",
     "tornado:download": "node scripts/tornado-spc-ncei-download.mjs",

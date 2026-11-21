@@ -12,12 +12,13 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-function ensureBryanProjectId(explicit?: string | null): string {
-	if (explicit && String(explicit).trim()) return String(explicit).trim();
+function resolveProjectId(opts: { projectId?: string | null; projectName?: string | null }): string {
+	if (opts.projectId && String(opts.projectId).trim()) return String(opts.projectId).trim();
 	ensureDefaultProject();
-	const existing = listProjects().find((p) => p.name.toLowerCase() === BRYAN_PROJECT_NAME.toLowerCase());
+	const wanted = (opts.projectName && String(opts.projectName).trim()) || BRYAN_PROJECT_NAME;
+	const existing = listProjects().find((p) => p.name.toLowerCase() === wanted.toLowerCase());
 	if (existing) return existing.id;
-	return createProject(BRYAN_PROJECT_NAME).id;
+	return createProject(wanted).id;
 }
 
 export async function POST(request: Request) {
@@ -37,7 +38,10 @@ export async function POST(request: Request) {
 	}
 
 	try {
-		const projectId = ensureBryanProjectId(body?.projectId != null ? String(body.projectId) : null);
+		const projectId = resolveProjectId({
+			projectId: body?.projectId != null ? String(body.projectId) : null,
+			projectName: body?.projectName != null ? String(body.projectName) : null,
+		});
 		const saved: string[] = [];
 		const skipped: string[] = [];
 		const errors: Array<{ id?: string; error: string }> = [];
@@ -55,10 +59,12 @@ export async function POST(request: Request) {
 					text: note.text,
 					url: note.url,
 					metadata: {
-						kind: 'bryan-filing',
+						kind: 'okcr-filing',
+						site: filing.site || null,
 						recordId: filing.id,
 						docType: filing.docType,
 						instrument: filing.instrument,
+						county: filing.county || null,
 					},
 				});
 				if (result.skipped) skipped.push(String(filing.id || note.url));

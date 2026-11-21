@@ -42,7 +42,7 @@ export type ResearchRouteDecision = {
 };
 
 const TOOLISH_RE =
-	/\b(fetch|url|http|https|lookup|look up|search|scrape|read (the )?page|open (the )?link|source|cite|citation|document|pdf|api|crd|brokercheck|finra|sidecar)\b/i;
+	/\b(fetch|url|http|https|lookup|look up|search|scrape|read (the )?page|open (the )?link|source|cite|citation|document|pdf|api|crd|brokercheck|adviserinfo|finra|sidecar|employment history|registration history|firm connections|roster|connections for)\b/i;
 const HARD_RE =
 	/\b(compar|analy[sz]e|explain why|synthesize|multi[- ]step|strategy|cross[- ]ref|reconcile|debate|summarize (all|everything)|complex|versus|vs\.?|pros and cons|trade-?offs?)\b/i;
 const URL_RE = /https?:\/\/[^\s]+/i;

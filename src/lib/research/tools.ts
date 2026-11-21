@@ -1,5 +1,7 @@
 import { createBryanFilingChart, createLogo } from '@/lib/research/charts';
 import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
+import { lookupBrokercheckIndividual } from '@/lib/research/brokercheckLookup';
+import { lookupFirmConnections } from '@/lib/research/firmConnectionsLookup';
 import { searchFinraSidecar } from '@/lib/research/finraSidecarSearch';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
@@ -10,6 +12,8 @@ export type ResearchToolName =
 	| 'current_time'
 	| 'inspect_canvas_graph'
 	| 'search_finra_sidecar'
+	| 'lookup_brokercheck'
+	| 'lookup_firm_connections'
 	| 'search_knowledge'
 	| 'chart_filings'
 	| 'make_logo';
@@ -112,7 +116,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'search_finra_sidecar',
 			description:
-				'Search the production FINRA/SEC visualizer flat-file search index (gzip sidecars via /api/finra/search and /api/finra/sec-search). Use for CRD / person / firm name lookup across the full shipped corpus — not only nodes on the current canvas. Prefer this for FINRA identity; use inspect_canvas_graph only for what is on-screen.',
+				'Search the production FINRA/SEC visualizer flat-file search index (gzip sidecars via /api/finra/search and /api/finra/sec-search). Use for CRD / person / firm name lookup across the full shipped corpus — not only nodes on the current canvas. Returns identity + current employers only (often empty when Inactive). For full employment / registration history use lookup_brokercheck. Prefer this for FINRA identity; use inspect_canvas_graph only for what is on-screen.',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -134,6 +138,66 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					},
 				},
 				required: ['query'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'lookup_brokercheck',
+			description:
+				'Fetch full BrokerCheck individual detail by numeric CRD: previous + current employment history, exams, disclosure flags, and scopes. Also pulls AdviserInfo when available. Use whenever the user asks for employment history, registration history, firms worked at, exams, or BrokerCheck detail for a CRD. Does NOT require the node-graph checkbox or a canvas snapshot.',
+			parameters: {
+				type: 'object',
+				properties: {
+					crd: {
+						type: 'string',
+						description: 'Numeric CRD, e.g. 1085996',
+					},
+					includeAdviserInfo: {
+						type: 'boolean',
+						description: 'Also fetch AdviserInfo SEC IA detail (default true)',
+					},
+				},
+				required: ['crd'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'lookup_firm_connections',
+			description:
+				'List all broker/person CRDs connected to a firm from the live FINRA SEC visualizer API (/api/finra/firm/{id}/connections). Use for firm roster / connections / “who works at” / “all CRD connections for firm X” questions. Does NOT require opening the live graph or checking “Question about node graph”. Returns totals plus a page of Name :: CRD# rows; full roster is also saved under .data/finra-rosters/.',
+			parameters: {
+				type: 'object',
+				properties: {
+					firmCrd: {
+						type: 'string',
+						description: 'Numeric firm CRD, e.g. 291361',
+					},
+					bucket: {
+						type: 'string',
+						description: 'current | previous | all (default all)',
+					},
+					limit: {
+						type: 'number',
+						description: 'Max people to return inline (default 50, max 500)',
+					},
+					offset: {
+						type: 'number',
+						description: 'Skip this many matched rows for pagination (default 0)',
+					},
+					query: {
+						type: 'string',
+						description: 'Optional name/CRD/address substring filter',
+					},
+					saveFull: {
+						type: 'boolean',
+						description: 'Write full roster JSON+Markdown under .data/finra-rosters/ (default true)',
+					},
+				},
+				required: ['firmCrd'],
 			},
 		},
 	},
@@ -606,6 +670,25 @@ export async function runResearchTool(
 
 	if (tool === 'search_finra_sidecar') {
 		return searchFinraSidecar(args);
+	}
+
+	if (tool === 'lookup_brokercheck') {
+		return lookupBrokercheckIndividual({
+			crd: args.crd != null ? String(args.crd) : undefined,
+			includeAdviserInfo:
+				args.includeAdviserInfo === undefined ? undefined : Boolean(args.includeAdviserInfo),
+		});
+	}
+
+	if (tool === 'lookup_firm_connections') {
+		return lookupFirmConnections({
+			firmCrd: args.firmCrd != null ? String(args.firmCrd) : undefined,
+			bucket: args.bucket != null ? String(args.bucket) : undefined,
+			limit: args.limit as number | undefined,
+			offset: args.offset as number | undefined,
+			query: args.query != null ? String(args.query) : undefined,
+			saveFull: args.saveFull === undefined ? undefined : Boolean(args.saveFull),
+		});
 	}
 
 	if (tool === 'current_time') {

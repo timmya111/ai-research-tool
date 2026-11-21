@@ -69,6 +69,35 @@ function lineForEntry(entry: TraceEntry): string {
 		return `- search_finra_sidecar ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
 	}
 
+	if (tool === 'lookup_brokercheck') {
+		const crd = entry.args?.crd != null ? ` crd=${collapse(String(entry.args.crd), 20)}` : '';
+		const profile =
+			result.profile && typeof result.profile === 'object'
+				? (result.profile as Record<string, unknown>)
+				: null;
+		const emp =
+			profile && typeof profile.employmentCount === 'number'
+				? ` employments=${profile.employmentCount}`
+				: '';
+		const name = profile?.display != null ? ` ${collapse(String(profile.display), 80)}` : '';
+		return `- lookup_brokercheck ok=${ok}${crd}${emp}${name} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'lookup_firm_connections') {
+		const firm =
+			entry.args?.firmCrd != null ? ` firm=${collapse(String(entry.args.firmCrd), 20)}` : '';
+		const totals =
+			result.totals && typeof result.totals === 'object'
+				? (result.totals as Record<string, unknown>)
+				: null;
+		const counts =
+			totals && totals.combined != null
+				? ` current=${totals.current ?? '?'} previous=${totals.previous ?? '?'} combined=${totals.combined}`
+				: '';
+		const ret = result.returned != null ? ` returned=${result.returned}` : '';
+		return `- lookup_firm_connections ok=${ok}${firm}${counts}${ret} :: ${digestBody(result, 240)}`;
+	}
+
 	if (tool === 'search_knowledge') {
 		const hits =
 			typeof (result as { returned?: unknown }).returned === 'number'
