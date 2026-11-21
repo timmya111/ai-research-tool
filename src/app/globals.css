@@ -5,7 +5,7 @@
 
 @theme inline {
 	--font-sans: var(--font-geist-sans);
-	--font-mono: var(--font-geist-mono);
+	--font-mono: var(--font-spline-sans-mono);
 }
 
 /*
@@ -46,6 +46,21 @@
 	body {
 		background-color: var(--app-bg);
 		color: var(--app-fg);
-		font-family: Arial, Helvetica, sans-serif;
+		font-family: var(--font-spline-sans-mono), ui-monospace, monospace;
+		font-variant-numeric: tabular-nums;
 	}
+}
+
+/* Assistant markdown tables: compact mono grid */
+.chat-md-table {
+	font-variant-numeric: tabular-nums;
+}
+
+.chat-md-table th,
+.chat-md-table td {
+	letter-spacing: -0.01em;
+}
+
+.chat-md-table-wrap {
+	-webkit-overflow-scrolling: touch;
 }

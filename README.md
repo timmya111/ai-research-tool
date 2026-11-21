@@ -105,6 +105,28 @@ pnpm tornado:ingest     # → knowledge project "OK TX Tornadoes" (app must be o
 
 In the UI: select **OK TX Tornadoes**, turn on **Auto-retrieve**, then use the amber tornado suggested questions. Sources: [SPC WCM data](https://www.spc.noaa.gov/wcm/#data) and [NCEI Storm Events CSV](https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/).
 
+## Questions playlist daily monitor
+
+Checks the curated YouTube playlist **questions** (`PLo7mtD5End19Dekfsy90VWbuym5OSZeAU`) once per day. New videos are auto-scrubbed (metadata + captions + AUTO cards) into `.data/concealment-scrubs/playlist-PLo7mt/` and `INDEX.md` is rebuilt.
+
+```bash
+pnpm questions:monitor:seed   # first-time: mark current playlist IDs as seen
+pnpm questions:monitor:once   # one check now
+pnpm questions:monitor        # long-running loop (default interval 24h)
+```
+
+Cron (installed on this machine): `15 6 * * *` → `pnpm questions:monitor:once`  
+Log: `~/.grok/long-running-background-tasks/questions_playlist_daily.log`  
+Seen IDs: `.data/monitors/questions-playlist-seen.json`  
+Daily reports: `.data/concealment-scrubs/playlist-PLo7mt/daily/`
+
+| Env | Default | Purpose |
+| --- | --- | --- |
+| `QUESTIONS_PLAYLIST_URL` | `…list=PLo7mt…` | Playlist URL |
+| `QUESTIONS_PLAYLIST_ONCE` | `0` | Set `1` for a single check |
+| `QUESTIONS_PLAYLIST_SEED_ONLY` | `0` | Seed seen IDs without scrubbing |
+| `QUESTIONS_PLAYLIST_INTERVAL_MS` | `86400000` | Loop interval when not once |
+
 ## Bryan County real-time monitor
 
 Logs new filings from [okcountyrecords.com/real-time/bryan](https://okcountyrecords.com/real-time/bryan) into the knowledge project **Bryan County**, including **detail-page** fields (grantor, grantee, book, pages, fees, legal).

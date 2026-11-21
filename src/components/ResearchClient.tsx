@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ChatMarkdown from '@/components/ChatMarkdown';
 import { ComposerAttach } from '@/components/ComposerAttach';
 import KnowledgePanel from '@/components/KnowledgePanel';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -739,8 +740,10 @@ export default function ResearchClient() {
 					history.map((turn, index) => (
 						<div
 							key={`${turn.role}-${index}`}
-							className={`max-w-[92%] rounded-[10px] px-3 py-2.5 leading-snug whitespace-pre-wrap ${
-								turn.role === 'user' ? 'self-end' : 'self-start'
+							className={`rounded-[10px] px-3 py-2.5 leading-snug ${
+								turn.role === 'user'
+									? 'max-w-[92%] self-end whitespace-pre-wrap'
+									: 'max-w-full self-start sm:max-w-[96%]'
 							}`}
 							style={{
 								background: turn.role === 'user' ? 'var(--app-chat-user)' : 'var(--app-chat-assistant)',
@@ -764,7 +767,11 @@ export default function ResearchClient() {
 									</button>
 								) : null}
 							</div>
-							{displayAnswerContent(turn.content, turn.chartUrls || [])}
+							{turn.role === 'assistant' ? (
+								<ChatMarkdown content={displayAnswerContent(turn.content, turn.chartUrls || [])} />
+							) : (
+								displayAnswerContent(turn.content, turn.chartUrls || [])
+							)}
 							{turn.role === 'assistant' && turn.chartUrls && turn.chartUrls.length > 0 ? (
 								<div className="mt-2 flex flex-col gap-2">
 									{turn.chartUrls.map((url) => (

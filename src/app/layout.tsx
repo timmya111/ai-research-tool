@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+import { Geist, Spline_Sans_Mono } from 'next/font/google';
 import './globals.css';
 
 const geistSans = Geist({
@@ -7,8 +7,8 @@ const geistSans = Geist({
 	subsets: ['latin'],
 });
 
-const geistMono = Geist_Mono({
-	variable: '--font-geist-mono',
+const splineSansMono = Spline_Sans_Mono({
+	variable: '--font-spline-sans-mono',
 	subsets: ['latin'],
 });
 
@@ -25,12 +25,12 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
 		<html
 			lang="en"
 			suppressHydrationWarning
-			className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+			className={`${geistSans.variable} ${splineSansMono.variable} h-full antialiased`}
 		>
 			<head>
 				<script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
 			</head>
-			<body className="flex min-h-full flex-col bg-[var(--app-bg)] font-sans text-[var(--app-fg)]">
+			<body className="flex min-h-full flex-col bg-[var(--app-bg)] font-mono text-[var(--app-fg)]">
 				{children}
 			</body>
 		</html>

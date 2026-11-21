@@ -53,3 +53,6 @@ scripts/bryan-backfill-2016-current.mjs
 scripts/bryan-2026-backfill.mjs
 scripts/bryan-2026-backfill.mjs
 scripts/bryan-2026-backfill.mjs
+
+# yt-dlp / API secrets
+.data/secrets/
