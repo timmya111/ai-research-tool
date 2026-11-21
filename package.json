@@ -19,7 +19,6 @@
     "okcr:backfill:county": "node scripts/okcr-county-backfill.mjs",
     "okcr:backfill:east-i35": "node scripts/okcr-east-i35-backfill.mjs",
     "okcr:backfill:cherokee": "OKCR_SITES=cherokee node scripts/okcr-east-i35-backfill.mjs",
-
     "seismic:download": "node scripts/seismic-usgs-download.mjs",
     "seismic:ingest": "node scripts/seismic-ingest-knowledge.mjs",
     "tornado:download": "node scripts/tornado-spc-ncei-download.mjs",
@@ -27,18 +26,21 @@
     "dallas:download": "node scripts/dallas-deeds-download.mjs",
     "dallas:ingest": "node scripts/dallas-deeds-ingest-knowledge.mjs",
     "authority:download": "node scripts/authority-timelines-download.mjs",
+    "authority:dea": "node scripts/authority-timelines-dea-playwright.mjs",
     "authority:aggregate": "node scripts/authority-timelines-aggregate.mjs",
     "authority:ingest": "node scripts/authority-timelines-ingest-knowledge.mjs",
     "entities:seed": "node scripts/entity-dossiers-seed.mjs",
     "entities:enrich": "node scripts/entity-dossiers-enrich.mjs",
     "entities:link": "node scripts/entity-dossiers-link-authority.mjs",
+    "entities:digest": "node scripts/entity-dossiers-digest.mjs",
     "entities:ingest": "node scripts/entity-dossiers-ingest-knowledge.mjs",
     "grok-qa:import": "node scripts/grok-qa-import.mjs",
     "questions:monitor": "node scripts/questions-playlist-daily.mjs",
     "questions:monitor:once": "QUESTIONS_PLAYLIST_ONCE=1 node scripts/questions-playlist-daily.mjs",
     "questions:monitor:seed": "QUESTIONS_PLAYLIST_SEED_ONLY=1 QUESTIONS_PLAYLIST_ONCE=1 node scripts/questions-playlist-daily.mjs",
     "mu:ocr": "python3 scripts/mindunveiled-ocr.py --priority-first",
-    "mu:ocr:once": "python3 scripts/mindunveiled-ocr.py --once --priority-first"
+    "mu:ocr:once": "python3 scripts/mindunveiled-ocr.py --once --priority-first",
+    "wikipedia:serve": "bash /home/lenny/.grok/long-running-background-tasks/run_kiwix_serve.sh"
   },
   "dependencies": {
     "next": "16.4.6",

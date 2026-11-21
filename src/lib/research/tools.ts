@@ -2,7 +2,11 @@ import { createBryanFilingChart, createLogo } from '@/lib/research/charts';
 import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { lookupBrokercheckIndividual } from '@/lib/research/brokercheckLookup';
 import { lookupFirmConnections } from '@/lib/research/firmConnectionsLookup';
+import { searchAuthorityTimelines } from '@/lib/research/authorityTimelineSearch';
+import { searchConcealmentScrubs } from '@/lib/research/concealmentScrubSearch';
+import { searchEntityDossiers } from '@/lib/research/entityDossierSearch';
 import { searchFinraSidecar } from '@/lib/research/finraSidecarSearch';
+import { searchWikipedia } from '@/lib/research/wikipediaSearch';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
 import type { KnowledgeSourceType } from '@/lib/research/knowledge/types';
@@ -14,6 +18,10 @@ export type ResearchToolName =
 	| 'search_finra_sidecar'
 	| 'lookup_brokercheck'
 	| 'lookup_firm_connections'
+	| 'search_authority_timelines'
+	| 'search_entity_dossiers'
+	| 'search_concealment_scrubs'
+	| 'search_wikipedia'
 	| 'search_knowledge'
 	| 'chart_filings'
 	| 'make_logo';
@@ -198,6 +206,133 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					},
 				},
 				required: ['firmCrd'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_authority_timelines',
+			description:
+				'Search the local Authority Initiatives timeline (.data/authority-timelines): ICE/DHS/DEA/WH EO promo and signed-directive events with domestic/international audience tags and OK–TX corridor geos. Use for agency promo timelines, EO alignment, heavy-focus cities/counties. Source-linked leads only.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: {
+						type: 'string',
+						description: 'Keywords (agency names, cities, ops, EO topics)',
+					},
+					agency: {
+						type: 'string',
+						description: 'Optional agency filter: ICE | DHS | DEA | WH | CBP | FBI | DOD | NGB',
+					},
+					from: { type: 'string', description: 'Optional start date YYYY-MM-DD' },
+					to: { type: 'string', description: 'Optional end date YYYY-MM-DD' },
+					materialType: {
+						type: 'string',
+						description:
+							'Optional: promo_campaign | press_release | signed_directive | joint_operation | recruitment | international_outreach | other',
+					},
+					corridorOnly: {
+						type: 'boolean',
+						description: 'If true, only events tagged with OK–TX corridor geos',
+					},
+					limit: { type: 'number', description: 'Max hits (default 12, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_entity_dossiers',
+			description:
+				'Search local entity dossiers / alias buckets / edges (.data/entity-dossiers): people, orgs, places (Karp, Thiel, Palantir, Halliburton, Campion Trail, Rockefeller hub, …) cross-linked to authority events. Use for business details, aliases, and entity↔authority edges. Do not invent conspiracy links.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Name / org / place / ticker keywords' },
+					slug: {
+						type: 'string',
+						description: 'Exact dossier slug, e.g. alex-karp, palantir, campion-trail-dallas',
+					},
+					kind: {
+						type: 'string',
+						description: 'Optional: person | org | family_hub | place | alias_bucket',
+					},
+					status: {
+						type: 'string',
+						description: 'Optional: pinned | candidate | rejected',
+					},
+					includeBuckets: {
+						type: 'boolean',
+						description: 'Include open alias buckets (default true)',
+					},
+					includeEdges: {
+						type: 'boolean',
+						description: 'Include related edges (default true)',
+					},
+					limit: { type: 'number', description: 'Max dossier hits (default 12, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_wikipedia',
+			description:
+				'Search the local offline English Wikipedia ZIM via kiwix-serve (default http://127.0.0.1:8765). Use for encyclopedia background when the ZIM is downloaded and the server is running. Returns titles + snippets only.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Search pattern' },
+					limit: { type: 'number', description: 'Max hits (default 8, max 25)' },
+					start: { type: 'number', description: 'Pagination offset (0-based, default 0)' },
+				},
+				required: ['query'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_concealment_scrubs',
+			description:
+				'Search the local YouTube concealment-scrub archive (.data/concealment-scrubs): ControlAltHistory, MindUnveiled, eyes_wideopen, dig.archaeology, FRESHboosters, PhilipThompson, playlist-PLo7mt, plus deep SCRUB-01…05 notes and MindUnveiled OCR digests. Use for YouTube videos the user added, captions/cards, timeline anchors, naming/hiding patterns. Pass timelinesOnly=true to prefer Timeline sections. Claims are narration/OCR leads — not verified facts. Do NOT say you lack YouTube access when this archive exists.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: {
+						type: 'string',
+						description: 'Title / topic / person / year keywords (e.g. Falklands, Marconi, timeline)',
+					},
+					channel: {
+						type: 'string',
+						description:
+							'Optional channel filter: ControlAltHistory | MindUnveiled | eyes_wideopen | dig.archaeology | FRESHboosters | PhilipThompson | PLo7mt',
+					},
+					videoId: {
+						type: 'string',
+						description: 'Exact YouTube video id (11 chars) or youtu.be URL',
+					},
+					timelinesOnly: {
+						type: 'boolean',
+						description: 'Prefer/extract Timeline anchors / year sections (default false)',
+					},
+					includeOcr: {
+						type: 'boolean',
+						description: 'Also search MindUnveiled on-screen OCR digests (default false)',
+					},
+					limit: { type: 'number', description: 'Max hits (default 6, max 20)' },
+					maxCharsPerHit: {
+						type: 'number',
+						description: 'Max characters of excerpt per hit (default 4500)',
+					},
+				},
+				required: [],
 			},
 		},
 	},
@@ -688,6 +823,50 @@ export async function runResearchTool(
 			offset: args.offset as number | undefined,
 			query: args.query != null ? String(args.query) : undefined,
 			saveFull: args.saveFull === undefined ? undefined : Boolean(args.saveFull),
+		});
+	}
+
+	if (tool === 'search_authority_timelines') {
+		return searchAuthorityTimelines({
+			query: args.query != null ? String(args.query) : undefined,
+			agency: args.agency != null ? String(args.agency) : undefined,
+			from: args.from != null ? String(args.from) : undefined,
+			to: args.to != null ? String(args.to) : undefined,
+			materialType: args.materialType != null ? String(args.materialType) : undefined,
+			corridorOnly: args.corridorOnly === undefined ? undefined : Boolean(args.corridorOnly),
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_entity_dossiers') {
+		return searchEntityDossiers({
+			query: args.query != null ? String(args.query) : undefined,
+			slug: args.slug != null ? String(args.slug) : undefined,
+			kind: args.kind != null ? String(args.kind) : undefined,
+			status: args.status != null ? String(args.status) : undefined,
+			includeBuckets: args.includeBuckets === undefined ? undefined : Boolean(args.includeBuckets),
+			includeEdges: args.includeEdges === undefined ? undefined : Boolean(args.includeEdges),
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_wikipedia') {
+		return searchWikipedia({
+			query: args.query != null ? String(args.query) : undefined,
+			limit: args.limit as number | undefined,
+			start: args.start as number | undefined,
+		});
+	}
+
+	if (tool === 'search_concealment_scrubs') {
+		return searchConcealmentScrubs({
+			query: args.query != null ? String(args.query) : undefined,
+			channel: args.channel != null ? String(args.channel) : undefined,
+			videoId: args.videoId != null ? String(args.videoId) : undefined,
+			timelinesOnly: args.timelinesOnly === undefined ? undefined : Boolean(args.timelinesOnly),
+			includeOcr: args.includeOcr === undefined ? undefined : Boolean(args.includeOcr),
+			limit: args.limit as number | undefined,
+			maxCharsPerHit: args.maxCharsPerHit as number | undefined,
 		});
 	}
 

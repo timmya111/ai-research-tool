@@ -98,6 +98,64 @@ function lineForEntry(entry: TraceEntry): string {
 		return `- lookup_firm_connections ok=${ok}${firm}${counts}${ret} :: ${digestBody(result, 240)}`;
 	}
 
+	if (tool === 'search_authority_timelines') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		const agency = entry.args?.agency != null ? ` agency=${collapse(String(entry.args.agency), 12)}` : '';
+		return `- search_authority_timelines ok=${ok}${hits}${agency}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_entity_dossiers') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: result.dossier
+					? ' hits=1'
+					: Array.isArray(result.hits)
+						? ` hits=${(result.hits as unknown[]).length}`
+						: '';
+		const q =
+			entry.args?.slug != null
+				? ` slug=${collapse(String(entry.args.slug), 40)}`
+				: entry.args?.query != null
+					? ` q=${collapse(String(entry.args.query), 60)}`
+					: '';
+		return `- search_entity_dossiers ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_wikipedia') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		return `- search_wikipedia ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_concealment_scrubs') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q =
+			entry.args?.videoId != null
+				? ` id=${collapse(String(entry.args.videoId), 20)}`
+				: entry.args?.query != null
+					? ` q=${collapse(String(entry.args.query), 60)}`
+					: '';
+		const ch = entry.args?.channel != null ? ` ch=${collapse(String(entry.args.channel), 24)}` : '';
+		return `- search_concealment_scrubs ok=${ok}${hits}${ch}${q} :: ${digestBody(result, 240)}`;
+	}
+
 	if (tool === 'search_knowledge') {
 		const hits =
 			typeof (result as { returned?: unknown }).returned === 'number'

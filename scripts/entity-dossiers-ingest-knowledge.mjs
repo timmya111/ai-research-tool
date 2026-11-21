@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Build digests from dossiers + ingest into knowledge project "Entity Dossiers".
+ * Ingest digests/ into knowledge project "Entity Dossiers".
+ * Run `pnpm entities:digest` first.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,12 +10,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.join(ROOT, '.data', 'entity-dossiers');
+const DIGESTS = path.join(OUT, 'digests');
 const BASE_URL = String(process.env.BASE_URL || 'http://127.0.0.1:3333').replace(/\/$/, '');
 const PROJECT_NAME = String(process.env.ENTITY_PROJECT_NAME || 'Entity Dossiers').trim();
 const MAX_CHARS = 47_000;
 
-function ensureDir(p) {
-	fs.mkdirSync(p, { recursive: true, mode: 0o755 });
+function sleep(ms) {
+	return new Promise((r) => setTimeout(r, ms));
 }
 
 async function api(pathname, { method = 'GET', body } = {}) {
@@ -28,45 +30,32 @@ async function api(pathname, { method = 'GET', body } = {}) {
 	return data;
 }
 
-function dossierToMd(d) {
-	const lines = [
-		`# ${d.displayName}`,
-		'',
-		`Slug: \`${d.slug}\` · Kind: ${d.kind} · Status: ${d.status}`,
-		'',
-		d.summary || '',
-		'',
-		'## Aliases',
-		...(d.aliases || []).map((a) => `- ${a}`),
-		'',
-		'## Businesses',
-		...(d.businesses || []).map(
-			(b) => `- ${b.name}${b.role ? ` (${b.role})` : ''}${b.ticker ? ` [${b.ticker}]` : ''}${b.cik ? ` CIK=${b.cik}` : ''}`,
-		),
-		'',
-		'## Geos',
-		...(d.geos || []).map((g) => `- ${[g.city, g.county, g.state, g.label].filter(Boolean).join(' · ')}`),
-		'',
-		'## Links',
-		...(d.links || []).map((l) => `- [${l.label}](${l.url})`),
-		'',
-		'## Sources',
-		...(d.sources || []).map((s) => `- ${s.url} (${s.fetchedAt})${s.note ? ` — ${s.note}` : ''}`),
-		'',
-	];
-	return lines.join('\n');
+function listDigests() {
+	const files = [];
+	if (!fs.existsSync(DIGESTS)) return files;
+	const overview = path.join(DIGESTS, 'OVERVIEW.md');
+	if (fs.existsSync(overview)) files.push(overview);
+	const edges = path.join(DIGESTS, 'edges.md');
+	if (fs.existsSync(edges)) files.push(edges);
+	for (const name of fs.readdirSync(DIGESTS).sort()) {
+		if (!name.endsWith('.md')) continue;
+		if (name === 'OVERVIEW.md' || name === 'edges.md') continue;
+		files.push(path.join(DIGESTS, name));
+	}
+	return files;
+}
+
+function truncate(text) {
+	const t = String(text || '');
+	if (t.length <= MAX_CHARS) return t;
+	return `${t.slice(0, MAX_CHARS - 40)}\n\n…[truncated]`;
 }
 
 async function main() {
-	ensureDir(path.join(OUT, 'digests'));
-	const files = [];
-	for (const name of fs.readdirSync(path.join(OUT, 'dossiers'))) {
-		if (!name.endsWith('.json')) continue;
-		const d = JSON.parse(fs.readFileSync(path.join(OUT, 'dossiers', name), 'utf8'));
-		const md = dossierToMd(d);
-		const out = path.join(OUT, 'digests', `${d.slug}.md`);
-		fs.writeFileSync(out, md);
-		files.push(out);
+	const files = listDigests();
+	if (!files.length) {
+		console.error('No digests — run pnpm entities:digest first');
+		process.exit(1);
 	}
 
 	const listed = await api('/api/knowledge/projects');
@@ -78,16 +67,21 @@ async function main() {
 	const projectId = project.id || project.projectId;
 	let ok = 0;
 	for (const file of files) {
-		let text = fs.readFileSync(file, 'utf8');
-		if (text.length > MAX_CHARS) text = text.slice(0, MAX_CHARS - 40) + '\n\n…[truncated]';
-		const title = text.split('\n').find((l) => l.startsWith('# '))?.replace(/^#\s+/, '') || path.basename(file);
+		const text = truncate(fs.readFileSync(file, 'utf8'));
+		const title =
+			text
+				.split('\n')
+				.find((l) => l.startsWith('# '))
+				?.replace(/^#\s+/, '')
+				.slice(0, 120) || path.basename(file);
 		await api('/api/knowledge', {
 			method: 'POST',
 			body: { projectId, title, text, sourceType: 'note', uri: `file://${file}` },
 		});
 		ok += 1;
+		await sleep(50);
 	}
-	console.log(`[entities:ingest] digests=${files.length} ingested=${ok} project=${PROJECT_NAME}`);
+	console.log(`[entities:ingest] digests=${files.length} ingested=${ok} project=${PROJECT_NAME} id=${projectId}`);
 }
 
 main().catch((err) => {

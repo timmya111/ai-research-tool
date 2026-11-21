@@ -65,6 +65,12 @@ async function main() {
 		} else {
 			doc.businesses.push({ name: label, ticker, cik, role: 'sec_issuer' });
 		}
+		if (!String(doc.summary || '').trim()) {
+			doc.summary =
+				doc.kind === 'org'
+					? `${label} (SEC ticker ${ticker}).`
+					: `Associated with ${label} (${ticker}).`;
+		}
 		doc.links = doc.links || [];
 		const secUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}`;
 		if (!doc.links.some((l) => l.url === secUrl)) {
