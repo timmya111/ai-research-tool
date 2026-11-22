@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatMarkdown from '@/components/ChatMarkdown';
 import { ComposerAttach } from '@/components/ComposerAttach';
@@ -49,6 +50,12 @@ type StatusPayload = {
 		embedModelInstalled?: boolean;
 		needsReindex?: boolean;
 		error?: string | null;
+	};
+	profiles?: {
+		ok?: boolean;
+		restricted?: boolean;
+		totalProfiles?: number;
+		totalAlignments?: number;
 	};
 };
 
@@ -802,9 +809,21 @@ export default function ResearchClient() {
 	return (
 		<main className="mx-auto max-w-[920px] px-4 py-5 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-[var(--app-fg)]">
 			<header className="mb-4">
-				<div className="flex items-start justify-between gap-3">
+				<div className="flex flex-wrap items-center justify-between gap-3">
 					<p className="m-0 text-[13px] opacity-70">local only · Ollama</p>
-					<ThemeToggle />
+					<div className="flex items-center gap-2">
+						<Link
+							href="/profiles"
+							className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--app-fg)] no-underline hover:bg-[var(--app-surface-hover)]"
+						>
+							Profiles &amp; Alignment
+							{status?.profiles?.totalProfiles != null
+								? ` (${status.profiles.totalProfiles.toLocaleString()})`
+								: ''}{' '}
+							→
+						</Link>
+						<ThemeToggle />
+					</div>
 				</div>
 				<h1 className="my-1.5 text-[28px] font-semibold tracking-tight">AI Research Tool</h1>
 				<p className="m-0 leading-snug opacity-80">

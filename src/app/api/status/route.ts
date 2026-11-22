@@ -7,6 +7,7 @@ import { getKnowledgeDir } from '@/lib/research/knowledge/paths';
 import { ensureDefaultProject } from '@/lib/research/knowledge/projects';
 import { getSchemaMeta, needsReindex } from '@/lib/research/knowledge/schema';
 import { getKnowledgeDb } from '@/lib/research/knowledge/db';
+import { getProfileStats } from '@/lib/research/profiles/store';
 import { DEFAULT_RESEARCH_MODEL, getOllamaBaseUrl, ollamaTags } from '@/lib/research/ollama';
 
 export const dynamic = 'force-dynamic';
@@ -72,6 +73,29 @@ export async function GET(request: Request) {
 	const baseUrl = getOllamaBaseUrl();
 	const tags = await ollamaTags(baseUrl);
 	const knowledge = await buildKnowledgeStatus(request);
+	const detailOk = canExposeKnowledgeStatusDetail(request);
+	let profiles: Record<string, unknown> = { ok: true, restricted: true };
+	if (detailOk) {
+		try {
+			const s = getProfileStats();
+			profiles = {
+				ok: true,
+				restricted: false,
+				path: s.path,
+				totalProfiles: s.totalProfiles,
+				byType: s.byType,
+				totalTimelineEntries: s.totalTimelineEntries,
+				totalLinks: s.totalLinks,
+				totalAlignments: s.totalAlignments,
+			};
+		} catch (error: unknown) {
+			profiles = {
+				ok: false,
+				restricted: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
 
 	return NextResponse.json(
 		{
@@ -82,6 +106,7 @@ export async function GET(request: Request) {
 			error: tags.error || null,
 			localOnly: true,
 			knowledge,
+			profiles,
 		},
 		{ headers: { 'Cache-Control': 'no-store' } },
 	);

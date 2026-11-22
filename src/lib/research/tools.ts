@@ -19,6 +19,11 @@ import { searchPhysicsCongress } from '@/lib/research/physicsCongressSearch';
 import { searchPqwItmo } from '@/lib/research/pqwItmoSearch';
 import { searchTwdbTrinity } from '@/lib/research/twdbTrinitySearch';
 import { searchWikipedia } from '@/lib/research/wikipediaSearch';
+import {
+	findProfileAlignmentsTool,
+	getProfileTimelineTool,
+	searchProfilesTool,
+} from '@/lib/research/profileAlignmentTools';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
 import type { KnowledgeSourceType } from '@/lib/research/knowledge/types';
@@ -35,6 +40,9 @@ export type ResearchToolName =
 	| 'search_dod_covid_timeline'
 	| 'search_gemini_qa'
 	| 'search_entity_dossiers'
+	| 'search_profiles'
+	| 'get_profile_timeline'
+	| 'find_profile_alignments'
 	| 'search_concealment_scrubs'
 	| 'search_twdb_trinity'
 	| 'search_digital_earth'
@@ -52,6 +60,91 @@ export type ResearchToolContext = {
 };
 
 export const RESEARCH_TOOL_DEFINITIONS = [
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_profiles',
+			description:
+				'Search the unified canonical Entity Profile & Alignment store (.data/profiles/profiles.sqlite) spanning people, firms, universities, non-profits, government agencies, subject matters, and historic events across ALL local corpora (entity dossiers, FINRA rosters, WEF AMNC, CDC/DoD COVID timelines, authority timelines, physics/quantum/metamaterials conferences, TWDB aquifer, USGS seismic, NOAA tornadoes, and county deeds). Pass slug for full dossier with aliases, identifiers, locations, links, and alignments.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keyword, name, alias, CRD, ticker, or topic query' },
+					slug: {
+						type: 'string',
+						description: 'Exact profile id or slug (e.g. subject_matter:covid-19-pandemic-response, firm:halliburton)',
+					},
+					profileType: {
+						type: 'string',
+						description:
+							'Optional filter: person | firm | university | nonprofit | agency | subject_matter | historic_event | actors | narratives | all',
+					},
+					corpus: {
+						type: 'string',
+						description: 'Optional source corpus filter (e.g. wef-amnc, finra-rosters, cdc-covid-timeline, dod-covid-timeline)',
+					},
+					geo: { type: 'string', description: 'Optional location filter (city, county, state, or country)' },
+					status: { type: 'string', description: 'Optional: pinned | active | candidate | archived' },
+					limit: { type: 'number', description: 'Max hits (default 15, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'get_profile_timeline',
+			description:
+				'Retrieve the merged multi-source timeline for any profile (especially a subject_matter or historic_event), grouped by source angle (civilian_health, defense_dod, law_enforcement, land_records, academic_research, geophysical, policy, etc.). Automatically detects chronological timeline gaps and returns cross-source gap-fill leads from other corpora and knowledge.sqlite.',
+			parameters: {
+				type: 'object',
+				properties: {
+					profile: {
+						type: 'string',
+						description: 'Profile id, slug, or name (e.g. subject_matter:covid-19-pandemic-response or "Authority Initiatives")',
+					},
+					from: { type: 'string', description: 'Optional start date YYYY-MM-DD' },
+					to: { type: 'string', description: 'Optional end date YYYY-MM-DD' },
+					angle: {
+						type: 'string',
+						description:
+							'Optional angle filter: civilian_health | defense_dod | regulatory_finra | law_enforcement | land_records | academic_research | geophysical | corporate | policy',
+					},
+					corpus: { type: 'string', description: 'Optional corpus filter' },
+					minGapDays: { type: 'number', description: 'Minimum days to flag a timeline gap (default 30)' },
+					detectGaps: { type: 'boolean', description: 'Detect chronological gaps & surface gap-fill leads (default true)' },
+					fillFromKnowledge: { type: 'boolean', description: 'Also search knowledge.sqlite for gap-fill leads (default true)' },
+					limit: { type: 'number', description: 'Max timeline entries to return (default 35, max 80)' },
+				},
+				required: ['profile'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'find_profile_alignments',
+			description:
+				'Query cross-source alignment candidates discovered across all corpora: shared identifiers (CRD/CIK/ticker), alias overlaps, multi-corpus mentions, shared affiliations, geo-temporal co-occurrences, multi-angle overlaps, and county-filing FTS matches from knowledge.sqlite. Results carry caution tiers (observation | closer_look | stronger_indicator) and user triage status (proposed | confirmed | dismissed).',
+			parameters: {
+				type: 'object',
+				properties: {
+					profile: { type: 'string', description: 'Optional profile id, slug, or name to scope alignments' },
+					kind: {
+						type: 'string',
+						description:
+							'Optional: same_entity_alias | shared_identifier | cross_source_mention | timeline_gap_bridge | co_occurrence_time_geo | shared_affiliation | county_filing_match | angle_comparison',
+					},
+					status: { type: 'string', description: 'Optional: proposed | confirmed | dismissed' },
+					cautionTier: { type: 'string', description: 'Optional: observation | closer_look | stronger_indicator' },
+					minScore: { type: 'number', description: 'Optional minimum confidence score 0..1' },
+					limit: { type: 'number', description: 'Max hits (default 20, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
 	{
 		type: 'function' as const,
 		function: {
@@ -1317,6 +1410,44 @@ export async function runResearchTool(
 			status: args.status != null ? String(args.status) : undefined,
 			includeBuckets: args.includeBuckets === undefined ? undefined : Boolean(args.includeBuckets),
 			includeEdges: args.includeEdges === undefined ? undefined : Boolean(args.includeEdges),
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_profiles') {
+		return searchProfilesTool({
+			query: args.query != null ? String(args.query) : undefined,
+			slug: args.slug != null ? String(args.slug) : undefined,
+			profileType: args.profileType != null ? String(args.profileType) : undefined,
+			corpus: args.corpus != null ? String(args.corpus) : undefined,
+			geo: args.geo != null ? String(args.geo) : undefined,
+			status: args.status != null ? String(args.status) : undefined,
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'get_profile_timeline') {
+		return getProfileTimelineTool({
+			profile: args.profile != null ? String(args.profile) : undefined,
+			from: args.from != null ? String(args.from) : undefined,
+			to: args.to != null ? String(args.to) : undefined,
+			angle: args.angle != null ? String(args.angle) : undefined,
+			corpus: args.corpus != null ? String(args.corpus) : undefined,
+			minGapDays: args.minGapDays as number | undefined,
+			detectGaps: args.detectGaps === undefined ? undefined : Boolean(args.detectGaps),
+			fillFromKnowledge:
+				args.fillFromKnowledge === undefined ? undefined : Boolean(args.fillFromKnowledge),
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'find_profile_alignments') {
+		return findProfileAlignmentsTool({
+			profile: args.profile != null ? String(args.profile) : undefined,
+			kind: args.kind != null ? String(args.kind) : undefined,
+			status: args.status != null ? String(args.status) : undefined,
+			cautionTier: args.cautionTier != null ? String(args.cautionTier) : undefined,
+			minScore: args.minScore as number | undefined,
 			limit: args.limit as number | undefined,
 		});
 	}
