@@ -1483,22 +1483,43 @@ export default function ProfilesClient({
 													: 'bg-transparent hover:bg-[var(--app-surface-hover)]'
 											}`}
 										>
-											<div className="flex items-center justify-between gap-2">
-												<span
-													className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tm.badge}`}
-												>
-													{tm.label}
-												</span>
-												<span className="text-[10px] opacity-65">
-													{p.timelineCount ? `${p.timelineCount} tl` : ''}
-													{p.linkCount ? ` · ${p.linkCount} lnk` : ''}
-													{p.alignmentCount ? ` · ${p.alignmentCount} aln` : ''}
-												</span>
-											</div>
-											<div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
-												<span>{p.name}</span>
-												<CountryFlags codes={p.countryCodes} size="sm" />
-											</div>
+											{typeFilter === 'all' || typeFilter === 'actors' ? (
+												<>
+													<div className="flex items-center justify-between gap-2">
+														<span
+															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tm.badge}`}
+														>
+															{tm.label}
+														</span>
+														<span className="text-[10px] opacity-65">
+															{p.timelineCount ? `${p.timelineCount} tl` : ''}
+															{p.linkCount ? ` · ${p.linkCount} lnk` : ''}
+															{p.alignmentCount ? ` · ${p.alignmentCount} aln` : ''}
+														</span>
+													</div>
+													<div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
+														<span>{p.name}</span>
+														<CountryFlags codes={p.countryCodes} size="sm" />
+													</div>
+												</>
+											) : (
+												<div className="flex items-start justify-between gap-2">
+													<div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
+														<span>{p.name}</span>
+														<CountryFlags codes={p.countryCodes} size="sm" />
+													</div>
+													<span className="shrink-0 text-[10px] opacity-65">
+														{p.timelineCount ? `${p.timelineCount} tl` : ''}
+														{p.linkCount ? ` · ${p.linkCount} lnk` : ''}
+														{p.alignmentCount ? ` · ${p.alignmentCount} aln` : ''}
+													</span>
+												</div>
+											)}
+											{p.profileType === 'person' && p.alternateNames && p.alternateNames.length > 0 ? (
+												<div className="mt-0.5 truncate text-[10px] italic opacity-70">
+													{p.alternateNames.join(' · ')}
+												</div>
+											) : null}
 											{p.primaryLocation ? (
 												<div className="mt-0.5 text-[10px] opacity-75">📍 {p.primaryLocation}</div>
 											) : null}
@@ -1937,63 +1958,63 @@ export default function ProfilesClient({
 																	</p>
 																) : (
 																	<div className="mb-3 space-y-1.5">
-																		{workEntries.map((emp) => (
-																			<div
-																				key={emp.id}
-																				className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
-																			>
-																				<div className="flex flex-wrap items-center gap-1.5">
-																					{emp.orgProfileId ? (
-																						<button
-																							type="button"
-																							onClick={() => jumpToProfile(emp.orgProfileId!)}
-																							className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																						>
-																							{emp.orgName}
-																						</button>
-																					) : (
-																						<span className="font-semibold">{emp.orgName}</span>
-																					)}
-																					<CountryFlags codes={emp.orgCountryCodes} size="sm" />
-																					<span
-																						className={`rounded border px-1.5 py-0.2 text-[10px] font-semibold ${TYPE_META[emp.orgCategory].badge}`}
-																					>
-																						{TYPE_META[emp.orgCategory].label}
-																					</span>
-																					{emp.role ? (
-																						<span className="text-[11px] opacity-85">— {emp.role}</span>
-																					) : null}
-																					{emp.isCurrent === true ? (
-																						<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
-																							Current
-																						</span>
-																					) : emp.isCurrent === false ? (
-																						<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] opacity-75">
-																							Previous
-																						</span>
-																					) : null}
-																				</div>
-																				<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
-																					{(() => {
-																						const span = formatDateSpan(
-																							emp.startDate,
-																							emp.endDate,
-																							emp.isCurrent,
-																							false,
-																						);
-																						return span ? (
-																							<span className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold">
+																		{workEntries.map((emp) => {
+																			const span = formatDateSpan(
+																				emp.startDate,
+																				emp.endDate,
+																				emp.isCurrent,
+																				false,
+																			);
+																			return (
+																				<div
+																					key={emp.id}
+																					className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+																				>
+																					<div className="flex flex-wrap items-center gap-1.5">
+																						{span ? (
+																							<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
 																								{span}
 																							</span>
-																						) : null;
-																					})()}
-																					{emp.location ? <span>📍 {emp.location}</span> : null}
-																					<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
-																						{emp.sourceCorpus}
-																					</span>
+																						) : null}
+																						{emp.orgProfileId ? (
+																							<button
+																								type="button"
+																								onClick={() => jumpToProfile(emp.orgProfileId!)}
+																								className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																							>
+																								{emp.orgName}
+																							</button>
+																						) : (
+																							<span className="font-semibold">{emp.orgName}</span>
+																						)}
+																						<CountryFlags codes={emp.orgCountryCodes} size="sm" />
+																						<span
+																							className={`rounded border px-1.5 py-0.2 text-[10px] font-semibold ${TYPE_META[emp.orgCategory].badge}`}
+																						>
+																							{TYPE_META[emp.orgCategory].label}
+																						</span>
+																						{emp.role ? (
+																							<span className="text-[11px] opacity-85">— {emp.role}</span>
+																						) : null}
+																						{emp.isCurrent === true ? (
+																							<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+																								Current
+																							</span>
+																						) : emp.isCurrent === false ? (
+																							<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] opacity-75">
+																								Previous
+																							</span>
+																						) : null}
+																					</div>
+																					<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
+																						{emp.location ? <span>📍 {emp.location}</span> : null}
+																						<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
+																							{emp.sourceCorpus}
+																						</span>
+																					</div>
 																				</div>
-																			</div>
-																		))}
+																			);
+																		})}
 																	</div>
 																)}
 
@@ -2069,49 +2090,49 @@ export default function ProfilesClient({
 																	</p>
 																) : (
 																	<div className="space-y-1.5">
-																		{educationEntries.map((edu) => (
-																			<div
-																				key={edu.id}
-																				className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
-																			>
-																				<div className="flex flex-wrap items-center gap-1.5">
-																					{edu.orgProfileId ? (
-																						<button
-																							type="button"
-																							onClick={() => jumpToProfile(edu.orgProfileId!)}
-																							className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																						>
-																							{edu.orgName}
-																						</button>
-																					) : (
-																						<span className="font-semibold">{edu.orgName}</span>
-																					)}
-																					<CountryFlags codes={edu.orgCountryCodes} size="sm" />
-																					{edu.role ? (
-																						<span className="text-[11px] opacity-85">— {edu.role}</span>
-																					) : null}
-																				</div>
-																				<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
-																					{(() => {
-																						const span = formatDateSpan(
-																							edu.startDate,
-																							edu.endDate,
-																							edu.isCurrent,
-																							true,
-																						);
-																						return span ? (
-																							<span className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold">
+																		{educationEntries.map((edu) => {
+																			const span = formatDateSpan(
+																				edu.startDate,
+																				edu.endDate,
+																				edu.isCurrent,
+																				true,
+																			);
+																			return (
+																				<div
+																					key={edu.id}
+																					className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+																				>
+																					<div className="flex flex-wrap items-center gap-1.5">
+																						{span ? (
+																							<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
 																								{span}
 																							</span>
-																						) : null;
-																					})()}
-																					{edu.location ? <span>📍 {edu.location}</span> : null}
-																					<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
-																						{edu.sourceCorpus}
-																					</span>
+																						) : null}
+																						{edu.orgProfileId ? (
+																							<button
+																								type="button"
+																								onClick={() => jumpToProfile(edu.orgProfileId!)}
+																								className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																							>
+																								{edu.orgName}
+																							</button>
+																						) : (
+																							<span className="font-semibold">{edu.orgName}</span>
+																						)}
+																						<CountryFlags codes={edu.orgCountryCodes} size="sm" />
+																						{edu.role ? (
+																							<span className="text-[11px] opacity-85">— {edu.role}</span>
+																						) : null}
+																					</div>
+																					<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
+																						{edu.location ? <span>📍 {edu.location}</span> : null}
+																						<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
+																							{edu.sourceCorpus}
+																						</span>
+																					</div>
 																				</div>
-																			</div>
-																		))}
+																			);
+																		})}
 																	</div>
 																)}
 															</div>
@@ -2169,6 +2190,11 @@ export default function ProfilesClient({
 																		className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs"
 																	>
 																		<div className="flex flex-wrap items-center gap-1.5">
+																			{dateSpan ? (
+																				<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+																					{dateSpan}
+																				</span>
+																			) : null}
 																			<span className="text-[10px] opacity-60">
 																				{isOut ? '→' : '←'} {l.relationType.replace(/_/g, ' ')}
 																			</span>
@@ -2190,11 +2216,6 @@ export default function ProfilesClient({
 																			) : null}
 																		</div>
 																		<div className="flex items-center gap-1.5 text-[10px] opacity-75">
-																			{dateSpan ? (
-																				<span className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-semibold">
-																					{dateSpan}
-																				</span>
-																			) : null}
 																			<span>{sourceLabel}</span>
 																		</div>
 																	</div>

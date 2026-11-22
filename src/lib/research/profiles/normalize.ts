@@ -170,6 +170,265 @@ export function normalizeGeoKey(input: {
 	return `raw:${slugifyPart(input.raw || 'unknown', 48)}`;
 }
 
+const VALID_US_STATES = new Set(Object.values(US_STATE_ABBR));
+
+function toTitleCaseSegment(seg: string): string {
+	const s = seg.trim();
+	if (!s) return '';
+	// Only re-case ALL CAPS or all lowercase segments; preserve mixed case like "McLean" or "LaSalle"
+	const isAllUpper = s === s.toUpperCase() && /[A-Z]/.test(s) && s.length > 2;
+	const isAllLower = s === s.toLowerCase() && /[a-z]/.test(s);
+	if (!isAllUpper && !isAllLower) return s;
+	const keepUpper = new Set(['NW', 'NE', 'SW', 'SE', 'PO', 'WTC', 'AFB', 'NAS', 'JRB', 'US', 'UK', 'DC', 'NYC']);
+	const keepLower = new Set(['of', 'the', 'and', 'de', 'la', 'del', 'in', 'on', 'at']);
+	return s
+		.toLowerCase()
+		.split(/(\s+|-)/)
+		.map((part, idx) => {
+			if (!part || /^[\s-]+$/.test(part)) return part;
+			const up = part.toUpperCase();
+			if (keepUpper.has(up)) return up;
+			if (idx > 0 && keepLower.has(part)) return part;
+			return part[0].toUpperCase() + part.slice(1);
+		})
+		.join('');
+}
+
+/**
+ * Clean and standardize an address / location string into a consistent naming convention:
+ * - US street/neighborhood: "<Detail>, <City>, <ST>" (e.g. "30 Park Place, New York, NY")
+ * - US city: "<City>, <ST>" (e.g. "New York, NY", "Washington, DC", "Dallas, TX")
+ * - US county: "<Name> County, <ST>" (e.g. "Bryan County, OK")
+ * - International: clean comma spacing ("Montreal, Quebec, Canada", "Frankfurt, Germany")
+ */
+export function normalizeLocationRecord(input: {
+	raw?: string | null;
+	city?: string | null;
+	county?: string | null;
+	state?: string | null;
+	country?: string | null;
+}): {
+	raw: string;
+	city: string | null;
+	county: string | null;
+	state: string | null;
+	country: string | null;
+	geoKey: string;
+} {
+	const rawClean = String(input.raw || '')
+		.replace(/\s+,/g, ',')
+		.replace(/,\s*,+/g, ',')
+		.replace(/\s+/g, ' ')
+		.replace(/^[,;\s-]+|[,;\s-]+$/g, '')
+		.trim();
+
+	let city = input.city ? toTitleCaseSegment(String(input.city)) : null;
+	let county = input.county ? toTitleCaseSegment(String(input.county)) : null;
+	let state = input.state ? normalizeUsState(input.state) : null;
+	let country = input.country ? String(input.country).trim() : null;
+
+	if (rawClean) {
+		// Split by commas and normalize parts
+		const parts = rawClean
+			.split(',')
+			.map((p) => p.trim())
+			.filter(Boolean);
+
+		// Strip trailing ", U.S." / ", USA" / ", United States" when we have US state/city context
+		let trailingIsUs = false;
+		if (parts.length >= 2 && /^(?:u\.?s\.?a?\.?|united states(?: of america)?)$/i.test(parts[parts.length - 1])) {
+			trailingIsUs = true;
+			parts.pop();
+			country = 'US';
+		}
+
+		// Handle "Washington, D.C."
+		if (parts.length >= 2 && /^washington$/i.test(parts[0]) && /^d\.?c\.?$/i.test(parts[1])) {
+			city = 'Washington';
+			state = 'DC';
+			country = 'US';
+			parts.splice(0, 2, 'Washington', 'DC');
+		}
+
+		// Handle standalone "New York City" (with or without trailing US / NY)
+		for (let i = 0; i < parts.length; i++) {
+			if (/^new york city$/i.test(parts[i])) {
+				parts[i] = 'New York';
+				if (!state && (trailingIsUs || i === parts.length - 1)) {
+					state = 'NY';
+					country = 'US';
+				}
+			}
+		}
+
+		// If "New York" ended up without state after stripping ", U.S.", add ", NY" BEFORE state abbreviation check
+		if (parts.length === 1 && parts[0].toLowerCase() === 'new york' && (state === 'NY' || trailingIsUs)) {
+			parts.push('NY');
+			state = 'NY';
+			country = 'US';
+		}
+
+		// Check if last part is a US state (only when parts.length >= 2, so standalone city/state isn't collapsed to bare 2-letter code)
+		const lastPart = parts.length >= 2 ? parts[parts.length - 1] : '';
+		const stateZipM = lastPart.match(/^([A-Za-z ]+?)(?:\s+(\d{5}(?:-\d{4})?))?$/);
+		if (stateZipM) {
+			const maybeState = stateZipM[1].trim();
+			const zip = stateZipM[2] || '';
+			const mapped =
+				maybeState.length === 2 && VALID_US_STATES.has(maybeState.toUpperCase())
+					? maybeState.toUpperCase()
+					: US_STATE_ABBR[maybeState.toLowerCase()] || null;
+			if (mapped) {
+				state = mapped;
+				country = 'US';
+				parts[parts.length - 1] = zip ? `${mapped} ${zip}` : mapped;
+			}
+		}
+		// Prevent duplicate "New York, New York, NY" -> "New York, NY"
+		if (parts.length >= 2 && parts[parts.length - 1] === 'NY' && parts[parts.length - 2].toLowerCase() === 'new york') {
+			if (parts.length >= 3 && parts[parts.length - 3].toLowerCase() === 'new york') {
+				parts.splice(parts.length - 3, 1);
+			}
+		}
+
+		// Title-case non-state segments cleanly
+		for (let i = 0; i < parts.length; i++) {
+			const p = parts[i];
+			if (/^[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?$/.test(p)) continue;
+			parts[i] = toTitleCaseSegment(p);
+		}
+
+		// Infer city / county from normalized parts when missing
+		if (state && VALID_US_STATES.has(state)) {
+			country = 'US';
+			const beforeState = parts.length >= 2 ? parts[parts.length - 2] : '';
+			const countyM = beforeState.match(/^(.+?)\s+County$/i);
+			if (countyM) {
+				county = county || countyM[1].trim();
+			} else if (beforeState && !/^\d/.test(beforeState)) {
+				city = beforeState;
+			}
+		}
+
+		if (city && /^new york city$/i.test(city)) city = 'New York';
+
+		const formattedRaw = parts.join(', ');
+		const geoKey = normalizeGeoKey({ raw: formattedRaw, city, county, state, country });
+		return {
+			raw: formattedRaw || rawClean,
+			city,
+			county,
+			state,
+			country,
+			geoKey,
+		};
+	}
+
+	// Fallback if only structured fields were provided
+	if (city && /^new york city$/i.test(city)) city = 'New York';
+	const fallbackParts: string[] = [];
+	if (county) fallbackParts.push(`${county} County`);
+	else if (city) fallbackParts.push(city);
+	if (state) fallbackParts.push(state);
+	else if (country) fallbackParts.push(country);
+	const formatted = fallbackParts.join(', ') || 'Unknown';
+	return {
+		raw: formatted,
+		city,
+		county,
+		state,
+		country: country || (state && VALID_US_STATES.has(state) ? 'US' : null),
+		geoKey: normalizeGeoKey({ raw: formatted, city, county, state, country }),
+	};
+}
+
+const LOCATION_ROLE_PRIORITY: Record<string, number> = {
+	hq: 7,
+	residence: 6,
+	branch: 5,
+	event_site: 4,
+	jurisdiction: 3,
+	corridor: 2,
+	associated: 1,
+};
+
+/**
+ * Deduplicate locations consistently:
+ * 1. Normalize every address via `normalizeLocationRecord`.
+ * 2. Merge exact duplicates (keeping highest-priority role).
+ * 3. Drop generic city-only rows (e.g. "New York, NY" or "Brooklyn, NY") when a more specific
+ *    street/neighborhood address in the exact same city/state (e.g. "30 Park Place, New York, NY"
+ *    or "Bedford-Stuyvesant, Brooklyn, NY") is already present.
+ */
+export function deduplicateLocations<
+	T extends {
+		raw: string;
+		city: string | null;
+		county: string | null;
+		state: string | null;
+		country: string | null;
+		geoKey: string;
+		role: string;
+	},
+>(locations: T[]): T[] {
+	// Step 1 & 2: Normalize and dedupe exact normalized address string
+	const byExact = new Map<string, T>();
+	for (const loc of locations) {
+		const norm = normalizeLocationRecord(loc);
+		const normalizedLoc: T = {
+			...loc,
+			raw: norm.raw,
+			city: norm.city,
+			county: norm.county,
+			state: norm.state,
+			country: norm.country,
+			geoKey: norm.geoKey,
+		};
+		const key = normalizeText(norm.raw);
+		if (!key) continue;
+		const existing = byExact.get(key);
+		if (!existing) {
+			byExact.set(key, normalizedLoc);
+		} else {
+			const exPri = LOCATION_ROLE_PRIORITY[existing.role] || 0;
+			const newPri = LOCATION_ROLE_PRIORITY[normalizedLoc.role] || 0;
+			if (newPri > exPri) {
+				byExact.set(key, normalizedLoc);
+			}
+		}
+	}
+
+	const unique = [...byExact.values()];
+
+	// Step 3: Identify city/state buckets that already have a specific street/neighborhood address (3+ comma parts)
+	const specificGeoKeys = new Set<string>();
+	for (const loc of unique) {
+		const commaParts = loc.raw.split(',').map((p) => p.trim()).filter(Boolean);
+		if (commaParts.length >= 3 && loc.geoKey && !loc.geoKey.startsWith('raw:')) {
+			specificGeoKeys.add(loc.geoKey);
+		}
+	}
+
+	const pruned = unique.filter((loc) => {
+		const commaParts = loc.raw.split(',').map((p) => p.trim()).filter(Boolean);
+		// Drop generic "City, ST" (2 parts) when we already have "<Street/Neighborhood>, City, ST" in the same geoKey
+		if (commaParts.length <= 2 && specificGeoKeys.has(loc.geoKey)) {
+			return false;
+		}
+		return true;
+	});
+
+	// Sort cleanly: hq/residence first, then branch, then alphabetical
+	pruned.sort((a, b) => {
+		const pa = LOCATION_ROLE_PRIORITY[a.role] || 0;
+		const pb = LOCATION_ROLE_PRIORITY[b.role] || 0;
+		if (pa !== pb) return pb - pa;
+		return a.raw.localeCompare(b.raw);
+	});
+
+	return pruned;
+}
+
 /**
  * Parse a loose US "City, ST 12345" address string into structured parts.
  */
@@ -179,31 +438,13 @@ export function parseAddressParts(raw: string): {
 	state: string | null;
 	country: string | null;
 } {
-	const text = String(raw || '').trim();
-	if (!text) return { city: null, county: null, state: null, country: null };
-
-	// Match "City, ST 12345" or "City, ST"
-	const m = text.match(/([A-Za-z .'-]+?),\s*([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$/);
-	if (m) {
-		return {
-			city: m[1].trim(),
-			county: null,
-			state: m[2].toUpperCase(),
-			country: 'US',
-		};
-	}
-	// Match "... County, OK" or "... County, Texas"
-	const cm = text.match(/([A-Za-z .'-]+?)\s+County(?:,\s*([A-Za-z ]+))?/i);
-	if (cm) {
-		const st = normalizeUsState(cm[2]);
-		return {
-			city: null,
-			county: cm[1].trim(),
-			state: st,
-			country: st ? 'US' : null,
-		};
-	}
-	return { city: null, county: null, state: null, country: null };
+	const norm = normalizeLocationRecord({ raw });
+	return {
+		city: norm.city,
+		county: norm.county,
+		state: norm.state,
+		country: norm.country,
+	};
 }
 
 /**

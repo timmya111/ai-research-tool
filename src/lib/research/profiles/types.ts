@@ -219,6 +219,8 @@ export type Profile = {
 	primaryLocation?: string | null;
 	/** Clearly associated ISO/flag-icons lowercase country codes (multiple if multinational) */
 	countryCodes?: string[];
+	/** Distinct alternate / full name variations (excluding the primary canonical name) */
+	alternateNames?: string[];
 };
 
 export type PersonEmploymentEntry = {

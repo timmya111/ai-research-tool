@@ -4,11 +4,11 @@ import { detectProfileCountryCodes } from '@/lib/research/profiles/countries';
 import { getProfilesDb } from '@/lib/research/profiles/db';
 import {
 	buildSafeFtsQuery,
+	deduplicateLocations,
 	makeProfileSlug,
-	normalizeGeoKey,
 	normalizeIsoDate,
+	normalizeLocationRecord,
 	normalizeText,
-	normalizeUsState,
 	sha256Key,
 } from '@/lib/research/profiles/normalize';
 import { getProfilesDir } from '@/lib/research/profiles/paths';
@@ -398,13 +398,11 @@ export function addLocation(
 	dbOverride?: DatabaseSync,
 ): string {
 	const db = dbOverride ?? getProfilesDb();
-	const raw = String(input.raw || '').trim();
-	const state = normalizeUsState(input.state);
-	const geoKey = normalizeGeoKey({
-		raw,
+	const norm = normalizeLocationRecord({
+		raw: input.raw,
 		city: input.city,
 		county: input.county,
-		state,
+		state: input.state,
 		country: input.country,
 	});
 	const id = crypto.randomUUID();
@@ -415,18 +413,18 @@ export function addLocation(
 	).run(
 		id,
 		input.profileId,
-		raw || geoKey,
-		input.city ? String(input.city).trim() : null,
-		input.county ? String(input.county).trim() : null,
-		state,
-		input.country ? String(input.country).trim() : null,
-		geoKey,
+		norm.raw || norm.geoKey,
+		norm.city,
+		norm.county,
+		norm.state,
+		norm.country,
+		norm.geoKey,
 		typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null,
 		typeof input.lon === 'number' && Number.isFinite(input.lon) ? input.lon : null,
 		input.role || 'associated',
 		input.sourceCorpus || null,
 	);
-	return geoKey;
+	return norm.geoKey;
 }
 
 export function upsertSourceRecord(
@@ -848,7 +846,8 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		prof.corpora = Array.isArray(prof.metadata.corpora)
 			? (prof.metadata.corpora as unknown[]).map(String)
 			: [];
-		prof.primaryLocation = r.primary_location != null ? String(r.primary_location) : null;
+		prof.primaryLocation =
+			r.primary_location != null ? normalizeLocationRecord({ raw: String(r.primary_location) }).raw : null;
 		const tagSet = new Set<ProfileType>();
 		if (typeof r.linked_categories === 'string' && r.linked_categories.trim()) {
 			for (const c of r.linked_categories.split(',')) {
@@ -909,6 +908,22 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 			idByPid.set(pid, list);
 		}
 
+		const aliasByPid = new Map<string, string[]>();
+		const aliasRows = db
+			.prepare(
+				`SELECT profile_id, alias
+         FROM profile_aliases
+         WHERE profile_id IN (${placeholders})
+           AND alias_kind IN ('name', 'former_name')`,
+			)
+			.all(...ids) as Array<Record<string, unknown>>;
+		for (const ar of aliasRows) {
+			const pid = String(ar.profile_id);
+			const list = aliasByPid.get(pid) || [];
+			list.push(String(ar.alias || ''));
+			aliasByPid.set(pid, list);
+		}
+
 		for (const prof of profiles) {
 			prof.countryCodes = detectProfileCountryCodes({
 				name: prof.name,
@@ -918,6 +933,18 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 				identifiers: idByPid.get(prof.id) || [],
 				metadata: prof.metadata,
 			});
+			const canonLow = prof.name.trim().toLowerCase().replace(/\s+/g, ' ');
+			const seen = new Set<string>([canonLow]);
+			prof.alternateNames = (aliasByPid.get(prof.id) || [])
+				.map((a) => a.replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim())
+				.filter((raw) => {
+					const low = raw.toLowerCase();
+					if (!low || seen.has(low)) return false;
+					seen.add(low);
+					return true;
+				})
+				.sort((a, b) => b.length - a.length)
+				.slice(0, 2);
 		}
 	}
 
@@ -957,7 +984,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 	const locRows = db
 		.prepare('SELECT * FROM profile_locations WHERE profile_id = ? ORDER BY role ASC, raw ASC')
 		.all(profile.id) as Array<Record<string, unknown>>;
-	const locations: ProfileLocation[] = locRows.map((r) => ({
+	const rawLocations: ProfileLocation[] = locRows.map((r) => ({
 		id: String(r.id),
 		profileId: String(r.profile_id),
 		raw: String(r.raw),
@@ -971,6 +998,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		role: String(r.role || 'associated') as LocationRole,
 		sourceCorpus: r.source_corpus != null ? String(r.source_corpus) : null,
 	}));
+	const locations: ProfileLocation[] = deduplicateLocations(rawLocations);
 
 	const linkRows = db
 		.prepare(
@@ -1356,6 +1384,19 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		identifiers,
 		metadata: profile.metadata,
 	});
+	const canonLowDetail = profile.name.trim().toLowerCase().replace(/\s+/g, ' ');
+	const seenDetailAlt = new Set<string>([canonLowDetail]);
+	profile.alternateNames = aliases
+		.filter((a) => a.aliasKind === 'name' || a.aliasKind === 'former_name')
+		.map((a) => a.alias.replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim())
+		.filter((raw) => {
+			const low = raw.toLowerCase();
+			if (!low || seenDetailAlt.has(low)) return false;
+			seenDetailAlt.add(low);
+			return true;
+		})
+		.sort((a, b) => b.length - a.length)
+		.slice(0, 2);
 
 	return {
 		profile,

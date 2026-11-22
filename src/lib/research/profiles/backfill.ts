@@ -704,8 +704,15 @@ function backfillCovidTimeline(
 		if (!name || name.length < 2) continue;
 
 		let profileType: ProfileType | null = null;
-		if (rawType === 'person') profileType = 'person';
-		else if (rawType === 'company') profileType = classifyOrgType(name, 'firm');
+		if (rawType === 'person') {
+			// Skip composite "... Administration" buckets and route government office titles to government
+			if (/\badministration\b/i.test(name)) continue;
+			if (/^(?:potus|vpotus|flotus|scotus)$/i.test(name) || /\b(?:under secretary|deputy secretary|assistant secretary|secretary of|surgeon general|attorney general|inspector general|joint chiefs)\b/i.test(name)) {
+				profileType = 'government';
+			} else {
+				profileType = 'person';
+			}
+		} else if (rawType === 'company') profileType = classifyOrgType(name, 'firm');
 		else if (rawType === 'org') profileType = classifyOrgType(name);
 		else if (rawType === 'disease' || rawType === 'vaccine' || rawType === 'treatment' || rawType === 'variant') {
 			// Skip granular biomedical sub-tags as separate profiles unless major; keep actors & subjects clean
