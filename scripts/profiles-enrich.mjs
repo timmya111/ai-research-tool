@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Research and enrich captured entity profiles (people, firms, education, nonprofits,
- * hospitals, government, foreign, historic events) using local offline Wikipedia
+ * hospitals, government, historic events) using local offline Wikipedia
  * (kiwix-serve), FINRA BrokerCheck (by CRD), local knowledge.sqlite (county deeds /
  * Research Drive), and Bryan County UCC filings.
  *

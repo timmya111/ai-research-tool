@@ -37,7 +37,7 @@ const SEC_UA = 'AIResearchTool/1.0 (local-research-archive@localhost.invalid)';
 /**
  * Curated manifest of topics across all 4 requested tracks.
  * profileType matches the 8 canonical categories:
- *   person | firm | education | nonprofit | medical_hospital | government | foreign | historic_event
+ *   person | firm | education | nonprofit | medical_hospital | government | historic_event
  */
 const MANIFEST = [
 	// --- Track 1: New York & Boston Financial History ---

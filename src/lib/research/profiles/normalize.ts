@@ -66,7 +66,8 @@ const FIRM_RE =
 
 /**
  * Heuristically classify an organization name into:
- * medical_hospital | education | government | foreign | nonprofit | firm.
+ * medical_hospital | education | government | nonprofit | firm.
+ * Government covers domestic and foreign ministries, embassies, and intl bodies.
  */
 export function classifyOrgType(
 	name: string,
@@ -79,15 +80,21 @@ export function classifyOrgType(
 	if (rawHint === 'education' || rawHint === 'university' || rawHint === 'academic' || rawHint === 'school') {
 		return 'education';
 	}
-	if (rawHint === 'government' || rawHint === 'gov' || rawHint === 'federal_gov' || rawHint === 'state_gov' || rawHint === 'federal' || rawHint === 'state') {
+	if (
+		rawHint === 'government' ||
+		rawHint === 'gov' ||
+		rawHint === 'federal_gov' ||
+		rawHint === 'state_gov' ||
+		rawHint === 'federal' ||
+		rawHint === 'state' ||
+		rawHint === 'foreign' ||
+		rawHint === 'foreign_gov' ||
+		rawHint === 'agency'
+	) {
 		return 'government';
 	}
 	if (rawHint === 'nonprofit' || rawHint === 'non-profit' || rawHint === 'ngo' || rawHint === 'foundation') {
 		return 'nonprofit';
-	}
-	if (rawHint === 'foreign' || rawHint === 'foreign_gov' || rawHint === 'agency') {
-		if (US_GOVERNMENT_RE.test(name)) return 'government';
-		return 'foreign';
 	}
 	if (rawHint === 'firm' || rawHint === 'company' || rawHint === 'business') return 'firm';
 
@@ -96,10 +103,10 @@ export function classifyOrgType(
 	if (MEDICAL_HOSPITAL_RE.test(hay) && !/\bhospitality\b/i.test(hay)) return 'medical_hospital';
 	// 2. Education (universities, colleges, schools, districts, boards)
 	if (EDUCATION_RE.test(hay)) return 'education';
-	// 3. Domestic government (federal + state + local) vs Foreign gov/agency
+	// 3. Government (domestic + foreign ministries / embassies / intl bodies)
 	if (US_GOVERNMENT_RE.test(hay)) return 'government';
 	if (FOREIGN_GOV_RE.test(hay) && !/\b(co\.?\s*ltd|llc|inc\.?|corp\.?|plc|gmbh)\b/i.test(hay)) {
-		return 'foreign';
+		return 'government';
 	}
 	// 4. Commercial firms vs nonprofits
 	if (FIRM_RE.test(hay) && !/\b(foundation|society|association|non[- ]?profit|church|charity|museum)\b/i.test(hay)) {

@@ -139,12 +139,12 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					profileType: {
 						type: 'string',
 						description:
-							'Optional filter: person | firm | education | nonprofit | medical_hospital | government | foreign | historic_event | actors | narratives | all',
+							'Optional filter: person | firm | education | nonprofit | medical_hospital | government | historic_event | actors | narratives | all',
 					},
 					tag: {
 						type: 'string',
 						description:
-							'Optional main-category tag filter (great for person profiles): firm | education | nonprofit | medical_hospital | government | foreign | historic_event',
+							'Optional main-category tag filter (great for person profiles): firm | education | nonprofit | medical_hospital | government | historic_event',
 					},
 					corpus: {
 						type: 'string',
@@ -217,7 +217,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'enrich_profile',
 			description:
-				'Research and fill missing details on a captured entity profile (person, firm, education, nonprofit, medical_hospital, government, foreign, historic_event) across local offline Wikipedia, FINRA BrokerCheck (by CRD), local knowledge.sqlite county deeds / Research Drive, and Bryan County UCC filings. Strictly enforces identity validation: merges data ONLY when corroborated by identifier or (exact/fuzzy/initials name + address, firm/employer, military base, or institution). Name-only matches are NEVER merged — they are saved as possible_match_name_only notes.',
+				'Research and fill missing details on a captured entity profile (person, firm, education, nonprofit, medical_hospital, government, historic_event) across local offline Wikipedia, FINRA BrokerCheck (by CRD), local knowledge.sqlite county deeds / Research Drive, and Bryan County UCC filings. Strictly enforces identity validation: merges data ONLY when corroborated by identifier or (exact/fuzzy/initials name + address, firm/employer, military base, or institution). Name-only matches are NEVER merged — they are saved as possible_match_name_only notes.',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -323,7 +323,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'search_finra_sidecar',
 			description:
-				'Search the production FINRA/SEC visualizer flat-file search index (gzip sidecars via /api/finra/search and /api/finra/sec-search). Use for CRD / person / firm name lookup across the full shipped corpus — not only nodes on the current canvas. Returns identity + current employers only (often empty when Inactive). For full employment / registration history use lookup_brokercheck. Prefer this for FINRA identity; use inspect_canvas_graph only for what is on-screen.',
+				'Search the production FINRA/SEC visualizer flat-file search index (gzip sidecars via /api/finra/search and /api/finra/sec-search). Use for CRD / person / firm name lookup across the full shipped corpus — not only nodes on the current canvas. Returns identity plus employment detail (current, IA, previous firms with dates/branches) enriched from /api/finra/merged/individual/{crd} when the query is a numeric CRD or a hit has empty employers. For BrokerCheck-only deep history / exams still use lookup_brokercheck. Prefer this for FINRA identity; use inspect_canvas_graph only for what is on-screen.',
 			parameters: {
 				type: 'object',
 				properties: {

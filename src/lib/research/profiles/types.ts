@@ -5,7 +5,6 @@ export const ACTOR_PROFILE_TYPES = [
 	'nonprofit',
 	'medical_hospital',
 	'government',
-	'foreign',
 ] as const;
 
 export const NARRATIVE_PROFILE_TYPES = [
@@ -38,6 +37,8 @@ export type AliasKind =
 export type IdentifierScheme =
 	| 'finra_crd'
 	| 'sec_cik'
+	/** Parent filer's CIK for non-filing subsidiaries (does NOT trigger same-entity shared_identifier merges). */
+	| 'parent_sec_cik'
 	| 'ticker'
 	| 'irs_ein'
 	| 'ror'
@@ -100,6 +101,8 @@ export type ProfileRelationType =
 	| 'regulator_of'
 	| 'family_or_associate'
 	| 'business_tie'
+	/** Subsidiary → parent ownership (keep both firm nodes; do not merge). */
+	| 'owned_by'
 	| 'location_overlap'
 	| 'temporal_overlap'
 	| 'possible_alignment';

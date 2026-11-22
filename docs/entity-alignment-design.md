@@ -18,8 +18,7 @@ This layer introduces a **dedicated local SQLite profile & alignment database** 
 | `education` | Universities, colleges, schools, school districts (ISDs), academies, educational boards/systems |
 | `nonprofit` | Non-profits, foundations, NGOs, scientific societies, museums, research institutes |
 | `medical_hospital` | Medical hospitals, medical centers, clinics, health systems, behavioral/psychiatric facilities |
-| `government` | Domestic government (federal, state, and local agencies, military/defense, regulators, boards — e.g. CDC, DoD, DHS, ICE, DEA, FBI, USGS, NOAA, TWDB, White House) |
-| `foreign` | Foreign national ministries, embassies, municipal governments, and intergovernmental/international bodies |
+| `government` | Government globally: domestic federal/state/local agencies, military/defense, regulators, boards (e.g. CDC, DoD, DHS, ICE, DEA, FBI, USGS, NOAA, TWDB, White House), plus foreign national ministries, embassies, municipal governments, and intergovernmental/international bodies |
 
 ### Events & Timeline Container Profiles
 | `profile_type` | Description |

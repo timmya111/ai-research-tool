@@ -349,11 +349,12 @@ export async function getCachedOrFetchVisualizerIndividual(
 		return { snapshot: null, fromCache: false, changed: false, previousSnapshot: null };
 	}
 
+	// Prefer merged (BrokerCheck + IAPD combined) — same shape as /api/finra/merged/individual/{crd}.
 	const nodePayload =
-		(res.data.finraNode && typeof res.data.finraNode === 'object'
-			? (res.data.finraNode as Record<string, unknown>)
-			: res.data.merged && typeof res.data.merged === 'object'
-				? (res.data.merged as Record<string, unknown>)
+		(res.data.merged && typeof res.data.merged === 'object'
+			? (res.data.merged as Record<string, unknown>)
+			: res.data.finraNode && typeof res.data.finraNode === 'object'
+				? (res.data.finraNode as Record<string, unknown>)
 				: res.data) || res.data;
 
 	const found =

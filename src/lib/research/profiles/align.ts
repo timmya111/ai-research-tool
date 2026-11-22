@@ -115,6 +115,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 	const db = getProfilesDb();
 
 	// 1. Shared Identifiers (exact CRD / CIK / Ticker / EIN / URL across different profiles)
+	// parent_sec_cik / url are relational or locators, not same-entity identity keys
 	const sharedIdentRows = db
 		.prepare(
 			`SELECT a.profile_id AS p1, b.profile_id AS p2, a.scheme, a.value,
@@ -124,6 +125,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
          ON a.scheme = b.scheme AND a.normalized_value = b.normalized_value AND a.profile_id < b.profile_id
        JOIN profiles p1 ON p1.id = a.profile_id
        JOIN profiles p2 ON p2.id = b.profile_id
+       WHERE a.scheme NOT IN ('parent_sec_cik', 'url', 'source_id', 'dossier_slug')
        LIMIT 300`,
 		)
 		.all() as Array<Record<string, unknown>>;
@@ -184,7 +186,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
        JOIN profiles hub ON hub.id = l1.to_profile_id
        JOIN profiles a1 ON a1.id = l1.from_profile_id
        JOIN profiles a2 ON a2.id = l2.from_profile_id
-       WHERE hub.profile_type IN ('firm', 'education', 'nonprofit', 'medical_hospital', 'government', 'foreign')
+       WHERE hub.profile_type IN ('firm', 'education', 'nonprofit', 'medical_hospital', 'government')
          AND a1.profile_type IN ('person', 'firm', 'education', 'nonprofit', 'medical_hospital')
          AND a2.profile_type IN ('person', 'firm', 'education', 'nonprofit', 'medical_hospital')
        LIMIT 250`,

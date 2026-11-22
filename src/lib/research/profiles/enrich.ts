@@ -1137,8 +1137,7 @@ function applyValidatedWikipediaEnrichment(
 			profileType === 'education' ||
 			profileType === 'nonprofit' ||
 			profileType === 'medical_hospital' ||
-			profileType === 'government' ||
-			profileType === 'foreign'
+			profileType === 'government'
 		) {
 			// Link founders & key people (as person profiles)
 			for (const k of ['founder', 'founders', 'key people']) {

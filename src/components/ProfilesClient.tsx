@@ -16,7 +16,7 @@ import type {
 	ProfileType,
 } from '@/lib/research/profiles/types';
 
-const HIDDEN_SOURCE_TAGS = new Set(['wikipedia-local', 'finra-visualizer']);
+const HIDDEN_SOURCE_TAGS = new Set(['wikipedia-local', 'finra-visualizer', 'entity-dossiers']);
 
 const TYPE_META: Record<
 	ProfileType,
@@ -58,12 +58,6 @@ const TYPE_META: Record<
 		badge: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/35',
 		group: 'actor',
 	},
-	foreign: {
-		label: 'Foreign',
-		plural: 'Foreign',
-		badge: 'bg-slate-500/15 text-slate-800 dark:text-slate-200 border-slate-500/30',
-		group: 'actor',
-	},
 	historic_event: {
 		label: 'Historic Event',
 		plural: 'Historic Events',
@@ -91,6 +85,23 @@ const CAUTION_BADGE: Record<CautionTier, string> = {
 	stronger_indicator: 'bg-rose-500/15 text-rose-800 dark:text-rose-200 border-rose-500/35',
 };
 
+/** Person/firm with an endDate = deceased / defunct; keep legacy card colors. */
+function profileHasEnded(p: Pick<Profile, 'endDate'>): boolean {
+	return Boolean(p.endDate && String(p.endDate).trim());
+}
+
+/** Living people and still-active firms get a soft green “current” tint on the left list. */
+function isCurrentPersonOrFirm(p: Pick<Profile, 'profileType' | 'endDate'>): boolean {
+	return (p.profileType === 'person' || p.profileType === 'firm') && !profileHasEnded(p);
+}
+
+const CURRENT_ACTOR_BADGE =
+	'bg-emerald-500/20 text-emerald-900 dark:text-emerald-100 border-emerald-500/45';
+const CURRENT_ACTOR_ROW =
+	'bg-emerald-500/10 hover:bg-emerald-500/18 dark:bg-emerald-500/12 dark:hover:bg-emerald-500/20';
+const CURRENT_ACTOR_ROW_ACTIVE =
+	'border-l-2 border-l-emerald-500 bg-emerald-500/20 dark:bg-emerald-500/25';
+
 const ALL_TYPES: ProfileType[] = [
 	'historic_event',
 	'person',
@@ -99,7 +110,6 @@ const ALL_TYPES: ProfileType[] = [
 	'nonprofit',
 	'medical_hospital',
 	'government',
-	'foreign',
 ];
 
 const CATEGORY_TAG_TYPES: ProfileType[] = [
@@ -107,7 +117,6 @@ const CATEGORY_TAG_TYPES: ProfileType[] = [
 	'nonprofit',
 	'medical_hospital',
 	'government',
-	'foreign',
 	'historic_event',
 ];
 
@@ -117,7 +126,6 @@ const EMPLOYER_CATEGORY_TYPES: ProfileType[] = [
 	'nonprofit',
 	'medical_hospital',
 	'government',
-	'foreign',
 ];
 
 const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
@@ -217,27 +225,25 @@ function getFlagLabel(code: string): string {
 	return c.toUpperCase();
 }
 
-const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-function formatMonthYear(iso?: string | null): string {
+/** Display dates as mo-day-year (MM-DD-YYYY). Partial ISO stays MM-YYYY or YYYY. */
+function formatDisplayDate(iso?: string | null): string {
 	const raw = String(iso || '').trim();
 	if (!raw) return '';
-	const ym = raw.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
-	if (ym) {
-		const mIdx = Number(ym[2]) - 1;
-		if (mIdx >= 0 && mIdx < 12) return `${SHORT_MONTHS[mIdx]} ${ym[1]}`;
-	}
+	const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+	if (ymd) return `${ymd[2]}-${ymd[3]}-${ymd[1]}`;
+	const ym = raw.match(/^(\d{4})-(\d{2})$/);
+	if (ym) return `${ym[2]}-${ym[1]}`;
 	const y = raw.match(/^(\d{4})$/);
 	if (y) return y[1];
 	return raw;
 }
 
 function formatExactDate(iso?: string | null): string {
-	const raw = String(iso || '').trim();
-	if (!raw) return '';
-	const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-	if (ymd) return `${Number(ymd[2])}/${Number(ymd[3])}/${ymd[1]}`;
-	return formatMonthYear(raw);
+	return formatDisplayDate(iso);
+}
+
+function formatMonthYear(iso?: string | null): string {
+	return formatDisplayDate(iso);
 }
 
 function formatEmploymentDateSpan(
@@ -259,8 +265,8 @@ function formatDateSpan(
 	isCurrent?: boolean | null,
 	isEducation?: boolean,
 ): string | null {
-	const s = formatMonthYear(startDate);
-	const e = formatMonthYear(endDate);
+	const s = formatDisplayDate(startDate);
+	const e = formatDisplayDate(endDate);
 	if (s && e) return s === e ? s : `${s} → ${e}`;
 	if (s) return isCurrent === false ? s : `${s} → Present`;
 	if (e) return isEducation ? `Grad. ${e}` : `Ended ${e}`;
@@ -943,9 +949,8 @@ export default function ProfilesClient({
 					<p className="m-0 max-w-4xl text-xs leading-relaxed opacity-80">
 						Unified canonical profiles for <strong>People</strong>, <strong>Firms</strong>,{' '}
 						<strong>Education</strong>, <strong>Non-Profits</strong>, <strong>Medical Hospitals</strong>,{' '}
-						<strong>Government</strong>, <strong>Foreign</strong>, and <strong>Historic Events</strong> —
-						combining all local corpora to fill timeline gaps, compare angles, and surface possible
-						alignments.
+						<strong>Government</strong>, and <strong>Historic Events</strong> — combining all local
+						corpora to fill timeline gaps, compare angles, and surface possible alignments.
 					</p>
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
@@ -1085,8 +1090,7 @@ export default function ProfilesClient({
 									<option value="education">Education (University / School / District)</option>
 									<option value="nonprofit">Non-Profit / Foundation / Institute</option>
 									<option value="medical_hospital">Medical Hospital / Health System</option>
-									<option value="government">Government (Federal / State / Local)</option>
-									<option value="foreign">Foreign (Ministries / Embassies / Intl)</option>
+									<option value="government">Government (Domestic / Foreign / Intl)</option>
 								</optgroup>
 								<optgroup label="Events &amp; Timelines">
 									<option value="historic_event">Historic Event / Topic</option>
@@ -1387,7 +1391,7 @@ export default function ProfilesClient({
 								))}
 							</select>
 							<select
-								value={corpusFilter}
+								value={HIDDEN_SOURCE_TAGS.has(corpusFilter) ? '' : corpusFilter}
 								onChange={(e) => {
 									setCorpusFilter(e.target.value);
 									setOffset(0);
@@ -1395,11 +1399,13 @@ export default function ProfilesClient({
 								className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
 							>
 								<option value="">All corpora</option>
-								{(stats?.corpora || []).map((c) => (
-									<option key={c.corpus} value={c.corpus}>
-										{c.corpus}
-									</option>
-								))}
+								{(stats?.corpora || [])
+									.filter((c) => c.corpus && !HIDDEN_SOURCE_TAGS.has(c.corpus))
+									.map((c) => (
+										<option key={c.corpus} value={c.corpus}>
+											{c.corpus}
+										</option>
+									))}
 							</select>
 							<select
 								value={tagFilter}
@@ -1484,6 +1490,15 @@ export default function ProfilesClient({
 										p.slug === selectedId ||
 										(detail?.profile?.id != null && p.id === detail.profile.id);
 									const tm = TYPE_META[p.profileType];
+									const current = isCurrentPersonOrFirm(p);
+									const rowTone = current
+										? active
+											? CURRENT_ACTOR_ROW_ACTIVE
+											: CURRENT_ACTOR_ROW
+										: active
+											? 'border-l-2 border-l-[#F97316] bg-[#F97316]/14'
+											: 'bg-transparent hover:bg-[var(--app-surface-hover)]';
+									const badgeTone = current ? CURRENT_ACTOR_BADGE : tm.badge;
 									return (
 										<button
 											key={p.id}
@@ -1493,17 +1508,13 @@ export default function ProfilesClient({
 												setSelectedId(p.slug || p.id);
 												setLastEnrichReport(null);
 											}}
-											className={`w-full cursor-pointer border-0 border-b border-b-[var(--app-border)] px-3 py-2.5 text-left transition last:border-b-0 ${
-												active
-													? 'border-l-2 border-l-[#F97316] bg-[#F97316]/14'
-													: 'bg-transparent hover:bg-[var(--app-surface-hover)]'
-											}`}
+											className={`w-full cursor-pointer border-0 border-b border-b-[var(--app-border)] px-3 py-2.5 text-left transition last:border-b-0 ${rowTone}`}
 										>
 											{typeFilter === 'all' || typeFilter === 'actors' ? (
 												<>
 													<div className="flex items-center gap-2">
 														<span
-															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tm.badge}`}
+															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${badgeTone}`}
 														>
 															{tm.label}
 														</span>
@@ -1556,8 +1567,10 @@ export default function ProfilesClient({
 											</code>
 											{detail.profile.startDate ? (
 												<span className="text-[11px] opacity-70">
-													{detail.profile.startDate}
-													{detail.profile.endDate ? ` → ${detail.profile.endDate}` : ''}
+													{formatDisplayDate(detail.profile.startDate)}
+													{detail.profile.endDate
+														? ` → ${formatDisplayDate(detail.profile.endDate)}`
+														: ''}
 												</span>
 											) : null}
 										</div>
@@ -2649,7 +2662,9 @@ export default function ProfilesClient({
 																	<div className="flex flex-wrap items-center justify-between gap-2">
 																		<div className="flex flex-wrap items-center gap-1.5">
 																			<span className="font-mono font-semibold text-[#F97316]">
-																				{entry.eventDate || 'Undated'}
+																				{entry.eventDate
+																					? formatDisplayDate(entry.eventDate)
+																					: 'Undated'}
 																			</span>
 																			<span
 																				className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${ANGLE_BADGE[entry.angle] || ANGLE_BADGE.general}`}

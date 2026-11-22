@@ -719,7 +719,7 @@ export function updateAlignmentStatus(
 export type ListProfilesFilter = {
 	query?: string;
 	profileType?: ProfileType | 'all' | 'actors' | 'narratives';
-	/** Filter profiles tagged with a main category label (e.g. firm, education, government, medical_hospital, nonprofit, foreign, historic_event) */
+	/** Filter profiles tagged with a main category label (e.g. firm, education, government, medical_hospital, nonprofit, historic_event) */
 	tag?: ProfileType;
 	status?: ProfileStatus;
 	corpus?: string;
@@ -742,7 +742,7 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 	if (filter.profileType && filter.profileType !== 'all') {
 		if (filter.profileType === 'actors') {
 			where.push(
-				`p.profile_type IN ('person','firm','education','nonprofit','medical_hospital','government','foreign')`,
+				`p.profile_type IN ('person','firm','education','nonprofit','medical_hospital','government')`,
 			);
 		} else if (filter.profileType === 'narratives') {
 			where.push(`p.profile_type = 'historic_event'`);
@@ -1126,10 +1126,10 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		'nonprofit',
 		'medical_hospital',
 		'government',
-		'foreign',
 	]);
 
 	const REL_PRIORITY: Record<string, number> = {
+		owned_by: 11,
 		employed_by: 10,
 		registered_at: 9,
 		alumni_or_faculty: 9,
@@ -1538,7 +1538,6 @@ export function addPersonEmployment(input: {
 		'nonprofit',
 		'medical_hospital',
 		'government',
-		'foreign',
 	];
 	const orgType: ProfileType =
 		input.orgCategory && allowedOrgCategories.includes(input.orgCategory)
@@ -1841,7 +1840,6 @@ export function getProfileStats(): ProfileStats {
 		nonprofit: 0,
 		medical_hospital: 0,
 		government: 0,
-		foreign: 0,
 		historic_event: 0,
 	};
 

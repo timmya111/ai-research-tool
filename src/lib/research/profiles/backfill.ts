@@ -449,7 +449,7 @@ function backfillAuthorityTimelines(dataRoot: string, tx: DatabaseSync): Backfil
 		const fullName = AGENCY_NAMES[key] || key;
 		const p = upsertProfile(
 			{
-				profileType: key === 'OTHER' ? 'foreign' : 'government',
+				profileType: 'government',
 				name: fullName,
 				status: 'active',
 				sourceCorpus: 'authority-timelines',
@@ -1869,11 +1869,13 @@ function backfillRegionalHistory(dataRoot: string, tx: DatabaseSync): BackfillCo
 				summary,
 				metadata: {
 					track,
-					cik: it.cik || undefined,
-					ticker: it.ticker || undefined,
+					cik: it.parentCik || it.parent_sec_cik || it.parentSecCik ? undefined : it.cik || undefined,
+					parentCik: it.parentCik || it.parent_sec_cik || it.parentSecCik || undefined,
+					ticker: it.parentCik || it.parent_sec_cik || it.parentSecCik ? undefined : it.ticker || undefined,
 					sicDescription: it.sicDescription || undefined,
 					wikibaseItem: it.wikibaseItem || undefined,
 					articleSlug: it.slug || undefined,
+					companyType: it.parentCik || it.parent_sec_cik || it.parentSecCik ? 'Subsidiary' : undefined,
 				},
 				sourceCorpus: 'regional-history-corpus',
 			},
@@ -1887,10 +1889,18 @@ function backfillRegionalHistory(dataRoot: string, tx: DatabaseSync): BackfillCo
 				addAlias({ profileId: prof.id, alias: String(al), sourceCorpus: 'regional-history-corpus' }, tx);
 			}
 		}
-		if (it.cik) {
+		// Non-filing subsidiaries: store parent CIK as parent_sec_cik so shared_identifier
+		// matching does not collapse subsidiary ↔ parent into one entity.
+		const parentCik = it.parentCik || it.parent_sec_cik || it.parentSecCik;
+		if (parentCik) {
+			addIdentifier(
+				{ profileId: prof.id, scheme: 'parent_sec_cik', value: String(parentCik), sourceCorpus: 'regional-history-corpus' },
+				tx,
+			);
+		} else if (it.cik) {
 			addIdentifier({ profileId: prof.id, scheme: 'sec_cik', value: String(it.cik), sourceCorpus: 'regional-history-corpus' }, tx);
 		}
-		if (it.ticker) {
+		if (it.ticker && !parentCik) {
 			addIdentifier({ profileId: prof.id, scheme: 'ticker', value: String(it.ticker), sourceCorpus: 'regional-history-corpus' }, tx);
 			addAlias({ profileId: prof.id, alias: String(it.ticker), aliasKind: 'ticker', sourceCorpus: 'regional-history-corpus' }, tx);
 		}
@@ -2070,7 +2080,7 @@ export type RunBackfillOptions = {
 
 /**
  * Upgrade/migrate legacy org profile types in-place (`university` → `education`,
- * `medical_mental_hospital` → `medical_hospital`, `state_gov`/`federal_gov`/`agency` → `government`/`foreign`),
+ * `medical_mental_hospital` → `medical_hospital`, `state_gov`/`federal_gov`/`agency`/`foreign` → `government`),
  * preserving profile IDs, links, and timeline entries.
  */
 function reclassifyExistingOrgProfiles(tx: DatabaseSync): BackfillCorpusStats {
@@ -2090,6 +2100,7 @@ function reclassifyExistingOrgProfiles(tx: DatabaseSync): BackfillCorpusStats {
 		'state_gov',
 		'federal_gov',
 		'agency',
+		'foreign',
 		'subject_matter',
 	]);
 
@@ -2099,7 +2110,14 @@ function reclassifyExistingOrgProfiles(tx: DatabaseSync): BackfillCorpusStats {
 		if (r.profile_type === 'subject_matter') nextType = 'historic_event';
 		else if (r.profile_type === 'university') nextType = 'education';
 		else if (r.profile_type === 'medical_mental_hospital') nextType = 'medical_hospital';
-		else if (r.profile_type === 'state_gov' || r.profile_type === 'federal_gov') nextType = 'government';
+		else if (
+			r.profile_type === 'state_gov' ||
+			r.profile_type === 'federal_gov' ||
+			r.profile_type === 'agency' ||
+			r.profile_type === 'foreign'
+		) {
+			nextType = 'government';
+		}
 
 		const isRetired = DELETED_TYPES.has(r.profile_type);
 		if (nextType === r.profile_type) continue;
@@ -2107,8 +2125,7 @@ function reclassifyExistingOrgProfiles(tx: DatabaseSync): BackfillCorpusStats {
 			isRetired ||
 			nextType === 'medical_hospital' ||
 			nextType === 'education' ||
-			nextType === 'government' ||
-			nextType === 'foreign';
+			nextType === 'government';
 		if (!targetRefined) continue;
 
 		// Preserve custom slug suffix when migrating subject_matter:foo -> historic_event:foo
@@ -2142,7 +2159,7 @@ function reclassifyExistingOrgProfiles(tx: DatabaseSync): BackfillCorpusStats {
 /**
  * Auto-merge high-confidence duplicate profiles:
  *   1. Exact same `normalized_name` split across `firm` and a more specific org type
- *      (e.g. `Central Bank of Bahrain (CBB)` in both `firm` and `foreign`).
+ *      (e.g. `Central Bank of Bahrain (CBB)` in both `firm` and `government`).
  *   2. Exact legal-suffix duplicates within the same org type
  *      (e.g. `Palantir Technologies` and `Palantir Technologies Inc.`).
  */
@@ -2151,7 +2168,6 @@ function deduplicateProfiles(tx: DatabaseSync): BackfillCorpusStats {
 
 	const TYPE_SPECIFICITY: Record<string, number> = {
 		government: 6,
-		foreign: 5,
 		medical_hospital: 5,
 		education: 5,
 		nonprofit: 4,
@@ -2163,7 +2179,7 @@ function deduplicateProfiles(tx: DatabaseSync): BackfillCorpusStats {
 		.prepare(
 			`SELECT normalized_name
        FROM profiles
-       WHERE profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government', 'foreign')
+       WHERE profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government')
        GROUP BY normalized_name
        HAVING COUNT(*) > 1`,
 		)
@@ -2176,7 +2192,7 @@ function deduplicateProfiles(tx: DatabaseSync): BackfillCorpusStats {
                 (SELECT COUNT(*) FROM profile_links pl WHERE pl.from_profile_id = profiles.id OR pl.to_profile_id = profiles.id) AS lc
          FROM profiles
          WHERE normalized_name = ?
-           AND profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government', 'foreign')`,
+           AND profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government')`,
 			)
 			.all(d.normalized_name) as Array<{
 			id: string;
@@ -2207,7 +2223,7 @@ function deduplicateProfiles(tx: DatabaseSync): BackfillCorpusStats {
 			`SELECT id, name, normalized_name, profile_type, status,
               (SELECT COUNT(*) FROM profile_links pl WHERE pl.from_profile_id = profiles.id OR pl.to_profile_id = profiles.id) AS lc
        FROM profiles
-       WHERE profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government', 'foreign')`,
+       WHERE profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government')`,
 		)
 		.all() as Array<{
 		id: string;

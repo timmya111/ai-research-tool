@@ -599,7 +599,7 @@ export function compareSingleNamePair(
 		return { kind: 'none', similarity: 0 };
 	}
 
-	// Non-person (firm, education, nonprofit, medical_hospital, government, foreign, historic_event)
+	// Non-person (firm, education, nonprofit, medical_hospital, government, historic_event)
 	const aStripped = stripLegalSuffixes(aRaw);
 	const bStripped = stripLegalSuffixes(bRaw);
 	if (aStripped.length >= 4 && bStripped.length >= 4 && aStripped === bStripped) {
@@ -813,8 +813,7 @@ export function buildProfileIdentityContext(detail: ProfileDetail): ProfileIdent
 				peerType === 'education' ||
 				peerType === 'medical_hospital' ||
 				peerType === 'government' ||
-				peerType === 'nonprofit' ||
-				peerType === 'foreign'
+				peerType === 'nonprofit'
 			) {
 				instSet.add(peerName);
 			}

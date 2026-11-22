@@ -3,6 +3,22 @@ import { finraApiUrl, getFinraAppOrigin } from '@/lib/research/finraApp';
 export type FinraSidecarRegistry = 'finra' | 'sec' | 'both';
 export type FinraSidecarEntity = 'individual' | 'firm' | 'both';
 
+export type FinraSidecarEmployment = {
+	firmId?: string;
+	firmName?: string;
+	begin?: string;
+	end?: string;
+	iaOnly?: string;
+	firmBCScope?: string;
+	firmIAScope?: string;
+	bdSECNumber?: string;
+	iaSECNumber?: string;
+	city?: string;
+	state?: string;
+	branch?: string;
+	source: 'current' | 'currentIA' | 'previous' | 'previousIA';
+};
+
 export type FinraSidecarHit = {
 	registry: 'finra' | 'sec';
 	entity: 'individual' | 'firm';
@@ -10,8 +26,10 @@ export type FinraSidecarHit = {
 	name: string;
 	otherNames?: string[];
 	scope?: string;
+	bcScope?: string;
+	iaScope?: string;
 	disclosureFlag?: string;
-	employments?: Array<{ firmId?: string; firmName?: string }>;
+	employments?: FinraSidecarEmployment[];
 	connectionCount?: number;
 	raw?: Record<string, unknown>;
 };
@@ -36,9 +54,75 @@ function pickString(...vals: unknown[]): string {
 	return '';
 }
 
+function mapSidecarEmployment(
+	row: unknown,
+	source: FinraSidecarEmployment['source'],
+): FinraSidecarEmployment | null {
+	const er = asRecord(row);
+	if (!er) return null;
+	const firmId = pickString(er.firmId, er.firm_id);
+	const firmName = pickString(er.firmName, er.firm_name);
+	if (!firmId && !firmName) return null;
+
+	let city = pickString(er.city) || undefined;
+	let state = pickString(er.state) || undefined;
+	let branch: string | undefined;
+	const branches = er.branchOfficeLocations;
+	if (Array.isArray(branches) && branches.length) {
+		const b0 = asRecord(branches[0]) || {};
+		city = city || pickString(b0.city) || undefined;
+		state = state || pickString(b0.state) || undefined;
+		const parts = [b0.street1, b0.street2, b0.city, b0.state, b0.zipCode]
+			.map((x) => String(x ?? '').trim())
+			.filter(Boolean);
+		if (parts.length) branch = parts.join(', ');
+	}
+
+	return {
+		firmId: firmId || undefined,
+		firmName: firmName || undefined,
+		begin: pickString(er.registrationBeginDate, er.beginDate, er.startDate) || undefined,
+		end: pickString(er.registrationEndDate, er.endDate) || undefined,
+		iaOnly: pickString(er.iaOnly) || undefined,
+		firmBCScope: pickString(er.firmBCScope) || undefined,
+		firmIAScope: pickString(er.firmIAScope) || undefined,
+		bdSECNumber: pickString(er.bdSECNumber) || undefined,
+		iaSECNumber: pickString(er.iaSECNumber) || undefined,
+		city,
+		state,
+		branch,
+		source,
+	};
+}
+
+function collectEmployments(...groups: Array<{ rows: unknown; source: FinraSidecarEmployment['source'] }>): FinraSidecarEmployment[] {
+	const out: FinraSidecarEmployment[] = [];
+	const seen = new Set<string>();
+	for (const group of groups) {
+		if (!Array.isArray(group.rows)) continue;
+		for (const row of group.rows) {
+			const mapped = mapSidecarEmployment(row, group.source);
+			if (!mapped) continue;
+			const key = `${mapped.firmId || ''}|${mapped.firmName || ''}|${mapped.begin || ''}|${mapped.source}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push(mapped);
+		}
+	}
+	return out;
+}
+
 function compactIndividual(row: Record<string, unknown>, registry: 'finra' | 'sec'): FinraSidecarHit | null {
 	const basic = asRecord(row.basicInformation) || row;
-	const crd = pickString(basic.ind_crd, basic.ind_source_id, basic.crd, row.ind_crd, row._id);
+	const crd = pickString(
+		basic.individualId,
+		basic.ind_crd,
+		basic.ind_source_id,
+		basic.crd,
+		row.ind_source_id,
+		row.ind_crd,
+		row._id,
+	);
 	if (!crd) return null;
 	const first = pickString(basic.ind_firstname, basic.firstName);
 	const middle = pickString(basic.ind_middlename, basic.middleName);
@@ -51,34 +135,34 @@ function compactIndividual(row: Record<string, unknown>, registry: 'finra' | 'se
 	const otherNames = Array.isArray(other)
 		? other.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 8)
 		: undefined;
-	const employmentsRaw =
-		(basic.ind_current_employments as unknown) ||
-		(basic.ind_ia_current_employments as unknown) ||
-		(row.ind_current_employments as unknown);
-	const employments = Array.isArray(employmentsRaw)
-		? employmentsRaw
-				.slice(0, 5)
-				.map((e) => {
-					const er = asRecord(e) || {};
-					return {
-						firmId: pickString(er.firmId, er.firm_id) || undefined,
-						firmName: pickString(er.firmName, er.firm_name) || undefined,
-					};
-				})
-				.filter((e) => e.firmId || e.firmName)
-		: undefined;
+
+	// Prod search + merged/individual put employments on the hit root (siblings of basicInformation),
+	// not as ind_current_employments inside basicInformation.
+	const employments = collectEmployments(
+		{ rows: row.currentEmployments ?? basic.currentEmployments ?? basic.ind_current_employments, source: 'current' },
+		{ rows: row.currentIAEmployments ?? basic.currentIAEmployments ?? basic.ind_ia_current_employments, source: 'currentIA' },
+		{ rows: row.previousEmployments ?? basic.previousEmployments, source: 'previous' },
+		{ rows: row.previousIAEmployments ?? basic.previousIAEmployments, source: 'previousIA' },
+	);
+
 	const connectionCount = Number(
 		basic.ind_connection_count ?? row.ind_connection_count ?? row.knownConnectionCount,
 	);
+	const bcScope = pickString(basic.bcScope, basic.ind_bc_scope) || undefined;
+	const iaScope = pickString(basic.iaScope, basic.ind_ia_scope) || undefined;
 	return {
 		registry,
 		entity: 'individual',
 		crd,
 		name,
 		otherNames,
-		scope: pickString(basic.ind_bc_scope, basic.ind_ia_scope, basic.bc_scope) || undefined,
-		disclosureFlag: pickString(basic.disclosureFlag, basic.iaDisclosureFlag) || undefined,
-		employments,
+		scope: bcScope || iaScope || pickString(basic.bc_scope) || undefined,
+		bcScope,
+		iaScope,
+		disclosureFlag:
+			pickString(row.disclosureFlag, basic.disclosureFlag, row.iaDisclosureFlag, basic.iaDisclosureFlag) ||
+			undefined,
+		employments: employments.length ? employments : undefined,
 		connectionCount: Number.isFinite(connectionCount) ? connectionCount : undefined,
 	};
 }
@@ -140,6 +224,69 @@ function extractResults(payload: unknown): Record<string, unknown>[] {
 	return [];
 }
 
+async function fetchJson(
+	url: string,
+	timeoutMs = 45_000,
+): Promise<{ ok: boolean; status: number; payload: unknown; error?: string }> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetch(url, {
+			method: 'GET',
+			cache: 'no-store',
+			signal: controller.signal,
+			headers: { Accept: 'application/json' },
+		});
+		if (!res.ok) {
+			const text = await res.text().catch(() => '');
+			return { ok: false, status: res.status, payload: null, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+		}
+		return { ok: true, status: res.status, payload: await res.json() };
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, status: 0, payload: null, error: message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+function normalizeCrdQuery(query: string): string | null {
+	const digits = String(query || '')
+		.trim()
+		.replace(/^CRD[#:\s]*/i, '')
+		.replace(/[^\d]/g, '');
+	return /^\d{4,10}$/.test(digits) ? digits : null;
+}
+
+/**
+ * Full employment detail for a person CRD from the visualizer merged individual API
+ * (same payload as /api/finra/merged/individual/{crd}).
+ */
+async function fetchMergedIndividualHit(
+	crd: string,
+	registry: 'finra' | 'sec' = 'finra',
+): Promise<{ ok: boolean; hit: FinraSidecarHit | null; url: string; error?: string }> {
+	const url = finraApiUrl(`/api/finra/merged/individual/${crd}`);
+	const res = await fetchJson(url);
+	if (!res.ok) {
+		return { ok: false, hit: null, url, error: res.error };
+	}
+	const root = asRecord(res.payload) || {};
+	if (root.found === false) {
+		return { ok: false, hit: null, url, error: 'merged individual not found' };
+	}
+	// Prefer merged (BC+IA combined) over finraNode alone — matches the site API the UI uses.
+	const node =
+		asRecord(root.merged) ||
+		asRecord(root.finraNode) ||
+		(root.basicInformation || root.currentEmployments ? root : null);
+	if (!node) {
+		return { ok: false, hit: null, url, error: 'merged individual payload missing' };
+	}
+	const hit = compactIndividual(node, registry);
+	return { ok: Boolean(hit), hit, url };
+}
+
 async function queryOne(options: {
 	registry: 'finra' | 'sec';
 	entity: 'individual' | 'firm';
@@ -151,25 +298,17 @@ async function queryOne(options: {
 			? `/api/finra/sec-search?query=${encodeURIComponent(options.query)}&type=${options.entity}&nrows=${options.limit}`
 			: `/api/finra/search?query=${encodeURIComponent(options.query)}&type=${options.entity}&nrows=${options.limit}`;
 	const url = finraApiUrl(path);
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), 45_000);
 	try {
-		const res = await fetch(url, {
-			method: 'GET',
-			cache: 'no-store',
-			signal: controller.signal,
-			headers: { Accept: 'application/json' },
-		});
+		const res = await fetchJson(url);
 		if (!res.ok) {
-			const text = await res.text().catch(() => '');
 			return {
 				ok: false,
 				hits: [],
-				error: `HTTP ${res.status}: ${text.slice(0, 200)}`,
+				error: res.error || `HTTP ${res.status}`,
 				url,
 			};
 		}
-		const payload = await res.json();
+		const payload = res.payload;
 		const root = asRecord(payload) || {};
 		const rows = extractResults(payload);
 		const hits = rows
@@ -189,8 +328,6 @@ async function queryOne(options: {
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { ok: false, hits: [], error: message, url };
-	} finally {
-		clearTimeout(timer);
 	}
 }
 
@@ -227,22 +364,51 @@ export async function searchFinraSidecar(args: {
 				: entityRaw
 			: 'both';
 	const limit = clampLimit(args.limit, 8);
-
-	const registries: Array<'finra' | 'sec'> =
-		registry === 'both' ? ['finra', 'sec'] : [registry];
-	const entities: Array<'individual' | 'firm'> =
-		entity === 'both' ? ['individual', 'firm'] : [entity];
-
-	const perCallLimit = Math.max(3, Math.ceil(limit / Math.max(1, entities.length)));
-	const calls = registries.flatMap((reg) =>
-		entities.map((ent) => queryOne({ registry: reg, entity: ent, query, limit: perCallLimit })),
-	);
-	const settled = await Promise.all(calls);
+	const crdQuery = normalizeCrdQuery(query);
 
 	const hits: FinraSidecarHit[] = [];
 	const seen = new Set<string>();
 	const errors: string[] = [];
 	const sources: Array<Record<string, unknown>> = [];
+
+	// Numeric CRD → merged individual API first (same employment detail as
+	// /api/finra/merged/individual/{crd}: current + IA + previous + branches/dates).
+	if (crdQuery && (entity === 'both' || entity === 'individual')) {
+		const merged = await fetchMergedIndividualHit(crdQuery, 'finra');
+		sources.push({
+			url: merged.url,
+			ok: merged.ok,
+			total: merged.hit ? 1 : 0,
+			error: merged.error,
+			returned: merged.hit ? 1 : 0,
+			kind: 'merged-individual',
+		});
+		if (merged.ok && merged.hit) {
+			const key = `${merged.hit.registry}:${merged.hit.entity}:${merged.hit.crd}`;
+			seen.add(key);
+			hits.push(merged.hit);
+		} else if (merged.error) {
+			errors.push(merged.error);
+		}
+	}
+
+	const registries: Array<'finra' | 'sec'> =
+		registry === 'both' ? ['finra', 'sec'] : [registry];
+	// When merged/individual already resolved a numeric CRD, skip redundant individual
+	// search (flat-file search treats digits as a loose text query and returns unrelated hits).
+	const mergedResolvedIndividual = Boolean(crdQuery && hits.some((h) => h.entity === 'individual' && h.crd === crdQuery));
+	const entities: Array<'individual' | 'firm'> = (
+		entity === 'both' ? (['individual', 'firm'] as const) : ([entity] as const)
+	).filter((ent) => !(mergedResolvedIndividual && ent === 'individual')) as Array<'individual' | 'firm'>;
+
+	const perCallLimit = Math.max(3, Math.ceil(limit / Math.max(1, entities.length || 1)));
+	const calls =
+		entities.length === 0
+			? []
+			: registries.flatMap((reg) =>
+					entities.map((ent) => queryOne({ registry: reg, entity: ent, query, limit: perCallLimit })),
+				);
+	const settled = await Promise.all(calls);
 
 	for (const part of settled) {
 		sources.push({
@@ -252,17 +418,77 @@ export async function searchFinraSidecar(args: {
 			generatedAt: part.generatedAt,
 			error: part.error,
 			returned: part.hits.length,
+			kind: 'search-index',
 		});
 		if (!part.ok && part.error) errors.push(part.error);
 		for (const hit of part.hits) {
 			const key = `${hit.registry}:${hit.entity}:${hit.crd}`;
-			if (seen.has(key)) continue;
+			if (seen.has(key)) {
+				// Prefer richer employment already loaded from merged/individual.
+				const existing = hits.find((h) => `${h.registry}:${h.entity}:${h.crd}` === key);
+				if (
+					existing &&
+					(!existing.employments || existing.employments.length === 0) &&
+					hit.employments &&
+					hit.employments.length > 0
+				) {
+					existing.employments = hit.employments;
+					existing.otherNames = existing.otherNames?.length ? existing.otherNames : hit.otherNames;
+					existing.bcScope = existing.bcScope || hit.bcScope;
+					existing.iaScope = existing.iaScope || hit.iaScope;
+					existing.scope = existing.scope || hit.scope;
+				}
+				continue;
+			}
 			seen.add(key);
 			hits.push(hit);
 		}
 	}
 
+	// For name searches that returned person CRDs with empty/thin employments, fill from merged API (cap 3).
+	const toEnrich = hits
+		.filter(
+			(h) =>
+				h.entity === 'individual' &&
+				(!h.employments || h.employments.length === 0) &&
+				/^\d{4,10}$/.test(h.crd) &&
+				h.crd !== crdQuery,
+		)
+		.slice(0, 3);
+	await Promise.all(
+		toEnrich.map(async (h) => {
+			const merged = await fetchMergedIndividualHit(h.crd, h.registry);
+			sources.push({
+				url: merged.url,
+				ok: merged.ok,
+				error: merged.error,
+				returned: merged.hit?.employments?.length || 0,
+				kind: 'merged-individual-enrich',
+				crd: h.crd,
+			});
+			if (merged.hit?.employments?.length) {
+				h.employments = merged.hit.employments;
+				h.otherNames = h.otherNames?.length ? h.otherNames : merged.hit.otherNames;
+				h.bcScope = h.bcScope || merged.hit.bcScope;
+				h.iaScope = h.iaScope || merged.hit.iaScope;
+				h.scope = h.scope || merged.hit.scope;
+				h.disclosureFlag = h.disclosureFlag || merged.hit.disclosureFlag;
+				if (merged.hit.name && merged.hit.name !== `Individual ${h.crd}`) {
+					h.name = merged.hit.name;
+				}
+			}
+		}),
+	);
+
 	hits.sort((a, b) => {
+		if (crdQuery) {
+			const aExact = a.crd === crdQuery ? 1 : 0;
+			const bExact = b.crd === crdQuery ? 1 : 0;
+			if (bExact !== aExact) return bExact - aExact;
+		}
+		const aEmp = a.employments?.length ?? 0;
+		const bEmp = b.employments?.length ?? 0;
+		if (bEmp !== aEmp) return bEmp - aEmp;
 		const ac = a.connectionCount ?? -1;
 		const bc = b.connectionCount ?? -1;
 		if (bc !== ac) return bc - ac;
@@ -270,7 +496,7 @@ export async function searchFinraSidecar(args: {
 	});
 
 	const trimmed = hits.slice(0, limit);
-	const anyOk = settled.some((s) => s.ok);
+	const anyOk = settled.some((s) => s.ok) || trimmed.length > 0;
 
 	return {
 		ok: anyOk,
@@ -280,9 +506,10 @@ export async function searchFinraSidecar(args: {
 			registry,
 			entity,
 			origin: getFinraAppOrigin(),
-			source: 'prod search-index sidecar via /api/finra/search (+ sec-search)',
+			source:
+				'prod search-index sidecar via /api/finra/search (+ sec-search); numeric CRD / thin hits enriched from /api/finra/merged/individual/{crd}',
 			note:
-				'This searches the full shipped FINRA/SEC CRD flat-file index on the visualizer host — not only nodes currently on the canvas.',
+				'Identity from the shipped FINRA/SEC flat-file index; employment detail matches the visualizer merged individual API (current + IA + previous firms, dates, branches).',
 			returned: trimmed.length,
 			hits: trimmed.map((h) => ({
 				registry: h.registry,
@@ -292,7 +519,10 @@ export async function searchFinraSidecar(args: {
 				display: `${h.name} :: CRD# ${h.crd}`,
 				otherNames: h.otherNames,
 				scope: h.scope,
+				bcScope: h.bcScope,
+				iaScope: h.iaScope,
 				disclosureFlag: h.disclosureFlag,
+				employmentCount: h.employments?.length || 0,
 				employments: h.employments,
 				connectionCount: h.connectionCount,
 			})),
