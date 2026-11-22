@@ -33,6 +33,8 @@ export async function GET(request: Request) {
 	const statusRaw = url.searchParams.get('status') || undefined;
 	const corpus = url.searchParams.get('corpus') || undefined;
 	const geo = url.searchParams.get('geo') || undefined;
+	const countryCodeRaw = url.searchParams.get('country') || url.searchParams.get('countryCode') || undefined;
+	const countryCode = countryCodeRaw ? String(countryCodeRaw).trim().toLowerCase() : undefined;
 	const limit = Number(url.searchParams.get('limit') || 50);
 	const offset = Number(url.searchParams.get('offset') || 0);
 	const includeStats = url.searchParams.get('stats') !== '0';
@@ -56,6 +58,7 @@ export async function GET(request: Request) {
 			status: statusRaw as ProfileStatus | undefined,
 			corpus,
 			geo,
+			countryCode,
 			limit,
 			offset,
 		});

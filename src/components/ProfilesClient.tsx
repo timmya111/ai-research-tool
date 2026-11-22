@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import ThemeToggle from '@/components/ThemeToggle';
 import type {
 	AlignmentCandidate,
@@ -15,8 +15,6 @@ import type {
 	ProfileTimelineResult,
 	ProfileType,
 } from '@/lib/research/profiles/types';
-
-const HIDDEN_SOURCE_TAGS = new Set(['wikipedia-local', 'finra-visualizer', 'entity-dossiers']);
 
 const TYPE_META: Record<
 	ProfileType,
@@ -110,14 +108,6 @@ const ALL_TYPES: ProfileType[] = [
 	'nonprofit',
 	'medical_hospital',
 	'government',
-];
-
-const CATEGORY_TAG_TYPES: ProfileType[] = [
-	'education',
-	'nonprofit',
-	'medical_hospital',
-	'government',
-	'historic_event',
 ];
 
 const EMPLOYER_CATEGORY_TYPES: ProfileType[] = [
@@ -273,6 +263,52 @@ function formatDateSpan(
 	return null;
 }
 
+function renderSummaryInline(text: string): ReactNode[] {
+	const nodes: ReactNode[] = [];
+	let last = 0;
+	let key = 0;
+	const src = String(text || '');
+	// Prefer explicit **bold** markers; also bold bare date tokens.
+	const tokenRe =
+		/(\*\*([^*]+)\*\*)|(\b(?:(?:18|19|20)\d{2}(?:\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present))?|\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4}|\d{2}-\d{4})\b)/g;
+	let m: RegExpExecArray | null;
+	while ((m = tokenRe.exec(src))) {
+		if (m.index > last) nodes.push(src.slice(last, m.index));
+		if (m[2] != null) {
+			nodes.push(
+				<strong key={`b-${key++}`} className="font-semibold text-[var(--app-fg)]">
+					{m[2]}
+				</strong>,
+			);
+		} else if (m[3] != null) {
+			nodes.push(
+				<strong key={`d-${key++}`} className="font-semibold text-[var(--app-fg)]">
+					{m[3]}
+				</strong>,
+			);
+		}
+		last = m.index + m[0].length;
+	}
+	if (last < src.length) nodes.push(src.slice(last));
+	return nodes;
+}
+
+/** Profile overview summary: newlines become line items; dates (and **marked** spans) render bold. */
+function ProfileSummaryText({ text }: { text: string }) {
+	const raw = String(text || '').trim();
+	if (!raw) return null;
+	const lines = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+	return (
+		<div className="m-0 max-w-3xl space-y-1.5 text-xs leading-relaxed opacity-85">
+			{lines.map((line, i) => (
+				<p key={i} className="m-0">
+					{renderSummaryInline(line)}
+				</p>
+			))}
+		</div>
+	);
+}
+
 function CountryFlags({ codes, size = 'sm' }: { codes?: string[]; size?: 'sm' | 'md' }) {
 	if (!codes || codes.length === 0) return null;
 	const dims = size === 'md' ? 'h-4 w-[21px]' : 'h-3 w-4';
@@ -357,8 +393,11 @@ export default function ProfilesClient({
 	// Filters
 	const [query, setQuery] = useState('');
 	const [typeFilter, setTypeFilter] = useState<string>('all');
-	const [tagFilter, setTagFilter] = useState<string>('');
-	const [corpusFilter, setCorpusFilter] = useState<string>('');
+	const [countryCode, setCountryCode] = useState<string>('');
+	const [countryQuery, setCountryQuery] = useState('');
+	const [countryMenuOpen, setCountryMenuOpen] = useState(false);
+	const [countryOptions, setCountryOptions] = useState<Array<{ code: string; name: string }>>([]);
+	const countryBoxRef = useRef<HTMLDivElement | null>(null);
 	const [offset, setOffset] = useState(0);
 
 	// Workspace mode & URL/scroll sync
@@ -474,8 +513,7 @@ export default function ProfilesClient({
 			const params = new URLSearchParams();
 			if (query.trim()) params.set('q', query.trim());
 			if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
-			if (tagFilter) params.set('tag', tagFilter);
-			if (corpusFilter) params.set('corpus', corpusFilter);
+			if (countryCode) params.set('country', countryCode);
 			params.set('limit', '60');
 			params.set('offset', String(offset));
 			params.set('stats', '1');
@@ -497,7 +535,7 @@ export default function ProfilesClient({
 		} finally {
 			setLoadingList(false);
 		}
-	}, [query, typeFilter, tagFilter, corpusFilter, offset, selectedId]);
+	}, [query, typeFilter, countryCode, offset, selectedId]);
 
 	const loadDetail = useCallback(
 		async (id: string) => {
@@ -570,6 +608,50 @@ export default function ProfilesClient({
 		}, 120);
 		return () => clearTimeout(timer);
 	}, [loadList]);
+
+	useEffect(() => {
+		let cancelled = false;
+		void (async () => {
+			try {
+				const res = await fetch('/flags/country.json', { cache: 'force-cache' });
+				if (!res.ok) return;
+				const rows = (await res.json()) as Array<{ code?: string; name?: string }>;
+				if (cancelled || !Array.isArray(rows)) return;
+				const opts = rows
+					.map((r) => ({
+						code: String(r.code || '')
+							.trim()
+							.toLowerCase(),
+						name: String(r.name || '').trim(),
+					}))
+					.filter((r) => r.code && r.name)
+					.sort((a, b) => a.name.localeCompare(b.name));
+				// Ensure specials exist even if JSON omits them
+				for (const extra of [
+					{ code: 'un', name: 'United Nations' },
+					{ code: 'eu', name: 'European Union' },
+				]) {
+					if (!opts.some((o) => o.code === extra.code)) opts.push(extra);
+				}
+				opts.sort((a, b) => a.name.localeCompare(b.name));
+				setCountryOptions(opts);
+			} catch {
+				/* ignore */
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	useEffect(() => {
+		const onDocMouseDown = (ev: MouseEvent) => {
+			if (!countryBoxRef.current) return;
+			if (!countryBoxRef.current.contains(ev.target as Node)) setCountryMenuOpen(false);
+		};
+		document.addEventListener('mousedown', onDocMouseDown);
+		return () => document.removeEventListener('mousedown', onDocMouseDown);
+	}, []);
 
 	useEffect(() => {
 		if (!selectedId || mainView !== 'profile') return;
@@ -920,8 +1002,9 @@ export default function ProfilesClient({
 	const jumpToProfile = useCallback((id: string) => {
 		setPendingCategorySync(true);
 		setQuery('');
-		setTagFilter('');
-		setCorpusFilter('');
+		setCountryCode('');
+		setCountryQuery('');
+		setCountryMenuOpen(false);
 		setOffset(0);
 		setSelectedId(id);
 		setLastEnrichReport(null);
@@ -1364,64 +1447,113 @@ export default function ProfilesClient({
 					{/* Left Sidebar: Search & Profile List */}
 					<aside className="flex min-w-0 flex-col rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]">
 						<div className="space-y-2 border-b border-[var(--app-border)] p-3">
-							<input
-								value={query}
-								onChange={(e) => {
-									setQuery(e.target.value);
-									setOffset(0);
-								}}
-								placeholder="Search name, alias, CRD, ticker, topic…"
-								className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs"
-							/>
-							<select
-								value={typeFilter}
-								onChange={(e) => {
-									setTypeFilter(e.target.value);
-									setOffset(0);
-								}}
-								className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
-							>
-								<option value="all">All types</option>
-								<option value="actors">All Actors (People/Orgs)</option>
-								<option value="narratives">Historic Events</option>
-								{ALL_TYPES.map((t) => (
-									<option key={t} value={t}>
-										{TYPE_META[t].plural}
-									</option>
-								))}
-							</select>
-							<select
-								value={HIDDEN_SOURCE_TAGS.has(corpusFilter) ? '' : corpusFilter}
-								onChange={(e) => {
-									setCorpusFilter(e.target.value);
-									setOffset(0);
-								}}
-								className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
-							>
-								<option value="">All corpora</option>
-								{(stats?.corpora || [])
-									.filter((c) => c.corpus && !HIDDEN_SOURCE_TAGS.has(c.corpus))
-									.map((c) => (
-										<option key={c.corpus} value={c.corpus}>
-											{c.corpus}
-										</option>
-									))}
-							</select>
-							<select
-								value={tagFilter}
-								onChange={(e) => {
-									setTagFilter(e.target.value);
-									setOffset(0);
-								}}
-								className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
-							>
-								<option value="">All category tags</option>
-								{CATEGORY_TAG_TYPES.map((t) => (
-									<option key={t} value={t}>
-										Tag: {TYPE_META[t].label}
-									</option>
-								))}
-							</select>
+							<div className="flex items-start gap-2">
+								<input
+									value={query}
+									onChange={(e) => {
+										setQuery(e.target.value);
+										setOffset(0);
+									}}
+									placeholder="Search name, alias, CRD, ticker, topic…"
+									className="min-w-0 flex-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs"
+								/>
+								<div ref={countryBoxRef} className="relative w-[42%] min-w-[7.5rem] shrink-0">
+									{countryCode ? (
+										<div className="flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1">
+											{/* eslint-disable-next-line @next/next/no-img-element */}
+											<img
+												src={`/flags/4x3/${encodeURIComponent(countryCode)}.svg`}
+												alt={getFlagLabel(countryCode)}
+												title={getFlagLabel(countryCode)}
+												className="h-3.5 w-[18px] rounded-[2px] border border-black/15 object-cover dark:border-white/15"
+											/>
+											<span className="min-w-0 flex-1 truncate text-[11px]">
+												{countryOptions.find((o) => o.code === countryCode)?.name ||
+													getFlagLabel(countryCode)}
+											</span>
+											<button
+												type="button"
+												aria-label="Clear country filter"
+												onClick={() => {
+													setCountryCode('');
+													setCountryQuery('');
+													setOffset(0);
+													setCountryMenuOpen(false);
+												}}
+												className="cursor-pointer rounded border-0 bg-transparent px-1 text-[11px] opacity-70 hover:opacity-100"
+											>
+												✕
+											</button>
+										</div>
+									) : (
+										<input
+											value={countryQuery}
+											onChange={(e) => {
+												setCountryQuery(e.target.value);
+												setCountryMenuOpen(true);
+											}}
+											onFocus={() => setCountryMenuOpen(true)}
+											placeholder="Flag / country…"
+											className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs"
+											autoComplete="off"
+										/>
+									)}
+									{countryMenuOpen && !countryCode ? (
+										<ul className="absolute right-0 z-30 mt-1 max-h-56 w-[16rem] overflow-y-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] py-1 shadow-lg">
+											{(countryQuery.trim()
+												? countryOptions.filter((o) => {
+														const q = countryQuery.trim().toLowerCase();
+														return (
+															o.name.toLowerCase().includes(q) ||
+															o.code.includes(q) ||
+															getFlagLabel(o.code).toLowerCase().includes(q)
+														);
+													})
+												: countryOptions
+											)
+												.slice(0, 40)
+												.map((o) => (
+													<li key={o.code}>
+														<button
+															type="button"
+															onClick={() => {
+																setCountryCode(o.code);
+																setCountryQuery(o.name);
+																setCountryMenuOpen(false);
+																setOffset(0);
+															}}
+															className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left text-xs hover:bg-[var(--app-surface-hover)]"
+														>
+															{/* eslint-disable-next-line @next/next/no-img-element */}
+															<img
+																src={`/flags/4x3/${encodeURIComponent(o.code)}.svg`}
+																alt=""
+																className="h-3.5 w-[18px] rounded-[2px] border border-black/15 object-cover dark:border-white/15"
+															/>
+															<span className="min-w-0 flex-1 truncate">{o.name}</span>
+															<span className="shrink-0 text-[10px] uppercase opacity-50">
+																{o.code}
+															</span>
+														</button>
+													</li>
+												))}
+											{(countryQuery.trim()
+												? countryOptions.filter((o) => {
+														const q = countryQuery.trim().toLowerCase();
+														return (
+															o.name.toLowerCase().includes(q) ||
+															o.code.includes(q) ||
+															getFlagLabel(o.code).toLowerCase().includes(q)
+														);
+													})
+												: countryOptions
+											).length === 0 ? (
+												<li className="px-2.5 py-2 text-[11px] opacity-60">No matches</li>
+											) : null}
+										</ul>
+									) : null}
+								</div>
+							</div>
 							<div className="flex items-center justify-between text-[11px] opacity-70">
 								<span>
 									{loadingList ? 'Searching…' : `${totalProfiles.toLocaleString()} matching`}
@@ -1668,11 +1800,7 @@ export default function ProfilesClient({
 													: ''}
 											</div>
 										) : null}
-										{detail.profile.summary ? (
-											<p className="m-0 max-w-3xl text-xs leading-relaxed opacity-85">
-												{detail.profile.summary}
-											</p>
-										) : null}
+										{detail.profile.summary ? <ProfileSummaryText text={detail.profile.summary} /> : null}
 									</div>
 									<div className="flex flex-wrap items-center gap-2">
 										<button
@@ -1774,10 +1902,8 @@ export default function ProfilesClient({
 												if (!text) return null;
 												return { key, label, text };
 											}).filter((x): x is { key: string; label: string; text: string } => x !== null);
-											const keywords = Array.isArray(meta.identifyingKeywords)
-												? (meta.identifyingKeywords as unknown[]).map(String).filter(Boolean)
-												: [];
-											if (!detailRows.length && !keywords.length) return null;
+											// identifyingKeywords stay in metadata for identity/AI matching; hide from UI
+											if (!detailRows.length) return null;
 											return (
 												<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
 													<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -1847,21 +1973,6 @@ export default function ProfilesClient({
 																	</div>
 																	<div className="mt-0.5 break-words leading-snug">{row.text}</div>
 																</div>
-															))}
-														</div>
-													) : null}
-													{keywords.length > 0 ? (
-														<div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
-															<span className="font-semibold uppercase opacity-65">
-																Identifying keywords:
-															</span>
-															{keywords.slice(0, 14).map((kw) => (
-																<span
-																	key={kw}
-																	className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 opacity-80"
-																>
-																	{kw}
-																</span>
 															))}
 														</div>
 													) : null}
@@ -2039,11 +2150,7 @@ export default function ProfilesClient({
 																				Old
 																			</span>
 																		) : null}
-																		{emp.sourceCorpus && !HIDDEN_SOURCE_TAGS.has(emp.sourceCorpus) ? (
-																			<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 opacity-75">
-																				{emp.sourceCorpus}
-																			</span>
-																		) : null}
+
 																	</div>
 																</div>
 																{emp.location || emp.iaOnly || showFinraScope ? (
@@ -2207,11 +2314,6 @@ export default function ProfilesClient({
 																					</div>
 																					<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
 																						{edu.location ? <span>📍 {edu.location}</span> : null}
-																						{edu.sourceCorpus && !HIDDEN_SOURCE_TAGS.has(edu.sourceCorpus) ? (
-																							<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
-																								{edu.sourceCorpus}
-																							</span>
-																						) : null}
 																					</div>
 																				</div>
 																			);
@@ -2443,59 +2545,64 @@ export default function ProfilesClient({
 																	connStatus === 'current' ? true : connStatus === 'old' ? false : null,
 																	peerType === 'education',
 																);
-																const visibleSources = (
-																	l.sources && l.sources.length > 0 ? l.sources : [l.sourceCorpus]
-																).filter((s) => s && !HIDDEN_SOURCE_TAGS.has(s));
-																const sourceLabel = visibleSources.join(', ');
 																const roleClean =
 																	l.roleLabel &&
 																	!/^(?:current|previous)\s+registration$/i.test(l.roleLabel.trim())
 																		? l.roleLabel.trim()
 																		: null;
+																const relNote = (l.evidenceNote || '').trim();
+																const showRelNote =
+																	Boolean(relNote) &&
+																	(!roleClean ||
+																		relNote.toLowerCase() !== roleClean.toLowerCase()) &&
+																	!/^seed relatedslugs$/i.test(relNote) &&
+																	!/^role:/i.test(relNote);
 																return (
 																	<div
 																		key={l.id}
-																		className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs"
+																		className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs"
 																	>
-																		<div className="flex flex-wrap items-center gap-1.5">
-																			{dateSpan ? (
-																				<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
-																					{dateSpan}
+																		<div className="flex flex-wrap items-center justify-between gap-2">
+																			<div className="flex flex-wrap items-center gap-1.5">
+																				{dateSpan ? (
+																					<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+																						{dateSpan}
+																					</span>
+																				) : null}
+																				{connStatus === 'current' ? (
+																					<span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+																						Current
+																					</span>
+																				) : connStatus === 'old' ? (
+																					<span className="shrink-0 rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] font-semibold opacity-75">
+																						Old
+																					</span>
+																				) : null}
+																				<span className="text-[10px] opacity-60">
+																					{isOut ? '→' : '←'} {l.relationType.replace(/_/g, ' ')}
 																				</span>
-																			) : null}
-																			{connStatus === 'current' ? (
-																				<span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
-																					Current
+																				<button
+																					type="button"
+																					onClick={() => jumpToProfile(peerId)}
+																					className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																				>
+																					{peerName}
+																				</button>
+																				<CountryFlags codes={l.peerCountryCodes} size="sm" />
+																				<span
+																					className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}
+																				>
+																					{TYPE_META[peerType].label}
 																				</span>
-																			) : connStatus === 'old' ? (
-																				<span className="shrink-0 rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] font-semibold opacity-75">
-																					Old
-																				</span>
-																			) : null}
-																			<span className="text-[10px] opacity-60">
-																				{isOut ? '→' : '←'} {l.relationType.replace(/_/g, ' ')}
-																			</span>
-																			<button
-																				type="button"
-																				onClick={() => jumpToProfile(peerId)}
-																				className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																			>
-																				{peerName}
-																			</button>
-																			<CountryFlags codes={l.peerCountryCodes} size="sm" />
-																			<span
-																				className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}
-																			>
-																				{TYPE_META[peerType].label}
-																			</span>
-																			{roleClean ? (
-																				<span className="text-[11px] opacity-75">({roleClean})</span>
-																			) : null}
-																		</div>
-																		{sourceLabel ? (
-																			<div className="flex items-center gap-1.5 text-[10px] opacity-75">
-																				<span>{sourceLabel}</span>
+																				{roleClean ? (
+																					<span className="text-[11px] opacity-75">({roleClean})</span>
+																				) : null}
 																			</div>
+																		</div>
+																		{showRelNote ? (
+																			<p className="m-0 mt-1.5 text-[11px] leading-snug opacity-70">
+																				{relNote}
+																			</p>
 																		) : null}
 																	</div>
 																);
@@ -2671,11 +2778,6 @@ export default function ProfilesClient({
 																			>
 																				{entry.angle.replace(/_/g, ' ')}
 																			</span>
-																			{entry.sourceCorpus && !HIDDEN_SOURCE_TAGS.has(entry.sourceCorpus) ? (
-																				<span className="rounded bg-[var(--app-surface-hover)] px-1.5 py-0.5 text-[10px]">
-																					{entry.sourceCorpus}
-																				</span>
-																			) : null}
 																			{entry.geoLabel ? (
 																				<span className="text-[10px] opacity-70">
 																					📍 {entry.geoLabel}

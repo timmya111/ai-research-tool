@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { detectProfileCountryCodes } from '@/lib/research/profiles/countries';
+import {
+	detectProfileCountryCodes,
+	getCountryFilterHints,
+} from '@/lib/research/profiles/countries';
 import { getProfilesDb } from '@/lib/research/profiles/db';
 import {
 	buildSafeFtsQuery,
@@ -724,6 +727,8 @@ export type ListProfilesFilter = {
 	status?: ProfileStatus;
 	corpus?: string;
 	geo?: string;
+	/** Flag / country code (ISO or special: un, eu) matching detected country flags. */
+	countryCode?: string;
 	limit?: number;
 	offset?: number;
 };
@@ -789,6 +794,57 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 			);
 			const like = `%${g}%`;
 			params.push(like, like, like, like, like);
+		}
+	}
+
+	if (filter.countryCode) {
+		const hints = getCountryFilterHints(filter.countryCode);
+		if (hints) {
+			const locParts: string[] = [];
+			const locParams: string[] = [];
+			for (const c of hints.locationCountries) {
+				// Exact country-field match only (safe for short codes like us/un/eu)
+				locParts.push(`lower(COALESCE(pl.country,'')) = ?`);
+				locParams.push(c);
+			}
+			for (const prefix of hints.geoPrefixes) {
+				locParts.push(`lower(COALESCE(pl.geo_key,'')) LIKE ?`);
+				locParams.push(`${prefix}%`);
+			}
+			for (const term of hints.textTerms) {
+				// Avoid short tokens in LIKE (e.g. "un" matching "Manhattan")
+				if (term.length < 4) continue;
+				locParts.push(`lower(COALESCE(pl.raw,'')) LIKE ?`);
+				locParams.push(`%${term}%`);
+			}
+			const textParts: string[] = [];
+			const textParams: string[] = [];
+			for (const term of hints.textTerms) {
+				if (term.length < 4) continue;
+				textParts.push(`lower(p.name) LIKE ?`);
+				textParams.push(`%${term}%`);
+				textParts.push(`lower(COALESCE(p.summary,'')) LIKE ?`);
+				textParams.push(`%${term}%`);
+				textParts.push(`lower(COALESCE(p.metadata_json,'')) LIKE ?`);
+				textParams.push(`%${term}%`);
+			}
+			const clauses: string[] = [];
+			if (locParts.length) {
+				clauses.push(
+					`EXISTS (
+             SELECT 1 FROM profile_locations pl
+             WHERE pl.profile_id = p.id AND (${locParts.join(' OR ')})
+           )`,
+				);
+				params.push(...locParams);
+			}
+			if (textParts.length) {
+				clauses.push(`(${textParts.join(' OR ')})`);
+				params.push(...textParams);
+			}
+			if (clauses.length) {
+				where.push(`(${clauses.join(' OR ')})`);
+			}
 		}
 	}
 
@@ -1516,6 +1572,8 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 export function addPersonEmployment(input: {
 	personIdOrSlug: string;
 	orgName: string;
+	/** Prefer an existing org card when known (slug or id). */
+	orgIdOrSlug?: string | null;
 	orgCategory?: ProfileType;
 	role?: string | null;
 	startDate?: string | null;
@@ -1545,14 +1603,80 @@ export function addPersonEmployment(input: {
 			: 'firm';
 	const corpus = input.sourceCorpus || 'manual';
 
-	const orgProfile = upsertProfile(
-		{
-			profileType: orgType,
-			name: orgName,
-			sourceCorpus: corpus,
-		},
-		db,
-	);
+	const resolveExistingOrg = (): Profile | null => {
+		if (input.orgIdOrSlug) {
+			const byKey = getProfile(String(input.orgIdOrSlug).trim(), db);
+			if (byKey && allowedOrgCategories.includes(byKey.profileType)) return byKey;
+		}
+		const candidates = [orgName];
+		const byName = db
+			.prepare(
+				`SELECT * FROM profiles
+         WHERE profile_type = ? AND name = ? COLLATE NOCASE
+         LIMIT 1`,
+			)
+			.get(orgType, orgName) as Record<string, unknown> | undefined;
+		if (byName) return rowToProfile(byName);
+		const byAlias = db
+			.prepare(
+				`SELECT p.*
+         FROM profile_aliases a
+         JOIN profiles p ON p.id = a.profile_id
+         WHERE p.profile_type = ? AND a.alias = ? COLLATE NOCASE
+         LIMIT 1`,
+			)
+			.get(orgType, orgName) as Record<string, unknown> | undefined;
+		if (byAlias) return rowToProfile(byAlias);
+		// Cross-type fallback among org actor types (e.g. WHO stored as nonprofit vs government)
+		const cross = db
+			.prepare(
+				`SELECT * FROM profiles
+         WHERE profile_type IN ('firm','education','nonprofit','medical_hospital','government')
+           AND name = ? COLLATE NOCASE
+         LIMIT 1`,
+			)
+			.get(orgName) as Record<string, unknown> | undefined;
+		if (cross) return rowToProfile(cross);
+		const crossAlias = db
+			.prepare(
+				`SELECT p.*
+         FROM profile_aliases a
+         JOIN profiles p ON p.id = a.profile_id
+         WHERE p.profile_type IN ('firm','education','nonprofit','medical_hospital','government')
+           AND a.alias = ? COLLATE NOCASE
+         LIMIT 1`,
+			)
+			.get(orgName) as Record<string, unknown> | undefined;
+		if (crossAlias) return rowToProfile(crossAlias);
+		void candidates;
+		return null;
+	};
+
+	const existingOrg = resolveExistingOrg();
+	const orgProfile =
+		existingOrg ||
+		upsertProfile(
+			{
+				profileType: orgType,
+				name: orgName,
+				sourceCorpus: corpus,
+			},
+			db,
+		);
+
+	// Keep requested display name as an alias when we reused a differently named org card
+	if (existingOrg && existingOrg.name.toLowerCase() !== orgName.toLowerCase()) {
+		addAlias(
+			{
+				profileId: orgProfile.id,
+				alias: orgName,
+				aliasKind: 'name',
+				confidence: 0.95,
+				sourceCorpus: corpus,
+			},
+			db,
+		);
+	}
 
 	const locClean = input.location ? String(input.location).trim() : '';
 	let geoKey: string | null = null;

@@ -40,13 +40,24 @@ function main() {
 		};
 		fs.writeFileSync(path.join(OUT, 'dossiers', `${e.slug}.json`), JSON.stringify(dossier, null, 2));
 		for (const rel of e.relatedSlugs || []) {
-			edges.push({
+			const peer = seed.pinned.find((p) => p.slug === rel);
+			const personToPerson = e.kind === 'person' && (!peer || peer.kind === 'person');
+			const familyish =
+				e.kind === 'family_hub' ||
+				rel.includes('family') ||
+				personToPerson ||
+				e.relatedEdgeKind === 'family_member';
+			const edge = {
 				id: `seed:${e.slug}:${rel}`,
 				from: e.slug,
 				to: rel,
-				kind: e.kind === 'family_hub' || rel.includes('family') ? 'family_member' : 'business_tie',
-				evidence: [{ note: 'seed relatedSlugs' }],
-			});
+				kind: familyish ? 'family_member' : 'business_tie',
+				evidence: [{ note: e.relatedEvidenceNote || 'seed relatedSlugs' }],
+			};
+			if (e.relatedRoleLabel) edge.roleLabel = e.relatedRoleLabel;
+			if (e.relatedStartDate) edge.startDate = e.relatedStartDate;
+			if (e.relatedEndDate) edge.endDate = e.relatedEndDate;
+			edges.push(edge);
 		}
 		for (const b of e.businesses || []) {
 			if (!b.name) continue;
@@ -85,7 +96,23 @@ function main() {
 				.map((l) => JSON.parse(l))
 		: [];
 	const byId = new Map(existing.map((e) => [e.id, e]));
-	for (const e of edges) byId.set(e.id, e);
+	for (const e of edges) {
+		const prev = byId.get(e.id);
+		// Keep curated notes/dates when regenerating from relatedSlugs stubs
+		if (prev && Array.isArray(prev.evidence) && prev.evidence.some((x) => x?.note && x.note !== 'seed relatedSlugs')) {
+			byId.set(e.id, {
+				...e,
+				...prev,
+				kind: e.kind === 'family_member' || prev.kind === 'family_member' ? 'family_member' : e.kind || prev.kind,
+				roleLabel: prev.roleLabel || e.roleLabel,
+				startDate: prev.startDate || e.startDate,
+				endDate: prev.endDate || e.endDate,
+				evidence: prev.evidence?.length ? prev.evidence : e.evidence,
+			});
+		} else {
+			byId.set(e.id, e);
+		}
+	}
 	fs.writeFileSync(edgePath, [...byId.values()].map((e) => JSON.stringify(e)).join('\n') + '\n');
 
 	console.log(

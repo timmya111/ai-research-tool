@@ -575,3 +575,62 @@ export function detectProfileCountryCodes(input: DetectCountryInput): string[] {
 	// Cap at 6 flags for clean visual display
 	return ranked.slice(0, 6);
 }
+
+/** Extra aliases used when filtering profiles by a flag / country code. */
+const COUNTRY_FILTER_ALIASES: Record<string, string[]> = {
+	us: ['united states', 'united states of america', 'usa', 'u.s.', 'u.s.a.', 'us'],
+	gb: ['united kingdom', 'great britain', 'britain', 'england', 'uk', 'u.k.', 'gb'],
+	eu: ['european union', 'european commission', 'european parliament', 'eu'],
+	un: ['united nations', 'unesco', 'unicef', 'world health organization', 'iaea', 'un'],
+	ru: ['russia', 'russian federation', 'ru'],
+	kr: ['south korea', 'republic of korea', 'korea, republic of', 'kr'],
+	kp: ['north korea', "democratic people's republic of korea", 'kp'],
+	cn: ['china', "people's republic of china", 'prc', 'cn'],
+	tw: ['taiwan', 'republic of china', 'tw'],
+	ae: ['united arab emirates', 'uae', 'ae'],
+	cz: ['czech republic', 'czechia', 'cz'],
+	nl: ['netherlands', 'holland', 'nl'],
+	ch: ['switzerland', 'swiss confederation', 'ch'],
+	de: ['germany', 'deutschland', 'de'],
+	fr: ['france', 'french republic', 'fr'],
+};
+
+export type CountryFilterHints = {
+	code: string;
+	/** Lowercased substrings safe for LIKE matches against name/summary/raw/metadata. */
+	textTerms: string[];
+	/** Lowercased exact values for profile_locations.country. */
+	locationCountries: string[];
+	/** Lowercased geo_key prefixes (e.g. `us:`). */
+	geoPrefixes: string[];
+};
+
+/**
+ * Build match hints for filtering profiles by a flag-icons / ISO country code
+ * (including special codes like `un` and `eu`).
+ */
+export function getCountryFilterHints(codeRaw: string): CountryFilterHints | null {
+	const code = String(codeRaw || '')
+		.trim()
+		.toLowerCase();
+	if (!code) return null;
+	const map = getCountryMap();
+	if (!map.has(code)) return null;
+
+	const official = String(map.get(code)?.name || '').trim().toLowerCase();
+	const aliases = COUNTRY_FILTER_ALIASES[code] || [];
+	const textTerms = [...new Set([official, ...aliases].map((s) => s.trim()).filter((s) => s.length >= 2))];
+
+	const locationCountries = [...new Set([code, official, ...aliases])];
+	const geoPrefixes: string[] = [];
+	if (code === 'us') geoPrefixes.push('us:');
+	else geoPrefixes.push(`country:${official.replace(/\s+/g, '-')}`);
+
+	return { code, textTerms, locationCountries, geoPrefixes };
+}
+
+/** Flat list of countries for UI typeahead (includes UN / EU). */
+export function listCountriesForTypeahead(): CountryMeta[] {
+	const map = getCountryMap();
+	return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+}

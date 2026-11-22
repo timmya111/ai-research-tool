@@ -26,6 +26,7 @@ export async function POST(request: Request, context: Ctx) {
 		const created = addPersonEmployment({
 			personIdOrSlug: key,
 			orgName,
+			orgIdOrSlug: body.orgIdOrSlug ? String(body.orgIdOrSlug) : body.orgSlug ? String(body.orgSlug) : null,
 			orgCategory: body.orgCategory ? (String(body.orgCategory) as ProfileType) : 'firm',
 			role: body.role ? String(body.role) : null,
 			startDate: body.startDate ? String(body.startDate) : null,
