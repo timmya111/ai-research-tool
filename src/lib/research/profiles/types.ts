@@ -114,7 +114,81 @@ export type AlignmentKind =
 	| 'co_occurrence_time_geo'
 	| 'shared_affiliation'
 	| 'county_filing_match'
-	| 'angle_comparison';
+	| 'angle_comparison'
+	| 'possible_match_name_only';
+
+export type NameMatchKind = 'exact_name' | 'fuzzy_name' | 'initials_or_partial' | 'none';
+
+export type CorroborationKind =
+	| 'shared_identifier'
+	| 'address_or_geo'
+	| 'employer_or_firm'
+	| 'military_base_or_unit'
+	| 'education_or_institution'
+	| 'description_keyword_match'
+	| 'summary_or_topic_context';
+
+export type CorroborationHit = {
+	kind: CorroborationKind;
+	value: string;
+	detail: string;
+};
+
+export type IdentityDecision = 'validated_merge' | 'name_only_note' | 'reject';
+
+export type IdentityEvaluation = {
+	decision: IdentityDecision;
+	nameMatch: NameMatchKind;
+	nameSimilarity: number;
+	matchedQueryName: string | null;
+	matchedCandidateName: string | null;
+	corroborations: CorroborationHit[];
+	dateConflict: boolean;
+	dateConflictReason: string | null;
+	score: number;
+	rationale: string;
+	missingValidationHint: string | null;
+};
+
+export type EnrichSourceOutcome = {
+	source: 'wikipedia_local' | 'brokercheck' | 'knowledge_sqlite' | 'bryan_ucc';
+	status: 'merged' | 'name_only_note' | 'skipped' | 'not_found' | 'error';
+	candidateTitle?: string;
+	candidateUrl?: string | null;
+	evaluation?: IdentityEvaluation;
+	fieldsUpdated: string[];
+	countsAdded: {
+		aliases: number;
+		identifiers: number;
+		locations: number;
+		employments: number;
+		links: number;
+		timelineEntries: number;
+		notes: number;
+	};
+	note?: string;
+};
+
+export type EnrichProfileReport = {
+	profileId: string;
+	profileSlug: string;
+	profileName: string;
+	profileType: ProfileType;
+	validatedSources: number;
+	heldNameOnlyNotes: number;
+	fieldsUpdated: string[];
+	totalsAdded: {
+		aliases: number;
+		identifiers: number;
+		locations: number;
+		employments: number;
+		links: number;
+		timelineEntries: number;
+		notes: number;
+	};
+	outcomes: EnrichSourceOutcome[];
+	durationMs: number;
+};
 
 export type CautionTier = 'observation' | 'closer_look' | 'stronger_indicator';
 
@@ -143,6 +217,8 @@ export type Profile = {
 	categoryTags?: ProfileType[];
 	/** Primary location label for quick display */
 	primaryLocation?: string | null;
+	/** Clearly associated ISO/flag-icons lowercase country codes (multiple if multinational) */
+	countryCodes?: string[];
 };
 
 export type PersonEmploymentEntry = {
@@ -151,6 +227,7 @@ export type PersonEmploymentEntry = {
 	orgSlug: string | null;
 	orgName: string;
 	orgCategory: ProfileType;
+	orgCountryCodes?: string[];
 	role: string | null;
 	relationType: ProfileRelationType;
 	startDate: string | null;
@@ -257,6 +334,10 @@ export type ProfileLink = {
 	toName?: string;
 	toSlug?: string;
 	toType?: ProfileType;
+	/** Resolved country flags for the connected peer profile */
+	peerCountryCodes?: string[];
+	/** Merged source corpora when multiple duplicate links to the same peer were collapsed */
+	sources?: string[];
 };
 
 export type AlignmentEvidenceItem = {

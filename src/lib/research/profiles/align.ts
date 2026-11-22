@@ -2,6 +2,11 @@ import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { getProfilesDb, withProfilesTransaction } from '@/lib/research/profiles/db';
 import {
+	buildProfileIdentityContext,
+	buildSearchPhrasesForProfile,
+	evaluateIdentityMatch,
+} from '@/lib/research/profiles/identity';
+import {
 	dateToEpochDays,
 	normalizeIsoDate,
 	sha256Key,
@@ -9,6 +14,7 @@ import {
 } from '@/lib/research/profiles/normalize';
 import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
 import {
+	getProfileDetail,
 	rowToAlignment,
 	upsertAlignmentCandidate,
 	upsertSourceRecord,
@@ -20,6 +26,7 @@ import type {
 	AlignmentKind,
 	AlignmentStatus,
 	CautionTier,
+	ProfileType,
 } from '@/lib/research/profiles/types';
 
 export type RunAlignmentPassOptions = {
@@ -36,6 +43,7 @@ export type AlignmentPassReport = {
 	geoTemporalCoOccurrence: number;
 	angleComparison: number;
 	countyFilingMatch: number;
+	possibleMatchNameOnly: number;
 	totalUpserted: number;
 	durationMs: number;
 };
@@ -99,6 +107,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		geoTemporalCoOccurrence: 0,
 		angleComparison: 0,
 		countyFilingMatch: 0,
+		possibleMatchNameOnly: 0,
 		totalUpserted: 0,
 		durationMs: 0,
 	};
@@ -242,7 +251,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			counts.sharedIdentifier += 1;
 		}
 
-		// Commit (2) Same Entity Alias across distinct profiles
+		// Commit (2) Same Entity Alias across distinct profiles (with strict person corroboration check)
 		let aliasCount = 0;
 		for (const [normKey, group] of byNormKey.entries()) {
 			if (group.length < 2 || group.length > 6) continue;
@@ -254,6 +263,78 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					const [left, right] = a.profileId < b.profileId ? [a, b] : [b, a];
 					const sameType = left.profileType === right.profileType;
 					const crossCorpus = left.corpus !== right.corpus;
+
+					// For two person profiles sharing a name, verify whether any corroborating signal exists
+					if (left.profileType === 'person' && right.profileType === 'person') {
+						const dLeft = getProfileDetail(left.profileId);
+						const dRight = getProfileDetail(right.profileId);
+						if (dLeft && dRight) {
+							const ctxLeft = buildProfileIdentityContext(dLeft);
+							const ctxRight = buildProfileIdentityContext(dRight);
+							const evalRes = evaluateIdentityMatch(ctxLeft, {
+								candidateName: ctxRight.name,
+								candidateAliases: ctxRight.aliases,
+								candidateIdentifiers: ctxRight.identifiers,
+								candidateLocations: ctxRight.locations.map((l) => l.raw),
+								candidateFirms: ctxRight.firmsAndAssociates,
+								candidateInstitutions: ctxRight.institutions,
+								candidateMilitarySignals: ctxRight.militarySignals,
+								candidateStartDate: ctxRight.startDate,
+								candidateEndDate: ctxRight.endDate,
+								candidateText: [
+									ctxRight.summary,
+									...ctxRight.locations.map((l) => l.raw),
+									...ctxRight.firmsAndAssociates,
+									...ctxRight.institutions,
+									...ctxRight.militarySignals,
+								].join(' '),
+							});
+
+							if (evalRes.decision === 'reject') continue;
+							if (evalRes.decision === 'name_only_note') {
+								upsertAlignmentCandidate(
+									{
+										dedupeKey: sha256Key(['possible_match_name_only', left.profileId, right.profileId, normKey]),
+										alignmentKind: 'possible_match_name_only',
+										leftProfileId: left.profileId,
+										rightProfileId: right.profileId,
+										score: evalRes.score,
+										cautionTier: 'observation',
+										rationale: `${evalRes.rationale} ${evalRes.missingValidationHint || ''}`.trim(),
+										evidence: [
+											{ corpus: left.corpus, label: `${left.name} [${left.profileType}]` },
+											{ corpus: right.corpus, label: `${right.name} [${right.profileType}]` },
+										],
+									},
+									tx,
+								);
+								counts.possibleMatchNameOnly += 1;
+								aliasCount += 1;
+								continue;
+							}
+
+							upsertAlignmentCandidate(
+								{
+									dedupeKey: sha256Key(['same_entity_alias', left.profileId, right.profileId, normKey]),
+									alignmentKind: 'same_entity_alias',
+									leftProfileId: left.profileId,
+									rightProfileId: right.profileId,
+									score: evalRes.score,
+									cautionTier: evalRes.score >= 0.85 ? 'stronger_indicator' : 'closer_look',
+									rationale: evalRes.rationale,
+									evidence: [
+										{ corpus: left.corpus, label: `${left.name} [${left.profileType}]` },
+										{ corpus: right.corpus, label: `${right.name} [${right.profileType}]` },
+									],
+								},
+								tx,
+							);
+							counts.sameEntityAlias += 1;
+							aliasCount += 1;
+							continue;
+						}
+					}
+
 					const score = (sameType ? 0.78 : 0.62) + (crossCorpus ? 0.1 : 0);
 					upsertAlignmentCandidate(
 						{
@@ -455,86 +536,114 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				.all(maxCountyProfiles) as Array<Record<string, unknown>>;
 
 			const stmt = kdb.prepare(
-				`SELECT d.id AS doc_id, d.title, d.url, p.name AS project_name, substr(c.text, 1, 300) AS snippet
+				`SELECT d.id AS doc_id, d.title, d.url, p.name AS project_name, substr(c.text, 1, 600) AS snippet
          FROM chunks_fts
          JOIN chunks c ON c.rowid = chunks_fts.rowid
          JOIN documents d ON d.id = c.document_id
          JOIN projects p ON p.id = d.project_id
          WHERE chunks_fts MATCH ?
            AND p.name IN ('Bryan County', 'Cherokee County', 'Adair County', 'Sequoyah County', 'Dallas County Deeds', 'Research Drive')
-         LIMIT 8`,
+         LIMIT 6`,
 			);
 
-			const matchesToCommit: Array<{
+			type EvaluatedHit = {
+				docId: string;
+				title: string;
+				url: string | null;
+				projectName: string;
+				snippet: string;
+				date: string | null;
+				score: number;
+				rationale: string;
+			};
+
+			const validatedCommits: Array<{
 				profileId: string;
 				profileName: string;
-				profileType: string;
-				hits: Array<{
-					docId: string;
-					title: string;
-					url: string | null;
-					projectName: string;
-					snippet: string;
-					date: string | null;
-				}>;
+				hits: EvaluatedHit[];
+			}> = [];
+			const nameOnlyCommits: Array<{
+				profileId: string;
+				profileName: string;
+				hits: EvaluatedHit[];
 			}> = [];
 
 			for (const cp of candidateProfiles) {
 				const rawName = String(cp.name || '').trim();
-				// Require >= 2 tokens or >= 8 chars to avoid false-positive single common words
-				const tokens = rawName
-					.replace(/["'*^(){}[\]:]/g, ' ')
-					.split(/[^a-zA-Z0-9]+/)
-					.filter((t) => t.length >= 2);
-				if (tokens.length === 0) continue;
-				if (tokens.length === 1 && tokens[0].length < 8) continue;
-				if (STOP_ALIAS_WORDS.has(tokens.join(' ').toLowerCase())) continue;
+				const pType = String(cp.profile_type) as ProfileType;
+				const detail = getProfileDetail(String(cp.id));
+				if (!detail) continue;
+				const profileCtx = buildProfileIdentityContext(detail);
 
-				// Exact phrase query in FTS5 for high precision!
-				const phraseQuery = `"${tokens.join(' ')}"`;
-				try {
-					const rows = stmt.all(phraseQuery) as Array<Record<string, unknown>>;
-					if (!rows.length) continue;
-					const seenDoc = new Set<string>();
-					const hits: Array<{
-						docId: string;
-						title: string;
-						url: string | null;
-						projectName: string;
-						snippet: string;
-						date: string | null;
-					}> = [];
-					for (const r of rows) {
-						const docId = String(r.doc_id);
-						if (seenDoc.has(docId)) continue;
-						seenDoc.add(docId);
-						const title = String(r.title || '');
-						const snippet = String(r.snippet || '').replace(/\s+/g, ' ').trim();
-						hits.push({
-							docId,
-							title,
-							url: r.url != null ? String(r.url) : null,
-							projectName: String(r.project_name || 'knowledge'),
-							snippet,
-							date: extractDateFromFiling(title, snippet),
-						});
+				const phrases = buildSearchPhrasesForProfile(rawName, pType, profileCtx.aliases);
+				if (!phrases.length) continue;
+				if (STOP_ALIAS_WORDS.has(phrases[0].toLowerCase())) continue;
+
+				const seenDoc = new Set<string>();
+				const validHits: EvaluatedHit[] = [];
+				const noteHits: EvaluatedHit[] = [];
+
+				for (const phrase of phrases.slice(0, 4)) {
+					try {
+						const rows = stmt.all(`"${phrase}"`) as Array<Record<string, unknown>>;
+						for (const r of rows) {
+							const docId = String(r.doc_id);
+							if (seenDoc.has(docId)) continue;
+							seenDoc.add(docId);
+							const title = String(r.title || '');
+							const snippet = String(r.snippet || '').replace(/\s+/g, ' ').trim();
+							const projectName = String(r.project_name || 'knowledge');
+							const date = extractDateFromFiling(title, snippet);
+
+							const countyHint = /county|deeds/i.test(projectName)
+								? projectName.replace(/\s+Deeds$/i, '')
+								: '';
+							const stateHint = /Bryan|Cherokee|Adair|Sequoyah/i.test(projectName)
+								? 'Oklahoma'
+								: /Dallas/i.test(projectName)
+									? 'Texas'
+									: '';
+
+							const evalRes = evaluateIdentityMatch(profileCtx, {
+								candidateName: phrase,
+								candidateLocations: [countyHint, stateHint].filter(Boolean),
+								candidateEventDates: date ? [date] : [],
+								candidateText: `${projectName} ${stateHint} ${title} ${snippet}`,
+							});
+
+							const item: EvaluatedHit = {
+								docId,
+								title,
+								url: r.url != null ? String(r.url) : null,
+								projectName,
+								snippet,
+								date,
+								score: evalRes.score,
+								rationale: evalRes.rationale,
+							};
+
+							if (evalRes.decision === 'validated_merge') {
+								validHits.push(item);
+							} else if (evalRes.decision === 'name_only_note') {
+								noteHits.push(item);
+							}
+						}
+					} catch {
+						/* skip invalid FTS phrase */
 					}
-					if (hits.length > 0) {
-						matchesToCommit.push({
-							profileId: String(cp.id),
-							profileName: rawName,
-							profileType: String(cp.profile_type),
-							hits,
-						});
-					}
-				} catch {
-					/* skip invalid FTS phrase */
+				}
+
+				if (validHits.length > 0) {
+					validatedCommits.push({ profileId: String(cp.id), profileName: rawName, hits: validHits });
+				}
+				if (noteHits.length > 0) {
+					nameOnlyCommits.push({ profileId: String(cp.id), profileName: rawName, hits: noteHits });
 				}
 			}
 
-			if (matchesToCommit.length > 0) {
+			if (validatedCommits.length > 0 || nameOnlyCommits.length > 0) {
 				withProfilesTransaction((tx) => {
-					for (const m of matchesToCommit) {
+					for (const m of validatedCommits) {
 						const projects = [...new Set(m.hits.map((h) => h.projectName))];
 						const evidence: AlignmentEvidenceItem[] = m.hits.slice(0, 6).map((h) => ({
 							corpus: `knowledge:${h.projectName}`,
@@ -551,16 +660,16 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 								alignmentKind: 'county_filing_match',
 								leftProfileId: m.profileId,
 								rightProfileId: null,
-								score: Math.min(0.9, 0.62 + m.hits.length * 0.05),
-								cautionTier: m.hits.length >= 3 ? 'closer_look' : 'observation',
-								rationale: `Exact phrase "${m.profileName}" matched ${m.hits.length} record(s) in local knowledge store (${projects.join(', ')}). Treat as name-match lead until verified by party/address.`,
+								score: Math.max(...m.hits.map((h) => h.score)),
+								cautionTier: m.hits.length >= 2 ? 'stronger_indicator' : 'closer_look',
+								rationale: `Validated match for "${m.profileName}" across ${m.hits.length} record(s) in local knowledge store (${projects.join(', ')}). ${m.hits[0].rationale}`,
 								evidence,
 							},
 							tx,
 						);
 						counts.countyFilingMatch += 1;
 
-						// Also attach dated land-record observations to the actor's timeline!
+						// ONLY attach timeline observations for validated matches!
 						for (const h of m.hits.slice(0, 3)) {
 							const srId = upsertSourceRecord(
 								{
@@ -582,7 +691,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 									summary: h.snippet,
 									angle: /county|deeds/i.test(h.projectName) ? 'land_records' : 'general',
 									entryKind: 'filing',
-									confidence: 0.65,
+									confidence: h.score,
 									sourceCorpus: 'knowledge-sqlite',
 									sourceRecordId: srId,
 									dedupeHint: `kdoc:${h.docId}`,
@@ -590,6 +699,33 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 								tx,
 							);
 						}
+					}
+
+					// Name-only county hits: NEVER attach to timeline or mutate profile; record note only!
+					for (const m of nameOnlyCommits) {
+						const projects = [...new Set(m.hits.map((h) => h.projectName))];
+						const evidence: AlignmentEvidenceItem[] = m.hits.slice(0, 6).map((h) => ({
+							corpus: `knowledge:${h.projectName}`,
+							label: h.title.slice(0, 120),
+							date: h.date,
+							url: h.url,
+							sourceRef: `knowledge:doc:${h.docId}`,
+							snippet: h.snippet.slice(0, 200),
+						}));
+						upsertAlignmentCandidate(
+							{
+								dedupeKey: sha256Key(['possible_match_name_only', m.profileId, 'knowledge-sqlite']),
+								alignmentKind: 'possible_match_name_only',
+								leftProfileId: m.profileId,
+								rightProfileId: null,
+								score: m.hits[0].score,
+								cautionTier: 'observation',
+								rationale: `Name-only match for "${m.profileName}" in ${projects.join(', ')} (${m.hits.length} doc(s)) with NO corroborating address, firm, military base, or institution. NOT merged onto profile/timeline — verify party/address first.`,
+								evidence,
+							},
+							tx,
+						);
+						counts.possibleMatchNameOnly += 1;
 					}
 				});
 			}
@@ -613,7 +749,8 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		counts.sharedAffiliation +
 		counts.geoTemporalCoOccurrence +
 		counts.angleComparison +
-		counts.countyFilingMatch;
+		counts.countyFilingMatch +
+		counts.possibleMatchNameOnly;
 	counts.durationMs = Date.now() - t0;
 
 	return counts;

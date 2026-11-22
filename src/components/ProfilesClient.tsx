@@ -8,6 +8,7 @@ import type {
 	AlignmentKind,
 	AlignmentStatus,
 	CautionTier,
+	EnrichProfileReport,
 	Profile,
 	ProfileDetail,
 	ProfileStats,
@@ -118,8 +119,138 @@ const EMPLOYER_CATEGORY_TYPES: ProfileType[] = [
 	'foreign',
 ];
 
+const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
+	{ key: 'occupation', label: 'Occupation' },
+	{ key: 'title', label: 'Title' },
+	{ key: 'knownFor', label: 'Known For' },
+	{ key: 'notableWorks', label: 'Notable Works' },
+	{ key: 'officesHeld', label: 'Offices Held' },
+	{ key: 'citizenship', label: 'Citizenship / Nationality' },
+	{ key: 'politicalParty', label: 'Political Party' },
+	{ key: 'educationSummary', label: 'Education' },
+	{ key: 'awards', label: 'Awards / Honors' },
+	{ key: 'netWorth', label: 'Net Worth' },
+	{ key: 'familyAndRelatives', label: 'Family / Relatives' },
+	{ key: 'militaryBranch', label: 'Military Branch' },
+	{ key: 'militaryRank', label: 'Military Rank' },
+	{ key: 'yearsOfService', label: 'Years of Service' },
+	{ key: 'militaryUnit', label: 'Military Unit' },
+	{ key: 'militaryCommands', label: 'Military Commands' },
+	{ key: 'battlesWars', label: 'Battles / Wars' },
+	{ key: 'companyType', label: 'Entity Type' },
+	{ key: 'industry', label: 'Industry' },
+	{ key: 'products', label: 'Products' },
+	{ key: 'services', label: 'Services' },
+	{ key: 'revenue', label: 'Revenue' },
+	{ key: 'netIncome', label: 'Net Income' },
+	{ key: 'assets', label: 'Assets' },
+	{ key: 'employees', label: 'Employees' },
+	{ key: 'areaServed', label: 'Area Served' },
+	{ key: 'divisions', label: 'Divisions' },
+	{ key: 'predecessor', label: 'Predecessor' },
+	{ key: 'successor', label: 'Successor' },
+	{ key: 'jurisdiction', label: 'Jurisdiction' },
+	{ key: 'parentAgency', label: 'Parent Agency' },
+	{ key: 'isin', label: 'ISIN' },
+	{ key: 'eventDateText', label: 'Event Date' },
+	{ key: 'eventLocation', label: 'Event Location' },
+	{ key: 'eventResult', label: 'Outcome / Result' },
+	{ key: 'belligerents', label: 'Participants / Belligerents' },
+	{ key: 'commanders', label: 'Commanders / Leaders' },
+	{ key: 'casualties', label: 'Casualties / Losses' },
+	{ key: 'causes', label: 'Causes' },
+	{ key: 'finraBcScope', label: 'FINRA BrokerCheck Scope' },
+	{ key: 'finraIaScope', label: 'SEC IA Scope' },
+	{ key: 'finraDaysInIndustry', label: 'Days in Industry' },
+	{ key: 'finraDisclosureCount', label: 'FINRA Disclosures' },
+	{ key: 'finraExams', label: 'FINRA Exams' },
+	{ key: 'finraRegisteredStates', label: 'Registered States' },
+	{ key: 'finraRegisteredSROs', label: 'Registered SROs' },
+	{ key: 'website', label: 'Website' },
+];
+
+const SPECIAL_FLAG_LABELS: Record<string, string> = {
+	eu: 'European Union',
+	un: 'United Nations',
+	xk: 'Kosovo',
+	'gb-eng': 'England',
+	'gb-sct': 'Scotland',
+	'gb-wls': 'Wales',
+	'gb-nir': 'Northern Ireland',
+};
+
+function getFlagLabel(code: string): string {
+	const c = String(code || '').toLowerCase();
+	if (SPECIAL_FLAG_LABELS[c]) return SPECIAL_FLAG_LABELS[c];
+	try {
+		if (typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function' && /^[a-z]{2}$/.test(c)) {
+			const dn = new Intl.DisplayNames(['en'], { type: 'region' });
+			return dn.of(c.toUpperCase()) || c.toUpperCase();
+		}
+	} catch {
+		/* ignore */
+	}
+	return c.toUpperCase();
+}
+
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatMonthYear(iso?: string | null): string {
+	const raw = String(iso || '').trim();
+	if (!raw) return '';
+	const ym = raw.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+	if (ym) {
+		const mIdx = Number(ym[2]) - 1;
+		if (mIdx >= 0 && mIdx < 12) return `${SHORT_MONTHS[mIdx]} ${ym[1]}`;
+	}
+	const y = raw.match(/^(\d{4})$/);
+	if (y) return y[1];
+	return raw;
+}
+
+function formatDateSpan(
+	startDate?: string | null,
+	endDate?: string | null,
+	isCurrent?: boolean | null,
+	isEducation?: boolean,
+): string | null {
+	const s = formatMonthYear(startDate);
+	const e = formatMonthYear(endDate);
+	if (s && e) return s === e ? s : `${s} → ${e}`;
+	if (s) return isCurrent === false ? s : `${s} → Present`;
+	if (e) return isEducation ? `Grad. ${e}` : `Ended ${e}`;
+	return null;
+}
+
+function CountryFlags({ codes, size = 'sm' }: { codes?: string[]; size?: 'sm' | 'md' }) {
+	if (!codes || codes.length === 0) return null;
+	const dims = size === 'md' ? 'h-4 w-[21px]' : 'h-3 w-4';
+	return (
+		<span
+			className="inline-flex shrink-0 flex-wrap items-center gap-1 align-middle"
+			title={codes.map(getFlagLabel).join(' · ')}
+		>
+			{codes.map((code) => {
+				const label = getFlagLabel(code);
+				return (
+					// eslint-disable-next-line @next/next/no-img-element
+					<img
+						key={code}
+						src={`/flags/4x3/${encodeURIComponent(code.toLowerCase())}.svg`}
+						alt={label}
+						title={label}
+						loading="lazy"
+						className={`${dims} inline-block rounded-[2px] border border-black/15 object-cover shadow-xs dark:border-white/15`}
+					/>
+				);
+			})}
+		</span>
+	);
+}
+
 const ALIGNMENT_KINDS: Array<{ value: AlignmentKind | ''; label: string }> = [
 	{ value: '', label: 'All kinds' },
+	{ value: 'possible_match_name_only', label: 'Name-only match (needs validation)' },
 	{ value: 'cross_source_mention', label: 'Cross-source mention' },
 	{ value: 'county_filing_match', label: 'County / Knowledge match' },
 	{ value: 'angle_comparison', label: 'Multi-angle overlap' },
@@ -162,8 +293,10 @@ export default function ProfilesClient() {
 	const [alignStatusFilter, setAlignStatusFilter] = useState<string>('proposed');
 	const [loadingGlobalAlign, setLoadingGlobalAlign] = useState(false);
 
-	// Sync & Create states
+	// Sync, Enrich & Create states
 	const [syncing, setSyncing] = useState(false);
+	const [enriching, setEnriching] = useState(false);
+	const [lastEnrichReport, setLastEnrichReport] = useState<EnrichProfileReport | null>(null);
 	const [banner, setBanner] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [showCreate, setShowCreate] = useState(false);
@@ -577,8 +710,49 @@ export default function ProfilesClient() {
 		}
 	}
 
+	async function handleEnrichProfile() {
+		if (!selectedId) return;
+		setEnriching(true);
+		setError(null);
+		setBanner(null);
+		setLastEnrichReport(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}/enrich`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					includeWikipedia: true,
+					includeBrokercheck: true,
+					includeKnowledge: true,
+					includeBryanUcc: true,
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Research enrichment failed');
+			const report = data.report as EnrichProfileReport;
+			setLastEnrichReport(report);
+			if (data.detail) setDetail(data.detail as ProfileDetail);
+			await loadList();
+			if (profileTab === 'timeline') await loadTimeline(selectedId);
+			const summaryMsg =
+				report.validatedSources > 0
+					? `Validated enrichment from ${report.validatedSources} source(s) (${report.fieldsUpdated.join(', ') || 'refreshed'}).`
+					: 'No validated new fields merged.';
+			const noteMsg =
+				report.heldNameOnlyNotes > 0
+					? ` ${report.heldNameOnlyNotes} name-only match(es) held as review notes (NOT merged).`
+					: '';
+			setBanner(`${summaryMsg}${noteMsg}`);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setEnriching(false);
+		}
+	}
+
 	function jumpToProfile(id: string) {
 		setSelectedId(id);
+		setLastEnrichReport(null);
 		setMainView('profile');
 		setProfileTab('overview');
 	}
@@ -926,8 +1100,16 @@ export default function ProfilesClient() {
 											>
 												{al.cautionTier.replace(/_/g, ' ')}
 											</span>
-											<span className="rounded bg-[var(--app-surface-hover)] px-1.5 py-0.5 text-[10px] font-semibold">
-												{al.alignmentKind.replace(/_/g, ' ')}
+											<span
+												className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+													al.alignmentKind === 'possible_match_name_only'
+														? 'border border-amber-500/40 bg-amber-500/15 text-amber-900 dark:text-amber-200'
+														: 'bg-[var(--app-surface-hover)]'
+												}`}
+											>
+												{al.alignmentKind === 'possible_match_name_only'
+													? 'Name-only match (NOT merged — needs validation)'
+													: al.alignmentKind.replace(/_/g, ' ')}
 											</span>
 											<span className="text-[11px] opacity-70">score {al.score.toFixed(2)}</span>
 											<span className="text-[11px] opacity-60">· {al.status}</span>
@@ -1141,7 +1323,10 @@ export default function ProfilesClient() {
 													{p.alignmentCount ? ` · ${p.alignmentCount} aln` : ''}
 												</span>
 											</div>
-											<div className="mt-1 text-xs font-semibold leading-snug">{p.name}</div>
+											<div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
+												<span>{p.name}</span>
+												<CountryFlags codes={p.countryCodes} size="sm" />
+											</div>
 											{p.primaryLocation ? (
 												<div className="mt-0.5 text-[10px] opacity-75">📍 {p.primaryLocation}</div>
 											) : null}
@@ -1203,7 +1388,10 @@ export default function ProfilesClient() {
 												</span>
 											) : null}
 										</div>
-										<h2 className="my-1.5 text-lg font-semibold">{detail.profile.name}</h2>
+										<h2 className="my-1.5 flex flex-wrap items-center gap-2 text-lg font-semibold">
+											<span>{detail.profile.name}</span>
+											<CountryFlags codes={detail.profile.countryCodes} size="md" />
+										</h2>
 										{detail.profile.primaryLocation ? (
 											<div className="mb-1.5 text-xs opacity-80">
 												📍 <strong>{detail.profile.primaryLocation}</strong>
@@ -1251,7 +1439,58 @@ export default function ProfilesClient() {
 											</p>
 										) : null}
 									</div>
+									<div className="flex flex-wrap items-center gap-2">
+										<button
+											type="button"
+											disabled={enriching}
+											onClick={() => void handleEnrichProfile()}
+											title="Search local offline Wikipedia, BrokerCheck (if CRD), county deeds, and UCC filings. Only merges validated matches (identifier or name/initials + address, firm, military base, or institution); name-only matches are held as review notes."
+											className="cursor-pointer rounded-md border border-[#F97316]/50 bg-[#F97316]/15 px-2.5 py-1.5 text-xs font-semibold text-[#F97316] hover:bg-[#F97316]/25 disabled:opacity-50"
+										>
+											{enriching ? 'Researching…' : 'Research & Fill Details'}
+										</button>
+									</div>
 								</div>
+								{lastEnrichReport && lastEnrichReport.profileId === detail.profile.id ? (
+									<div className="mt-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 text-xs">
+										<div className="flex flex-wrap items-center justify-between gap-2 font-semibold">
+											<span>
+												Enrichment results ({lastEnrichReport.durationMs}ms):{' '}
+												{lastEnrichReport.validatedSources} validated ·{' '}
+												{lastEnrichReport.heldNameOnlyNotes} name-only note(s) held back
+											</span>
+											<button
+												type="button"
+												onClick={() => setLastEnrichReport(null)}
+												className="cursor-pointer border-0 bg-transparent text-[11px] opacity-65 hover:opacity-100"
+											>
+												Dismiss
+											</button>
+										</div>
+										<div className="mt-1.5 space-y-1">
+											{lastEnrichReport.outcomes.map((o, idx) => (
+												<div key={idx} className="flex flex-wrap items-center gap-1.5 text-[11px]">
+													<span className="rounded bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px]">
+														{o.source}
+													</span>
+													<span
+														className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+															o.status === 'merged'
+																? 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-200'
+																: o.status === 'name_only_note'
+																	? 'bg-amber-500/15 text-amber-900 dark:text-amber-200'
+																	: 'bg-zinc-500/15 text-zinc-700 dark:text-zinc-300'
+														}`}
+													>
+														{o.status === 'name_only_note' ? 'held: name-only note' : o.status}
+													</span>
+													{o.candidateTitle ? <span className="font-medium">{o.candidateTitle}</span> : null}
+													{o.note ? <span className="opacity-75">— {o.note}</span> : null}
+												</div>
+											))}
+										</div>
+									</div>
+								) : null}
 
 								{/* Tabs */}
 								<div className="mt-3 mb-4 flex flex-wrap gap-2 border-b border-[var(--app-border)] pb-2">
@@ -1289,6 +1528,71 @@ export default function ProfilesClient() {
 								{/* TAB 1: Overview & Links */}
 								{profileTab === 'overview' ? (
 									<div className="space-y-4">
+										{(() => {
+											const meta = detail.profile.metadata || {};
+											const detailRows = ENRICHED_DETAIL_FIELDS.map(({ key, label }) => {
+												const raw = meta[key];
+												if (raw == null || raw === '') return null;
+												const text = Array.isArray(raw)
+													? raw.map(String).filter(Boolean).join(' · ')
+													: String(raw).trim();
+												if (!text) return null;
+												return { key, label, text };
+											}).filter((x): x is { key: string; label: string; text: string } => x !== null);
+											const keywords = Array.isArray(meta.identifyingKeywords)
+												? (meta.identifyingKeywords as unknown[]).map(String).filter(Boolean)
+												: [];
+											if (!detailRows.length && !keywords.length) return null;
+											return (
+												<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+													<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+														<h3 className="m-0 text-xs font-semibold uppercase opacity-75">
+															Captured Entity Details ({detailRows.length})
+														</h3>
+														{typeof meta.wikipediaUrl === 'string' ? (
+															<a
+																href={meta.wikipediaUrl}
+																target="_blank"
+																rel="noreferrer"
+																className="text-[11px] font-semibold text-[#F97316] underline"
+															>
+																Wikipedia ↗
+															</a>
+														) : null}
+													</div>
+													{detailRows.length > 0 ? (
+														<div className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
+															{detailRows.map((row) => (
+																<div
+																	key={row.key}
+																	className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5"
+																>
+																	<div className="text-[10px] font-semibold uppercase opacity-65">
+																		{row.label}
+																	</div>
+																	<div className="mt-0.5 break-words leading-snug">{row.text}</div>
+																</div>
+															))}
+														</div>
+													) : null}
+													{keywords.length > 0 ? (
+														<div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
+															<span className="font-semibold uppercase opacity-65">
+																Identifying keywords:
+															</span>
+															{keywords.slice(0, 14).map((kw) => (
+																<span
+																	key={kw}
+																	className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 opacity-80"
+																>
+																	{kw}
+																</span>
+															))}
+														</div>
+													) : null}
+												</div>
+											);
+										})()}
 										<div className="grid gap-3 md:grid-cols-3">
 											{/* Aliases */}
 											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
@@ -1376,179 +1680,301 @@ export default function ProfilesClient() {
 											</div>
 										</div>
 
-										{/* Employment History (Person profiles) */}
-										{detail.profile.profileType === 'person' ? (
-											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-												<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-													Employment History ({detail.employmentHistory.length})
-												</h3>
-												{detail.employmentHistory.length === 0 ? (
-													<p className="m-0 mb-3 text-xs opacity-70">
-														No employment history recorded yet. Add one below.
-													</p>
-												) : (
-													<div className="mb-3 space-y-1.5">
-														{detail.employmentHistory.map((emp) => (
-															<div
-																key={emp.id}
-																className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
-															>
-																<div className="flex flex-wrap items-center gap-1.5">
-																	{emp.orgProfileId ? (
-																		<button
-																			type="button"
-																			onClick={() => jumpToProfile(emp.orgProfileId!)}
-																			className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																		>
-																			{emp.orgName}
-																		</button>
-																	) : (
-																		<span className="font-semibold">{emp.orgName}</span>
-																	)}
-																	<span
-																		className={`rounded border px-1.5 py-0.2 text-[10px] font-semibold ${TYPE_META[emp.orgCategory].badge}`}
-																	>
-																		{TYPE_META[emp.orgCategory].label}
-																	</span>
-																	{emp.role ? (
-																		<span className="text-[11px] opacity-85">— {emp.role}</span>
-																	) : null}
-																	{emp.isCurrent === true ? (
-																		<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
-																			Current
-																		</span>
-																	) : emp.isCurrent === false ? (
-																		<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] opacity-75">
-																			Previous
-																		</span>
-																	) : null}
-																</div>
-																<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
-																	{emp.startDate || emp.endDate ? (
-																		<span>
-																			{emp.startDate || '?'} → {emp.endDate || 'Present'}
-																		</span>
-																	) : null}
-																	{emp.location ? <span>📍 {emp.location}</span> : null}
-																	<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
-																		{emp.sourceCorpus}
-																	</span>
-																</div>
-															</div>
-														))}
-													</div>
-												)}
-
-												<form
-													onSubmit={(e) => void handleAddEmployment(e)}
-													className="grid gap-2 border-t border-[var(--app-border)] pt-2.5 sm:grid-cols-6"
-												>
-													<input
-														required
-														value={empOrgName}
-														onChange={(e) => setEmpOrgName(e.target.value)}
-														placeholder="Employer / Organization *"
-														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs sm:col-span-2"
-													/>
-													<select
-														value={empOrgCategory}
-														onChange={(e) => setEmpOrgCategory(e.target.value as ProfileType)}
-														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
-													>
-														{EMPLOYER_CATEGORY_TYPES.map((t) => (
-															<option key={t} value={t}>
-																{TYPE_META[t].label}
-															</option>
-														))}
-													</select>
-													<input
-														value={empRole}
-														onChange={(e) => setEmpRole(e.target.value)}
-														placeholder="Role / Title"
-														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
-													/>
-													<input
-														value={empLocation}
-														onChange={(e) => setEmpLocation(e.target.value)}
-														placeholder="Location"
-														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
-													/>
-													<div className="flex gap-1">
-														<input
-															value={empStart}
-															onChange={(e) => setEmpStart(e.target.value)}
-															placeholder="From"
-															className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
-														/>
-														<input
-															value={empEnd}
-															onChange={(e) => setEmpEnd(e.target.value)}
-															placeholder="To"
-															className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
-														/>
-													</div>
-													<div className="flex justify-end sm:col-span-6">
-														<button
-															type="submit"
-															disabled={savingEmp}
-															className="cursor-pointer rounded border-none bg-[#F97316] px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
-														>
-															{savingEmp ? 'Adding…' : '+ Add Employment'}
-														</button>
-													</div>
-												</form>
-											</div>
-										) : null}
-
-										{/* Connected Profiles */}
-										<div>
-											<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-												Connected Profiles ({detail.counts.links})
-											</h3>
-											{detail.links.length === 0 ? (
-												<p className="text-xs opacity-70">No typed links recorded yet.</p>
-											) : (
-												<div className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
-													{detail.links.map((l) => {
-														const isOut = l.fromProfileId === detail.profile.id;
-														const peerId = isOut ? l.toProfileId : l.fromProfileId;
-														const peerName = isOut ? l.toName : l.fromName;
-														const peerType = (isOut ? l.toType : l.fromType) || 'firm';
-														return (
-															<div
-																key={l.id}
-																className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs"
-															>
-																<div className="flex flex-wrap items-center gap-1.5">
-																	<span className="text-[10px] opacity-60">
-																		{isOut ? '→' : '←'} {l.relationType.replace(/_/g, ' ')}
-																	</span>
-																	<button
-																		type="button"
-																		onClick={() => jumpToProfile(peerId)}
-																		className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																	>
-																		{peerName}
-																	</button>
-																	<span
-																		className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}
-																	>
-																		{TYPE_META[peerType].label}
-																	</span>
-																	{l.roleLabel ? (
-																		<span className="text-[11px] opacity-75">({l.roleLabel})</span>
-																	) : null}
-																</div>
-																<div className="flex items-center gap-1.5 text-[10px] opacity-70">
-																	<span>{l.sourceCorpus}</span>
-																	{l.startDate ? <span>· {l.startDate}</span> : null}
-																</div>
-															</div>
+										{/* Employment History & Education (Person profiles) */}
+										{detail.profile.profileType === 'person'
+											? (() => {
+													const isFacultyRole = (role?: string | null) =>
+														/\b(?:professor|faculty|dean|chancellor|lecturer|instructor|researcher|provost|teacher)\b/i.test(
+															role || '',
 														);
-													})}
+													const educationEntries = detail.employmentHistory.filter(
+														(e) => e.orgCategory === 'education' && !isFacultyRole(e.role),
+													);
+													const workEntries = detail.employmentHistory.filter(
+														(e) => !(e.orgCategory === 'education' && !isFacultyRole(e.role)),
+													);
+
+													return (
+														<>
+															{/* Employment History */}
+															<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+																<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+																	Employment History ({workEntries.length})
+																</h3>
+																{workEntries.length === 0 ? (
+																	<p className="m-0 mb-3 text-xs opacity-70">
+																		No employment history recorded yet. Add one below.
+																	</p>
+																) : (
+																	<div className="mb-3 space-y-1.5">
+																		{workEntries.map((emp) => (
+																			<div
+																				key={emp.id}
+																				className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+																			>
+																				<div className="flex flex-wrap items-center gap-1.5">
+																					{emp.orgProfileId ? (
+																						<button
+																							type="button"
+																							onClick={() => jumpToProfile(emp.orgProfileId!)}
+																							className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																						>
+																							{emp.orgName}
+																						</button>
+																					) : (
+																						<span className="font-semibold">{emp.orgName}</span>
+																					)}
+																					<CountryFlags codes={emp.orgCountryCodes} size="sm" />
+																					<span
+																						className={`rounded border px-1.5 py-0.2 text-[10px] font-semibold ${TYPE_META[emp.orgCategory].badge}`}
+																					>
+																						{TYPE_META[emp.orgCategory].label}
+																					</span>
+																					{emp.role ? (
+																						<span className="text-[11px] opacity-85">— {emp.role}</span>
+																					) : null}
+																					{emp.isCurrent === true ? (
+																						<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+																							Current
+																						</span>
+																					) : emp.isCurrent === false ? (
+																						<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] opacity-75">
+																							Previous
+																						</span>
+																					) : null}
+																				</div>
+																				<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
+																					{(() => {
+																						const span = formatDateSpan(
+																							emp.startDate,
+																							emp.endDate,
+																							emp.isCurrent,
+																							false,
+																						);
+																						return span ? (
+																							<span className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold">
+																								{span}
+																							</span>
+																						) : null;
+																					})()}
+																					{emp.location ? <span>📍 {emp.location}</span> : null}
+																					<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
+																						{emp.sourceCorpus}
+																					</span>
+																				</div>
+																			</div>
+																		))}
+																	</div>
+																)}
+
+																<form
+																	onSubmit={(e) => void handleAddEmployment(e)}
+																	className="grid gap-2 border-t border-[var(--app-border)] pt-2.5 sm:grid-cols-6"
+																>
+																	<input
+																		required
+																		value={empOrgName}
+																		onChange={(e) => setEmpOrgName(e.target.value)}
+																		placeholder="Employer / School *"
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs sm:col-span-2"
+																	/>
+																	<select
+																		value={empOrgCategory}
+																		onChange={(e) => setEmpOrgCategory(e.target.value as ProfileType)}
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
+																	>
+																		{EMPLOYER_CATEGORY_TYPES.map((t) => (
+																			<option key={t} value={t}>
+																				{TYPE_META[t].label}
+																			</option>
+																		))}
+																	</select>
+																	<input
+																		value={empRole}
+																		onChange={(e) => setEmpRole(e.target.value)}
+																		placeholder="Role / Degree"
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
+																	/>
+																	<input
+																		value={empLocation}
+																		onChange={(e) => setEmpLocation(e.target.value)}
+																		placeholder="Location"
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
+																	/>
+																	<div className="flex gap-1">
+																		<input
+																			value={empStart}
+																			onChange={(e) => setEmpStart(e.target.value)}
+																			placeholder="From"
+																			className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
+																		/>
+																		<input
+																			value={empEnd}
+																			onChange={(e) => setEmpEnd(e.target.value)}
+																			placeholder="To"
+																			className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
+																		/>
+																	</div>
+																	<div className="flex justify-end sm:col-span-6">
+																		<button
+																			type="submit"
+																			disabled={savingEmp}
+																			className="cursor-pointer rounded border-none bg-[#F97316] px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+																		>
+																			{savingEmp ? 'Adding…' : '+ Add Entry'}
+																		</button>
+																	</div>
+																</form>
+															</div>
+
+															{/* Education */}
+															<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+																<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+																	Education ({educationEntries.length})
+																</h3>
+																{educationEntries.length === 0 ? (
+																	<p className="m-0 text-xs opacity-70">
+																		No education records yet. Select <strong>Education</strong> in the form
+																		above to add a school.
+																	</p>
+																) : (
+																	<div className="space-y-1.5">
+																		{educationEntries.map((edu) => (
+																			<div
+																				key={edu.id}
+																				className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+																			>
+																				<div className="flex flex-wrap items-center gap-1.5">
+																					{edu.orgProfileId ? (
+																						<button
+																							type="button"
+																							onClick={() => jumpToProfile(edu.orgProfileId!)}
+																							className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																						>
+																							{edu.orgName}
+																						</button>
+																					) : (
+																						<span className="font-semibold">{edu.orgName}</span>
+																					)}
+																					<CountryFlags codes={edu.orgCountryCodes} size="sm" />
+																					{edu.role ? (
+																						<span className="text-[11px] opacity-85">— {edu.role}</span>
+																					) : null}
+																				</div>
+																				<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
+																					{(() => {
+																						const span = formatDateSpan(
+																							edu.startDate,
+																							edu.endDate,
+																							edu.isCurrent,
+																							true,
+																						);
+																						return span ? (
+																							<span className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold">
+																								{span}
+																							</span>
+																						) : null;
+																					})()}
+																					{edu.location ? <span>📍 {edu.location}</span> : null}
+																					<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
+																						{edu.sourceCorpus}
+																					</span>
+																				</div>
+																			</div>
+																		))}
+																	</div>
+																)}
+															</div>
+														</>
+													);
+												})()
+											: null}
+
+										{/* Connected Profiles (deduplicated & excluding orgs already shown in Employment History for people) */}
+										{(() => {
+											const empPeerIds = new Set(
+												detail.profile.profileType === 'person'
+													? detail.employmentHistory
+															.map((e) => e.orgProfileId)
+															.filter((x): x is string => Boolean(x))
+													: [],
+											);
+											const connectedLinks = detail.links.filter((l) => {
+												const peerId =
+													l.fromProfileId === detail.profile.id ? l.toProfileId : l.fromProfileId;
+												return !empPeerIds.has(peerId);
+											});
+											return (
+												<div>
+													<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+														Connected Profiles ({connectedLinks.length})
+													</h3>
+													{connectedLinks.length === 0 ? (
+														<p className="text-xs opacity-70">
+															{detail.profile.profileType === 'person' &&
+															detail.employmentHistory.length > 0
+																? 'All connected organizations and schools are listed in Employment History & Education above.'
+																: 'No typed links recorded yet.'}
+														</p>
+													) : (
+														<div className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
+															{connectedLinks.map((l) => {
+																const isOut = l.fromProfileId === detail.profile.id;
+																const peerId = isOut ? l.toProfileId : l.fromProfileId;
+																const peerName = isOut ? l.toName : l.fromName;
+																const peerType = (isOut ? l.toType : l.fromType) || 'firm';
+																const dateSpan = formatDateSpan(
+																	l.startDate,
+																	l.endDate,
+																	null,
+																	peerType === 'education',
+																);
+																const sourceLabel =
+																	l.sources && l.sources.length > 1
+																		? l.sources.join(', ')
+																		: l.sourceCorpus;
+																return (
+																	<div
+																		key={l.id}
+																		className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs"
+																	>
+																		<div className="flex flex-wrap items-center gap-1.5">
+																			<span className="text-[10px] opacity-60">
+																				{isOut ? '→' : '←'} {l.relationType.replace(/_/g, ' ')}
+																			</span>
+																			<button
+																				type="button"
+																				onClick={() => jumpToProfile(peerId)}
+																				className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																			>
+																				{peerName}
+																			</button>
+																			<CountryFlags codes={l.peerCountryCodes} size="sm" />
+																			<span
+																				className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}
+																			>
+																				{TYPE_META[peerType].label}
+																			</span>
+																			{l.roleLabel ? (
+																				<span className="text-[11px] opacity-75">({l.roleLabel})</span>
+																			) : null}
+																		</div>
+																		<div className="flex items-center gap-1.5 text-[10px] opacity-75">
+																			{dateSpan ? (
+																				<span className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-semibold">
+																					{dateSpan}
+																				</span>
+																			) : null}
+																			<span>{sourceLabel}</span>
+																		</div>
+																	</div>
+																);
+															})}
+														</div>
+													)}
 												</div>
-											)}
-										</div>
+											);
+										})()}
 									</div>
 								) : null}
 

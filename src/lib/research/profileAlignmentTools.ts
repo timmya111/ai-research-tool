@@ -3,6 +3,7 @@
  * (.data/profiles/profiles.sqlite).
  */
 import { listAlignments } from '@/lib/research/profiles/align';
+import { enrichProfile } from '@/lib/research/profiles/enrich';
 import { getProfileDetail, getProfileStats, listProfiles } from '@/lib/research/profiles/store';
 import { getProfileTimeline } from '@/lib/research/profiles/timeline';
 import {
@@ -134,6 +135,7 @@ export async function searchProfilesTool(args: SearchProfilesToolArgs): Promise<
 					status: p.status,
 					summary: p.summary.slice(0, 260),
 					primaryLocation: p.primaryLocation,
+					countryCodes: p.countryCodes,
 					categoryTags: p.categoryTags,
 					startDate: p.startDate,
 					endDate: p.endDate,
@@ -292,6 +294,59 @@ export async function findProfileAlignmentsTool(args: FindProfileAlignmentsToolA
 					rationale: a.rationale,
 					evidence: a.evidence.slice(0, 5),
 				})),
+			},
+		};
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, result: { ok: false, error: message } };
+	}
+}
+
+export type EnrichProfileToolArgs = {
+	profile?: string;
+	includeWikipedia?: boolean;
+	includeBrokercheck?: boolean;
+	includeKnowledge?: boolean;
+	includeBryanUcc?: boolean;
+};
+
+export async function enrichProfileTool(args: EnrichProfileToolArgs): Promise<{
+	ok: boolean;
+	result: Record<string, unknown>;
+}> {
+	try {
+		const target = String(args.profile || '').trim();
+		if (!target) {
+			return {
+				ok: false,
+				result: { ok: false, error: 'profile (id, slug, or name) is required' },
+			};
+		}
+
+		let resolvedId = target;
+		if (!getProfileDetail(target)) {
+			const found = listProfiles({ query: target, limit: 1 });
+			if (found.profiles[0]) {
+				resolvedId = found.profiles[0].id;
+			}
+		}
+
+		const report = await enrichProfile(resolvedId, {
+			includeWikipedia: args.includeWikipedia !== false,
+			includeBrokercheck: args.includeBrokercheck !== false,
+			includeKnowledge: args.includeKnowledge !== false,
+			includeBryanUcc: args.includeBryanUcc !== false,
+		});
+
+		if (!report) {
+			return { ok: false, result: { ok: false, error: `No profile found matching "${target}"` } };
+		}
+
+		return {
+			ok: true,
+			result: {
+				ok: true,
+				report,
 			},
 		};
 	} catch (error: unknown) {

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { detectProfileCountryCodes } from '@/lib/research/profiles/countries';
 import { getProfilesDb } from '@/lib/research/profiles/db';
 import {
 	buildSafeFtsQuery,
@@ -583,11 +584,15 @@ export function upsertProfileLink(
 		db.prepare(
 			`UPDATE profile_links
        SET confidence = MAX(confidence, ?),
+           start_date = COALESCE(?, start_date),
+           end_date = COALESCE(?, end_date),
            evidence_note = CASE WHEN length(?) > length(evidence_note) THEN ? ELSE evidence_note END,
            updated_at = ?
        WHERE id = ?`,
 		).run(
 			input.confidence ?? 0.8,
+			input.startDate || null,
+			input.endDate || null,
 			String(input.evidenceNote || ''),
 			String(input.evidenceNote || ''),
 			now,
@@ -861,6 +866,61 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		return prof;
 	});
 
+	// Batch-load locations & identifiers for the returned page so country flags resolve fast with zero N+1 queries
+	if (profiles.length > 0) {
+		const ids = profiles.map((p) => p.id);
+		const placeholders = ids.map(() => '?').join(',');
+		const locByPid = new Map<
+			string,
+			Array<{ raw: string; city: string | null; state: string | null; country: string | null; geoKey: string }>
+		>();
+		const locRows = db
+			.prepare(
+				`SELECT profile_id, raw, city, state, country, geo_key
+         FROM profile_locations
+         WHERE profile_id IN (${placeholders})`,
+			)
+			.all(...ids) as Array<Record<string, unknown>>;
+		for (const lr of locRows) {
+			const pid = String(lr.profile_id);
+			const list = locByPid.get(pid) || [];
+			list.push({
+				raw: String(lr.raw || ''),
+				city: lr.city != null ? String(lr.city) : null,
+				state: lr.state != null ? String(lr.state) : null,
+				country: lr.country != null ? String(lr.country) : null,
+				geoKey: String(lr.geo_key || ''),
+			});
+			locByPid.set(pid, list);
+		}
+
+		const idByPid = new Map<string, Array<{ scheme: string; value: string }>>();
+		const idRows = db
+			.prepare(
+				`SELECT profile_id, scheme, value
+         FROM profile_identifiers
+         WHERE profile_id IN (${placeholders})`,
+			)
+			.all(...ids) as Array<Record<string, unknown>>;
+		for (const ir of idRows) {
+			const pid = String(ir.profile_id);
+			const list = idByPid.get(pid) || [];
+			list.push({ scheme: String(ir.scheme), value: String(ir.value) });
+			idByPid.set(pid, list);
+		}
+
+		for (const prof of profiles) {
+			prof.countryCodes = detectProfileCountryCodes({
+				name: prof.name,
+				profileType: prof.profileType,
+				summary: prof.summary,
+				locations: locByPid.get(prof.id) || [],
+				identifiers: idByPid.get(prof.id) || [],
+				metadata: prof.metadata,
+			});
+		}
+	}
+
 	return { profiles, total };
 }
 
@@ -956,13 +1016,6 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		.all(profile.id) as Array<Record<string, unknown>>;
 	const recentTimeline = timelineRows.map(rowToTimeline);
 
-	const linkTotal = Number(
-		(
-			db
-				.prepare('SELECT COUNT(*) AS c FROM profile_links WHERE from_profile_id = ? OR to_profile_id = ?')
-				.get(profile.id, profile.id) as { c?: number }
-		)?.c || 0,
-	);
 	const timelineTotal = Number(
 		(
 			db
@@ -1019,6 +1072,47 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		'foreign',
 	]);
 
+	const REL_PRIORITY: Record<string, number> = {
+		employed_by: 10,
+		registered_at: 9,
+		alumni_or_faculty: 9,
+		affiliated_with: 7,
+		funded_by: 7,
+		regulator_of: 7,
+		family_or_associate: 6,
+		participated_in: 6,
+		authored_or_spoke: 6,
+		part_of_subject: 5,
+		business_tie: 4,
+		location_overlap: 3,
+		temporal_overlap: 3,
+		mentioned_in: 2,
+		possible_alignment: 1,
+	};
+
+	function mergeRoleLabels(existingRole: string | null, incomingRole: string | null): string | null {
+		const rawParts = [existingRole, incomingRole]
+			.filter(Boolean)
+			.flatMap((s) => String(s).split(','))
+			.map((s) => s.trim())
+			.filter(Boolean);
+		if (!rawParts.length) return null;
+		// Sort longest/most-specific first so "Co-founder and CEO" absorbs redundant "CEO" / "Founder"
+		const sorted = [...new Set(rawParts)].sort((a, b) => b.length - a.length);
+		const kept: string[] = [];
+		for (const part of sorted) {
+			const low = part.toLowerCase();
+			const covered = kept.some((k) => {
+				const kLow = k.toLowerCase();
+				if (kLow === low || kLow.includes(low)) return true;
+				if (low === 'founder' && kLow.includes('co-founder')) return true;
+				return false;
+			});
+			if (!covered) kept.push(part);
+		}
+		return kept.join(', ').slice(0, 140) || null;
+	}
+
 	const employmentHistory: PersonEmploymentEntry[] = [];
 	if (profile.profileType === 'person') {
 		const byEmpKey = new Map<string, PersonEmploymentEntry>();
@@ -1034,9 +1128,13 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			const roleStr = l.roleLabel || '';
 			const noteStr = l.evidenceNote || '';
 			let isCurrent: boolean | null = null;
-			if (/current/i.test(roleStr) || (l.startDate && !l.endDate && l.sourceCorpus === 'manual')) {
+			if (
+				/current/i.test(roleStr) ||
+				/status=current/i.test(noteStr) ||
+				(l.startDate && !l.endDate && l.sourceCorpus === 'manual')
+			) {
 				isCurrent = true;
-			} else if (/previous|former/i.test(roleStr) || Boolean(l.endDate)) {
+			} else if (/previous|former/i.test(roleStr) || /status=previous/i.test(noteStr) || Boolean(l.endDate)) {
 				isCurrent = false;
 			}
 			const branchMatch = noteStr.match(/branch=([^;]+)/i);
@@ -1058,7 +1156,6 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				evidenceNote: l.evidenceNote,
 			};
 
-			// Dedupe overlapping links to the same employer in the same date span, preferring entries with explicit role/employment relation
 			const dedupeEmpKey = `${peerId}|${l.startDate || ''}|${l.endDate || ''}`;
 			const existing = byEmpKey.get(dedupeEmpKey);
 			if (!existing) {
@@ -1066,21 +1163,47 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			} else {
 				const existingScore =
 					(existing.role ? 2 : 0) +
-					(existing.relationType === 'employed_by' || existing.relationType === 'registered_at' ? 2 : 0) +
+					(REL_PRIORITY[existing.relationType] || 0) +
 					(existing.location ? 1 : 0);
 				const candScore =
 					(candidate.role ? 2 : 0) +
-					(candidate.relationType === 'employed_by' || candidate.relationType === 'registered_at' ? 2 : 0) +
+					(REL_PRIORITY[candidate.relationType] || 0) +
 					(candidate.location ? 1 : 0);
-				if (candScore > existingScore) {
-					byEmpKey.set(dedupeEmpKey, candidate);
-				}
+				const winner = candScore > existingScore ? { ...candidate } : { ...existing };
+				const loser = candScore > existingScore ? existing : candidate;
+				winner.role = mergeRoleLabels(winner.role, loser.role);
+				winner.location = winner.location || loser.location;
+				if (winner.isCurrent == null && loser.isCurrent != null) winner.isCurrent = loser.isCurrent;
+				byEmpKey.set(dedupeEmpKey, winner);
 			}
 		}
 
-		employmentHistory.push(...byEmpKey.values());
+		// Drop undated duplicate entries for an org if a dated entry for the same org exists (merging role/location)
+		const datedByOrg = new Map<string, PersonEmploymentEntry[]>();
+		const undatedByOrg = new Map<string, PersonEmploymentEntry>();
+		for (const entry of byEmpKey.values()) {
+			const oid = entry.orgProfileId || entry.orgName;
+			if (entry.startDate || entry.endDate) {
+				const list = datedByOrg.get(oid) || [];
+				list.push(entry);
+				datedByOrg.set(oid, list);
+			} else {
+				undatedByOrg.set(oid, entry);
+			}
+		}
+		for (const [oid, list] of datedByOrg.entries()) {
+			const undated = undatedByOrg.get(oid);
+			if (undated && list.length > 0) {
+				list[0].role = mergeRoleLabels(list[0].role, undated.role);
+				list[0].location = list[0].location || undated.location;
+				if (list[0].isCurrent == null && undated.isCurrent != null) list[0].isCurrent = undated.isCurrent;
+				undatedByOrg.delete(oid);
+			}
+			employmentHistory.push(...list);
+		}
+		employmentHistory.push(...undatedByOrg.values());
 
-		// Sort current first, then newest startDate desc, then org name
+		// Sort current first, then newest startDate/endDate desc, then org name
 		employmentHistory.sort((a, b) => {
 			if (a.isCurrent !== b.isCurrent) {
 				if (a.isCurrent === true) return -1;
@@ -1093,12 +1216,153 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		});
 	}
 
+	// Deduplicate connected profile links by peerId (collapsing bidirectional & multi-corpus duplicate links)
+	const linkByPeer = new Map<string, ProfileLink>();
+	for (const l of links) {
+		const isOut = l.fromProfileId === profile.id;
+		const peerId = isOut ? l.toProfileId : l.fromProfileId;
+		const existing = linkByPeer.get(peerId);
+		if (!existing) {
+			linkByPeer.set(peerId, { ...l, sources: [l.sourceCorpus] });
+			continue;
+		}
+		const existScore =
+			(REL_PRIORITY[existing.relationType] || 0) * 3 +
+			(existing.startDate || existing.endDate ? 4 : 0) +
+			(existing.roleLabel ? 2 : 0) +
+			(existing.fromProfileId === profile.id ? 1 : 0);
+		const candScore =
+			(REL_PRIORITY[l.relationType] || 0) * 3 +
+			(l.startDate || l.endDate ? 4 : 0) +
+			(l.roleLabel ? 2 : 0) +
+			(l.fromProfileId === profile.id ? 1 : 0);
+
+		const winner = candScore > existScore ? { ...l } : { ...existing };
+		const loser = candScore > existScore ? existing : l;
+		winner.roleLabel = mergeRoleLabels(winner.roleLabel, loser.roleLabel);
+		winner.startDate =
+			winner.startDate && loser.startDate
+				? winner.startDate < loser.startDate
+					? winner.startDate
+					: loser.startDate
+				: winner.startDate || loser.startDate;
+		winner.endDate =
+			winner.endDate && loser.endDate
+				? winner.endDate > loser.endDate
+					? winner.endDate
+					: loser.endDate
+				: winner.endDate || loser.endDate;
+		winner.confidence = Math.max(winner.confidence, loser.confidence);
+		const mergedSources = new Set<string>([
+			...(existing.sources || [existing.sourceCorpus]),
+			l.sourceCorpus,
+		]);
+		winner.sources = [...mergedSources];
+		linkByPeer.set(peerId, winner);
+	}
+	const dedupedLinks = [...linkByPeer.values()];
+
+	// Batch-resolve country flags ONCE for all connected peer profiles (employmentHistory + dedupedLinks)
+	const allPeerIds = [
+		...new Set([
+			...employmentHistory.map((e) => e.orgProfileId).filter((x): x is string => Boolean(x)),
+			...dedupedLinks.map((l) => (l.fromProfileId === profile.id ? l.toProfileId : l.fromProfileId)),
+		]),
+	];
+	if (allPeerIds.length > 0) {
+		const placeholders = allPeerIds.map(() => '?').join(',');
+		const peerRows = db
+			.prepare(`SELECT id, name, profile_type, summary, metadata_json FROM profiles WHERE id IN (${placeholders})`)
+			.all(...allPeerIds) as Array<Record<string, unknown>>;
+		const peerInfoById = new Map<
+			string,
+			{ name: string; profileType: string; summary: string; metadata: Record<string, unknown> }
+		>();
+		for (const r of peerRows) {
+			peerInfoById.set(String(r.id), {
+				name: String(r.name || ''),
+				profileType: String(r.profile_type || 'firm'),
+				summary: String(r.summary || ''),
+				metadata: safeJsonParse<Record<string, unknown>>(r.metadata_json, {}),
+			});
+		}
+
+		const peerLocsById = new Map<
+			string,
+			Array<{ raw: string; city: string | null; state: string | null; country: string | null; geoKey: string }>
+		>();
+		const peerLocRows = db
+			.prepare(
+				`SELECT profile_id, raw, city, state, country, geo_key FROM profile_locations WHERE profile_id IN (${placeholders})`,
+			)
+			.all(...allPeerIds) as Array<Record<string, unknown>>;
+		for (const lr of peerLocRows) {
+			const pid = String(lr.profile_id);
+			const list = peerLocsById.get(pid) || [];
+			list.push({
+				raw: String(lr.raw || ''),
+				city: lr.city != null ? String(lr.city) : null,
+				state: lr.state != null ? String(lr.state) : null,
+				country: lr.country != null ? String(lr.country) : null,
+				geoKey: String(lr.geo_key || ''),
+			});
+			peerLocsById.set(pid, list);
+		}
+
+		const peerIdentsById = new Map<string, Array<{ scheme: string; value: string }>>();
+		const peerIdentRows = db
+			.prepare(`SELECT profile_id, scheme, value FROM profile_identifiers WHERE profile_id IN (${placeholders})`)
+			.all(...allPeerIds) as Array<Record<string, unknown>>;
+		for (const ir of peerIdentRows) {
+			const pid = String(ir.profile_id);
+			const list = peerIdentsById.get(pid) || [];
+			list.push({ scheme: String(ir.scheme), value: String(ir.value) });
+			peerIdentsById.set(pid, list);
+		}
+
+		const peerFlagsCache = new Map<string, string[]>();
+		const getPeerFlags = (pid: string, extraLoc?: string | null): string[] => {
+			if (!extraLoc && peerFlagsCache.has(pid)) return peerFlagsCache.get(pid)!;
+			const info = peerInfoById.get(pid);
+			const locs = [...(peerLocsById.get(pid) || []), ...(extraLoc ? [{ raw: extraLoc }] : [])];
+			const codes = detectProfileCountryCodes({
+				name: info?.name || '',
+				profileType: info?.profileType,
+				summary: info?.summary || '',
+				locations: locs,
+				identifiers: peerIdentsById.get(pid) || [],
+				metadata: info?.metadata || {},
+			});
+			if (!extraLoc) peerFlagsCache.set(pid, codes);
+			return codes;
+		};
+
+		for (const emp of employmentHistory) {
+			if (emp.orgProfileId) {
+				emp.orgCountryCodes = getPeerFlags(emp.orgProfileId, emp.location);
+			}
+		}
+		for (const l of dedupedLinks) {
+			const peerId = l.fromProfileId === profile.id ? l.toProfileId : l.fromProfileId;
+			l.peerCountryCodes = getPeerFlags(peerId);
+		}
+	}
+
+	profile.countryCodes = detectProfileCountryCodes({
+		name: profile.name,
+		profileType: profile.profileType,
+		summary: profile.summary,
+		locations,
+		identifiers,
+		metadata: profile.metadata,
+	});
+
 	return {
 		profile,
 		aliases,
 		identifiers,
 		locations,
-		links,
+		links: dedupedLinks,
 		alignments,
 		recentTimeline,
 		employmentHistory,
@@ -1107,7 +1371,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			aliases: aliases.length,
 			identifiers: identifiers.length,
 			locations: locations.length,
-			links: linkTotal,
+			links: dedupedLinks.length,
 			timelineEntries: timelineTotal,
 			alignments: alignTotal,
 			employmentHistory: employmentHistory.length,
@@ -1126,8 +1390,8 @@ export function addPersonEmployment(input: {
 	location?: string | null;
 	notes?: string | null;
 	sourceCorpus?: string;
-}): { linkId: string; orgProfile: Profile } | null {
-	const db = getProfilesDb();
+}, dbOverride?: DatabaseSync): { linkId: string; orgProfile: Profile } | null {
+	const db = dbOverride ?? getProfilesDb();
 	const person = getProfile(input.personIdOrSlug, db);
 	if (!person) return null;
 

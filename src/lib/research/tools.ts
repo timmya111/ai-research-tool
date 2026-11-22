@@ -22,6 +22,7 @@ import { searchPqwItmo } from '@/lib/research/pqwItmoSearch';
 import { searchTwdbTrinity } from '@/lib/research/twdbTrinitySearch';
 import { searchWikipedia } from '@/lib/research/wikipediaSearch';
 import {
+	enrichProfileTool,
 	findProfileAlignmentsTool,
 	getProfileTimelineTool,
 	searchProfilesTool,
@@ -47,6 +48,7 @@ export type ResearchToolName =
 	| 'search_profiles'
 	| 'get_profile_timeline'
 	| 'find_profile_alignments'
+	| 'enrich_profile'
 	| 'search_concealment_scrubs'
 	| 'search_twdb_trinity'
 	| 'search_digital_earth'
@@ -199,7 +201,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					kind: {
 						type: 'string',
 						description:
-							'Optional: same_entity_alias | shared_identifier | cross_source_mention | timeline_gap_bridge | co_occurrence_time_geo | shared_affiliation | county_filing_match | angle_comparison',
+							'Optional: same_entity_alias | shared_identifier | cross_source_mention | timeline_gap_bridge | co_occurrence_time_geo | shared_affiliation | county_filing_match | angle_comparison | possible_match_name_only',
 					},
 					status: { type: 'string', description: 'Optional: proposed | confirmed | dismissed' },
 					cautionTier: { type: 'string', description: 'Optional: observation | closer_look | stronger_indicator' },
@@ -207,6 +209,25 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					limit: { type: 'number', description: 'Max hits (default 20, max 40)' },
 				},
 				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'enrich_profile',
+			description:
+				'Research and fill missing details on a captured entity profile (person, firm, education, nonprofit, medical_hospital, government, foreign, historic_event) across local offline Wikipedia, FINRA BrokerCheck (by CRD), local knowledge.sqlite county deeds / Research Drive, and Bryan County UCC filings. Strictly enforces identity validation: merges data ONLY when corroborated by identifier or (exact/fuzzy/initials name + address, firm/employer, military base, or institution). Name-only matches are NEVER merged — they are saved as possible_match_name_only notes.',
+			parameters: {
+				type: 'object',
+				properties: {
+					profile: { type: 'string', description: 'Profile id, slug (e.g. person:alex-karp), or name' },
+					includeWikipedia: { type: 'boolean', description: 'Search local offline Wikipedia (default true)' },
+					includeBrokercheck: { type: 'boolean', description: 'Lookup FINRA BrokerCheck if CRD present (default true)' },
+					includeKnowledge: { type: 'boolean', description: 'Search local knowledge.sqlite county deeds/Research Drive (default true)' },
+					includeBryanUcc: { type: 'boolean', description: 'Search Bryan County UCC filings (default true)' },
+				},
+				required: ['profile'],
 			},
 		},
 	},
@@ -1383,6 +1404,7 @@ const CORE_TOOLS = new Set<ResearchToolName>([
 	'search_profiles',
 	'get_profile_timeline',
 	'find_profile_alignments',
+	'enrich_profile',
 	'fetch_url',
 	'search_wikipedia',
 	'current_time',
@@ -1638,6 +1660,16 @@ export async function runResearchTool(
 			cautionTier: args.cautionTier != null ? String(args.cautionTier) : undefined,
 			minScore: args.minScore as number | undefined,
 			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'enrich_profile') {
+		return enrichProfileTool({
+			profile: args.profile != null ? String(args.profile) : undefined,
+			includeWikipedia: args.includeWikipedia === undefined ? undefined : Boolean(args.includeWikipedia),
+			includeBrokercheck: args.includeBrokercheck === undefined ? undefined : Boolean(args.includeBrokercheck),
+			includeKnowledge: args.includeKnowledge === undefined ? undefined : Boolean(args.includeKnowledge),
+			includeBryanUcc: args.includeBryanUcc === undefined ? undefined : Boolean(args.includeBryanUcc),
 		});
 	}
 

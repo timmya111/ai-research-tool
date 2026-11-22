@@ -36,6 +36,7 @@
     "entities:ingest": "node scripts/entity-dossiers-ingest-knowledge.mjs",
     "profiles:backfill": "node scripts/profiles-backfill.mjs",
     "profiles:align": "node scripts/profiles-backfill.mjs --align-only",
+    "profiles:enrich": "node scripts/profiles-enrich.mjs",
     "iwm:build": "node scripts/iwm-conflict-timeline-build.mjs",
     "iwm:crawl": "node scripts/iwm-site-corpus.mjs",
     "regional:build": "node scripts/regional-history-corpus-build.mjs",
