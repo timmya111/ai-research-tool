@@ -5,15 +5,18 @@ import { runAlignmentPass, type AlignmentPassReport } from '@/lib/research/profi
 import { withProfilesTransaction } from '@/lib/research/profiles/db';
 import {
 	classifyOrgType,
+	makeProfileSlug,
 	normalizeGeoKey,
 	normalizeIsoDate,
 	parseAddressParts,
+	stripLegalSuffixes,
 } from '@/lib/research/profiles/normalize';
 import { getDataRootDir } from '@/lib/research/profiles/paths';
 import {
 	addAlias,
 	addIdentifier,
 	addLocation,
+	mergeProfiles,
 	upsertProfile,
 	upsertProfileLink,
 	upsertSourceRecord,
@@ -64,8 +67,7 @@ function mapDossierKind(kind: string, name: string): ProfileType {
 	const k = String(kind || '').toLowerCase();
 	if (k === 'person') return 'person';
 	if (k === 'family_hub' || k === 'family') return 'nonprofit';
-	if (k === 'place' || k === 'location') return 'subject_matter';
-	if (k === 'event') return 'historic_event';
+	if (k === 'place' || k === 'location' || k === 'event') return 'historic_event';
 	if (k === 'org' || k === 'company' || k === 'firm') return classifyOrgType(name);
 	return classifyOrgType(name, k);
 }
@@ -250,7 +252,7 @@ function backfillFinraRosters(dataRoot: string, tx: DatabaseSync): BackfillCorpu
 	const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
 	const subject = upsertProfile(
 		{
-			profileType: 'subject_matter',
+			profileType: 'historic_event',
 			name: 'FINRA & SEC Registered Firms & Brokers',
 			status: 'pinned',
 			summary: 'Broker-dealer firm rosters, individual CRD registrations, and employment/branch histories.',
@@ -429,7 +431,7 @@ function backfillAuthorityTimelines(dataRoot: string, tx: DatabaseSync): Backfil
 
 	const subject = upsertProfile(
 		{
-			profileType: 'subject_matter',
+			profileType: 'historic_event',
 			name: 'Authority Initiatives & OK–TX Corridor Operations',
 			status: 'pinned',
 			summary:
@@ -447,7 +449,7 @@ function backfillAuthorityTimelines(dataRoot: string, tx: DatabaseSync): Backfil
 		const fullName = AGENCY_NAMES[key] || key;
 		const p = upsertProfile(
 			{
-				profileType: 'agency',
+				profileType: key === 'OTHER' ? 'foreign' : 'government',
 				name: fullName,
 				status: 'active',
 				sourceCorpus: 'authority-timelines',
@@ -636,7 +638,7 @@ function backfillCovidTimeline(
 	// Shared canonical subject_matter so CDC (civilian_health) and DoD (defense_dod) automatically converge!
 	const covidSubject = upsertProfile(
 		{
-			profileType: 'subject_matter',
+			profileType: 'historic_event',
 			name: 'COVID-19 Pandemic Response & Timelines',
 			slug: 'covid-19-pandemic-response',
 			status: 'pinned',
@@ -787,7 +789,7 @@ function backfillSpeakerConference(
 
 	const subject = upsertProfile(
 		{
-			profileType: 'subject_matter',
+			profileType: 'historic_event',
 			name: subjectTitle,
 			status: 'active',
 			startDate: eventDate,
@@ -912,7 +914,7 @@ function backfillSpeakerConference(
 					{
 						fromProfileId: person.id,
 						toProfileId: org.id,
-						relationType: orgType === 'university' ? 'alumni_or_faculty' : 'affiliated_with',
+						relationType: orgType === 'education' ? 'alumni_or_faculty' : 'affiliated_with',
 						roleLabel: role,
 						angle: 'academic_research',
 						sourceCorpus: corpusName,
@@ -956,7 +958,7 @@ function backfillWefAmnc(dataRoot: string, tx: DatabaseSync): BackfillCorpusStat
 
 	const wefSubject = upsertProfile(
 		{
-			profileType: 'subject_matter',
+			profileType: 'historic_event',
 			name: 'WEF Annual Meeting of the New Champions (AMNC)',
 			status: 'pinned',
 			startDate: '2014',
@@ -1105,7 +1107,7 @@ function backfillWefAmnc(dataRoot: string, tx: DatabaseSync): BackfillCorpusStat
 				{
 					fromProfileId: person.id,
 					toProfileId: orgEntry.id,
-					relationType: orgEntry.type === 'university' ? 'alumni_or_faculty' : 'employed_by',
+					relationType: orgEntry.type === 'education' ? 'alumni_or_faculty' : 'employed_by',
 					roleLabel: title || null,
 					startDate: year,
 					angle: 'corporate',
@@ -1132,7 +1134,7 @@ function backfillDomainCorpora(dataRoot: string, tx: DatabaseSync): BackfillCorp
 	if (metaCat) {
 		const metaSub = upsertProfile(
 			{
-				profileType: 'subject_matter',
+				profileType: 'historic_event',
 				name: 'META 2025 — Metamaterials, Photonic Crystals & Plasmonics',
 				startDate: '2025',
 				summary: '15th International Conference on Metamaterials, Photonic Crystals and Plasmonics (Malaga, Spain).',
@@ -1200,7 +1202,7 @@ function backfillDomainCorpora(dataRoot: string, tx: DatabaseSync): BackfillCorp
 		addAlias({ profileId: isdeOrg.id, alias: 'ISDE', aliasKind: 'acronym', sourceCorpus: 'digitalearth-isde' }, tx);
 		const deSub = upsertProfile(
 			{
-				profileType: 'subject_matter',
+				profileType: 'historic_event',
 				name: 'Digital Earth & Big Earth Data (ISDE)',
 				summary: 'ISDE lectures, symposiums, geospatial data layers, and research publications.',
 				sourceCorpus: 'digitalearth-isde',
@@ -1229,7 +1231,7 @@ function backfillDomainCorpora(dataRoot: string, tx: DatabaseSync): BackfillCorp
 	if (twdbCat && Array.isArray(twdbCat.documents)) {
 		const twdbAgency = upsertProfile(
 			{
-				profileType: 'agency',
+				profileType: 'government',
 				name: 'Texas Water Development Board (TWDB)',
 				status: 'active',
 				summary: 'Texas state water planning, groundwater availability modeling (GAM), and aquifer science agency.',
@@ -1245,7 +1247,7 @@ function backfillDomainCorpora(dataRoot: string, tx: DatabaseSync): BackfillCorp
 
 		const trinitySub = upsertProfile(
 			{
-				profileType: 'subject_matter',
+				profileType: 'historic_event',
 				name: 'Texas Trinity & Antlers Aquifer Groundwater',
 				status: 'pinned',
 				summary: 'TWDB groundwater availability models (GAMs), water-level reports, management plans, and USGS Antlers Aquifer studies.',
@@ -1324,7 +1326,7 @@ function backfillGeophysicalEvents(dataRoot: string, tx: DatabaseSync): Backfill
 	if (fs.existsSync(seismicNotable)) {
 		const usgs = upsertProfile(
 			{
-				profileType: 'agency',
+				profileType: 'government',
 				name: 'U.S. Geological Survey (USGS)',
 				status: 'active',
 				sourceCorpus: 'seismic',
@@ -1335,7 +1337,7 @@ function backfillGeophysicalEvents(dataRoot: string, tx: DatabaseSync): Backfill
 
 		const seismicSub = upsertProfile(
 			{
-				profileType: 'subject_matter',
+				profileType: 'historic_event',
 				name: 'Oklahoma & Texas Seismic Activity (USGS M≥4 Notable)',
 				status: 'pinned',
 				startDate: '2016-01-01',
@@ -1440,7 +1442,7 @@ function backfillGeophysicalEvents(dataRoot: string, tx: DatabaseSync): Backfill
 	if (fs.existsSync(tornNotable)) {
 		const noaa = upsertProfile(
 			{
-				profileType: 'agency',
+				profileType: 'government',
 				name: 'National Oceanic and Atmospheric Administration (NOAA / SPC)',
 				status: 'active',
 				sourceCorpus: 'tornadoes',
@@ -1452,7 +1454,7 @@ function backfillGeophysicalEvents(dataRoot: string, tx: DatabaseSync): Backfill
 
 		const tornSub = upsertProfile(
 			{
-				profileType: 'subject_matter',
+				profileType: 'historic_event',
 				name: 'Oklahoma & Texas Notable Tornadoes (EF2+ / Fatal)',
 				status: 'pinned',
 				startDate: '2016-01-01',
@@ -1518,10 +1520,11 @@ function backfillGeophysicalEvents(dataRoot: string, tx: DatabaseSync): Backfill
 				timelineEntries += 1;
 
 				if (Number(ev.mag || 0) >= 3 || Number(ev.fatalities || 0) > 0) {
+					const omTag = ev.om ? `, #${String(ev.om)}` : '';
 					const ep = upsertProfile(
 						{
 							profileType: 'historic_event',
-							name: `${ef} Tornado — ${st} (${evDate})`,
+							name: `${ef} Tornado — ${st} (${evDate}${omTag})`,
 							slug: `tornado-${id}`,
 							startDate: evDate,
 							summary,
@@ -1554,11 +1557,471 @@ function backfillGeophysicalEvents(dataRoot: string, tx: DatabaseSync): Backfill
 	return { corpus: 'seismic+tornadoes', profiles, links, timelineEntries };
 }
 
-/** 11. Regional County Land Filings Subject Matter anchor (connects to knowledge.sqlite) */
+/** 11. Imperial War Museums — Timeline of Conflict Since 1914 */
+function backfillIwmConflictTimeline(dataRoot: string, tx: DatabaseSync): BackfillCorpusStats {
+	const file = path.join(dataRoot, 'iwm-conflict-timeline', 'events', 'events.jsonl');
+	const events = readJsonlSafe<Record<string, unknown>>(file);
+	if (!events.length) {
+		return { corpus: 'iwm-conflict-timeline', profiles: 0, links: 0, timelineEntries: 0, skipped: 'no events' };
+	}
+
+	let profiles = 0;
+	let links = 0;
+	let timelineEntries = 0;
+
+	const iwmOrg = upsertProfile(
+		{
+			profileType: 'nonprofit',
+			name: 'Imperial War Museums (IWM)',
+			status: 'pinned',
+			startDate: '1917-03-05',
+			summary:
+				'British national museum institution founded on 5 March 1917 during the First World War to record and preserve conflict history from 1914 to the present.',
+			sourceCorpus: 'iwm-conflict-timeline',
+		},
+		tx,
+	);
+	addAlias({ profileId: iwmOrg.id, alias: 'IWM', aliasKind: 'acronym', sourceCorpus: 'iwm-conflict-timeline' }, tx);
+	addLocation(
+		{
+			profileId: iwmOrg.id,
+			raw: 'London, United Kingdom',
+			city: 'London',
+			country: 'United Kingdom',
+			role: 'hq',
+			sourceCorpus: 'iwm-conflict-timeline',
+		},
+		tx,
+	);
+	profiles += 1;
+
+	const iwmSubject = upsertProfile(
+		{
+			profileType: 'historic_event',
+			name: 'Timeline of Conflict Since 1914 (IWM)',
+			slug: 'iwm-timeline-of-conflict-since-1914',
+			status: 'pinned',
+			startDate: '1899',
+			summary:
+				'Imperial War Museums chronology of 36 major conflicts (1899 Boer War through modern conflicts in Syria, Ukraine, Yemen, and ISIS) plus 26 linked IWM historical overviews.',
+			sourceCorpus: 'iwm-conflict-timeline',
+		},
+		tx,
+	);
+	profiles += 1;
+
+	upsertProfileLink(
+		{
+			fromProfileId: iwmOrg.id,
+			toProfileId: iwmSubject.id,
+			relationType: 'authored_or_spoke',
+			roleLabel: 'Curator / Publisher',
+			angle: 'policy',
+			sourceCorpus: 'iwm-conflict-timeline',
+			evidenceNote: 'https://www.iwm.org.uk/history/first-world-war/timeline-of-conflict-since-1914',
+		},
+		tx,
+	);
+	links += 1;
+
+	for (const ev of events) {
+		const evId = String(ev.id || '');
+		const title = String(ev.title || '').trim();
+		if (!evId || !title) continue;
+		const startDate = ev.date ? String(ev.date) : null;
+		const endDate = ev.end_date ? String(ev.end_date) : null;
+		const dateLabel = String(ev.date_label || startDate || '');
+		const summary = String(ev.summary || '').trim();
+		const articleUrl = ev.article_url ? String(ev.article_url) : String(ev.source_url || '');
+		const regions = Array.isArray(ev.regions) ? ev.regions.map(String) : [];
+
+		const srId = upsertSourceRecord(
+			{
+				corpus: 'iwm-conflict-timeline',
+				sourceRef: `file:.data/iwm-conflict-timeline/events/events.jsonl#${evId}`,
+				sourceUrl: articleUrl || null,
+				title: `${title} (${dateLabel})`,
+				publishedDate: startDate,
+				excerpt: summary.slice(0, 700),
+				metadata: { kind: ev.kind, ongoing: ev.ongoing, regions },
+			},
+			tx,
+		);
+
+		const ep = upsertProfile(
+			{
+				profileType: 'historic_event',
+				name: title,
+				startDate,
+				endDate,
+				status: ev.kind === 'conflict' ? 'pinned' : 'active',
+				summary,
+				metadata: {
+					iwmId: evId,
+					dateLabel,
+					ongoing: Boolean(ev.ongoing),
+					regions,
+					articleUrl: articleUrl || undefined,
+					articleSlug: ev.article_slug || undefined,
+				},
+				sourceCorpus: 'iwm-conflict-timeline',
+			},
+			tx,
+		);
+		profiles += 1;
+
+		let firstGeoKey: string | null = null;
+		let firstGeoLabel: string | null = null;
+		for (const reg of regions) {
+			const gk = addLocation(
+				{
+					profileId: ep.id,
+					raw: reg,
+					country: reg === 'United Kingdom' ? 'United Kingdom' : null,
+					role: 'event_site',
+					sourceCorpus: 'iwm-conflict-timeline',
+				},
+				tx,
+			);
+			if (!firstGeoKey) {
+				firstGeoKey = gk;
+				firstGeoLabel = reg;
+			}
+		}
+
+		upsertProfileLink(
+			{
+				fromProfileId: ep.id,
+				toProfileId: iwmSubject.id,
+				relationType: 'part_of_subject',
+				roleLabel: String(ev.kind || 'conflict'),
+				startDate,
+				endDate,
+				angle: 'policy',
+				sourceCorpus: 'iwm-conflict-timeline',
+				sourceRecordId: srId,
+				evidenceNote: `IWM Timeline (${dateLabel})`,
+			},
+			tx,
+		);
+		links += 1;
+
+		// Add onto both the Subject Matter timeline and the Historic Event's own timeline
+		upsertTimelineEntry(
+			{
+				profileId: iwmSubject.id,
+				eventDate: startDate,
+				datePrecision: 'year',
+				endDate,
+				title: `${title} (${dateLabel})`,
+				summary,
+				angle: 'policy',
+				entryKind: 'milestone',
+				geoKey: firstGeoKey,
+				geoLabel: firstGeoLabel,
+				sourceCorpus: 'iwm-conflict-timeline',
+				sourceRecordId: srId,
+				dedupeHint: `iwm-sub:${evId}`,
+			},
+			tx,
+		);
+		upsertTimelineEntry(
+			{
+				profileId: ep.id,
+				eventDate: startDate,
+				datePrecision: 'year',
+				endDate,
+				title: `${title} (${dateLabel})`,
+				summary,
+				angle: 'policy',
+				entryKind: 'milestone',
+				geoKey: firstGeoKey,
+				geoLabel: firstGeoLabel,
+				sourceCorpus: 'iwm-conflict-timeline',
+				sourceRecordId: srId,
+				dedupeHint: `iwm-ev:${evId}`,
+			},
+			tx,
+		);
+		timelineEntries += 2;
+	}
+
+	return { corpus: 'iwm-conflict-timeline', profiles, links, timelineEntries };
+}
+
+/** 12. Regional History Corpus (NY/Boston finance, labor/unions, conflicts + DFW military-tech companies) */
+function backfillRegionalHistory(dataRoot: string, tx: DatabaseSync): BackfillCorpusStats {
+	const file = path.join(dataRoot, 'regional-history-corpus', 'profiles', 'seed-profiles.json');
+	const items = readJsonSafe<Array<Record<string, unknown>>>(file);
+	if (!items?.length) {
+		return { corpus: 'regional-history-corpus', profiles: 0, links: 0, timelineEntries: 0, skipped: 'not found' };
+	}
+
+	let profiles = 0;
+	let links = 0;
+	let timelineEntries = 0;
+
+	const TRACK_ANCHORS: Record<string, { slug: string; name: string; startDate: string; summary: string; geo: string }> = {
+		ny_boston_finance: {
+			slug: 'ny-boston-financial-history',
+			name: 'New York & Boston Financial History',
+			startDate: '1784',
+			geo: 'New York, NY',
+			summary:
+				'Financial history of New York and Boston: Buttonwood Agreement, NYSE, Bank of New York, Federal Reserve Banks of NY & Boston, State Street, Fidelity, J.P. Morgan, Goldman Sachs, Brown Brothers Harriman, Boston Associates, and major panics/crashes (1837, 1873, 1907, 1929, 2008).',
+		},
+		ny_boston_labor_unions: {
+			slug: 'ny-boston-labor-union-history',
+			name: 'New York & Boston Labor & Union History',
+			startDate: '1823',
+			geo: 'Boston, MA',
+			summary:
+				'Labor movements, strikes, and unions across New York and Boston: Lowell Mill Girls, Great Railroad Strike of 1877, 1909 Shirtwaist Strike, Triangle Shirtwaist Fire, 1912 Lawrence Bread and Roses Strike, 1919 Boston Police Strike, 1966 NYC Transit Strike, ILGWU, ILA, IWW, AFL, Knights of Labor.',
+		},
+		ny_boston_conflicts: {
+			slug: 'ny-boston-regional-conflicts',
+			name: 'New York & Boston Regional Conflicts',
+			startDate: '1675',
+			geo: 'Boston, MA',
+			summary:
+				'Regional armed conflicts, rebellions, riots, and attacks across New York and Massachusetts: King Philip’s War, Boston Massacre & Tea Party, Lexington & Concord, Siege of Boston, Bunker Hill, NY/NJ Campaign, Shays’ Rebellion, Astor Place Riot, 1863 NYC Draft Riots, 1920 Wall Street Bombing, Sacco & Vanzetti, 9/11.',
+		},
+		dfw_military_tech: {
+			slug: 'dfw-military-defense-tech-corridor',
+			name: 'Dallas–Fort Worth Military & Defense Tech Corridor',
+			startDate: '1917',
+			geo: 'Fort Worth, TX',
+			summary:
+				'Defense, aerospace, and industrial technology companies anchored in Dallas–Fort Worth and North Texas/Southern Oklahoma: Bell Textron / Bell Helicopter, Halliburton / KBR, Rockwell Collins / Collins Aerospace, Emerson Electric, Tubacex, Lockheed Martin Aeronautics (Air Force Plant 4), Texas Instruments, Vought / LTV, L3Harris / E-Systems, RTX, General Dynamics.',
+		},
+	};
+
+	const anchorIds = new Map<string, string>();
+	for (const [trackKey, def] of Object.entries(TRACK_ANCHORS)) {
+		const ap = upsertProfile(
+			{
+				profileType: 'historic_event',
+				name: def.name,
+				slug: def.slug,
+				status: 'pinned',
+				startDate: def.startDate,
+				summary: def.summary,
+				sourceCorpus: 'regional-history-corpus',
+			},
+			tx,
+		);
+		const parts = parseAddressParts(def.geo);
+		addLocation(
+			{
+				profileId: ap.id,
+				raw: def.geo,
+				city: parts.city,
+				state: parts.state,
+				country: parts.country || 'US',
+				role: 'event_site',
+				sourceCorpus: 'regional-history-corpus',
+			},
+			tx,
+		);
+		anchorIds.set(trackKey, ap.id);
+		profiles += 1;
+	}
+
+	const nameToProfileId = new Map<string, string>();
+
+	for (const it of items) {
+		const name = String(it.name || '').trim();
+		const track = String(it.track || '');
+		const pType = String(it.profileType || 'historic_event') as ProfileType;
+		const geo = String(it.geo || '').trim();
+		const angle = (it.angle ? String(it.angle) : 'general') as TimelineAngle;
+		const url = it.url ? String(it.url) : null;
+		const summary = String(it.summary || '').trim();
+		if (!name) continue;
+
+		const srId = upsertSourceRecord(
+			{
+				corpus: 'regional-history-corpus',
+				sourceRef: `file:.data/regional-history-corpus/articles/${String(it.slug || '')}.md`,
+				sourceUrl: url,
+				title: name,
+				publishedDate: it.startDate ? String(it.startDate) : null,
+				excerpt: summary.slice(0, 700),
+				metadata: { track, cik: it.cik || null, ticker: it.ticker || null },
+			},
+			tx,
+		);
+
+		const prof = upsertProfile(
+			{
+				profileType: pType,
+				name,
+				status: 'pinned',
+				startDate: it.startDate ? String(it.startDate) : null,
+				endDate: it.endDate ? String(it.endDate) : null,
+				summary,
+				metadata: {
+					track,
+					cik: it.cik || undefined,
+					ticker: it.ticker || undefined,
+					sicDescription: it.sicDescription || undefined,
+					wikibaseItem: it.wikibaseItem || undefined,
+					articleSlug: it.slug || undefined,
+				},
+				sourceCorpus: 'regional-history-corpus',
+			},
+			tx,
+		);
+		nameToProfileId.set(name.toLowerCase(), prof.id);
+		profiles += 1;
+
+		if (Array.isArray(it.aliases)) {
+			for (const al of it.aliases) {
+				addAlias({ profileId: prof.id, alias: String(al), sourceCorpus: 'regional-history-corpus' }, tx);
+			}
+		}
+		if (it.cik) {
+			addIdentifier({ profileId: prof.id, scheme: 'sec_cik', value: String(it.cik), sourceCorpus: 'regional-history-corpus' }, tx);
+		}
+		if (it.ticker) {
+			addIdentifier({ profileId: prof.id, scheme: 'ticker', value: String(it.ticker), sourceCorpus: 'regional-history-corpus' }, tx);
+			addAlias({ profileId: prof.id, alias: String(it.ticker), aliasKind: 'ticker', sourceCorpus: 'regional-history-corpus' }, tx);
+		}
+		if (it.wikibaseItem) {
+			addIdentifier({ profileId: prof.id, scheme: 'wikidata', value: String(it.wikibaseItem), sourceCorpus: 'regional-history-corpus' }, tx);
+		}
+
+		let primaryGeoKey: string | null = null;
+		if (geo) {
+			const parts = parseAddressParts(geo);
+			primaryGeoKey = addLocation(
+				{
+					profileId: prof.id,
+					raw: geo,
+					city: parts.city,
+					county: parts.county,
+					state: parts.state,
+					country: parts.country || 'US',
+					role: pType === 'firm' ? 'hq' : pType === 'person' ? 'residence' : 'event_site',
+					sourceCorpus: 'regional-history-corpus',
+				},
+				tx,
+			);
+		}
+		if (it.secHq && String(it.secHq).trim() && String(it.secHq).trim().toLowerCase() !== geo.toLowerCase()) {
+			const hqStr = String(it.secHq).trim();
+			const parts = parseAddressParts(hqStr);
+			addLocation(
+				{
+					profileId: prof.id,
+					raw: hqStr,
+					city: parts.city,
+					state: parts.state,
+					country: parts.country || 'US',
+					role: 'hq',
+					sourceCorpus: 'regional-history-corpus',
+				},
+				tx,
+			);
+		}
+
+		const anchorId = anchorIds.get(track);
+		if (anchorId && anchorId !== prof.id) {
+			upsertProfileLink(
+				{
+					fromProfileId: prof.id,
+					toProfileId: anchorId,
+					relationType: pType === 'historic_event' ? 'part_of_subject' : 'participated_in',
+					roleLabel: track.replace(/_/g, ' '),
+					startDate: it.startDate ? String(it.startDate) : null,
+					endDate: it.endDate ? String(it.endDate) : null,
+					angle,
+					sourceCorpus: 'regional-history-corpus',
+					sourceRecordId: srId,
+					evidenceNote: summary.slice(0, 220),
+				},
+				tx,
+			);
+			links += 1;
+		}
+
+		const milestones = Array.isArray(it.milestones)
+			? (it.milestones as Array<{ date?: string; text?: string }>)
+			: [];
+		for (let mIdx = 0; mIdx < milestones.length; mIdx++) {
+			const m = milestones[mIdx];
+			if (!m?.date || !m?.text) continue;
+			upsertTimelineEntry(
+				{
+					profileId: prof.id,
+					eventDate: m.date,
+					title: `${name}: ${m.text.slice(0, 140)}`,
+					summary: m.text,
+					angle,
+					entryKind: pType === 'historic_event' ? 'milestone' : 'event',
+					geoKey: primaryGeoKey,
+					geoLabel: geo || null,
+					sourceCorpus: 'regional-history-corpus',
+					sourceRecordId: srId,
+					dedupeHint: `reg:${String(it.slug)}:${mIdx}`,
+				},
+				tx,
+			);
+			timelineEntries += 1;
+
+			if (anchorId && mIdx < 3) {
+				upsertTimelineEntry(
+					{
+						profileId: anchorId,
+						eventDate: m.date,
+						title: `[${name}] ${m.text.slice(0, 140)}`,
+						summary: m.text,
+						angle,
+						entryKind: 'milestone',
+						geoKey: primaryGeoKey,
+						geoLabel: geo || null,
+						sourceCorpus: 'regional-history-corpus',
+						sourceRecordId: srId,
+						dedupeHint: `reg-anc:${track}:${String(it.slug)}:${mIdx}`,
+					},
+					tx,
+				);
+				timelineEntries += 1;
+			}
+		}
+	}
+
+	// Second pass: link founders/people to their employer profiles
+	for (const it of items) {
+		if (!it.employer || !it.name) continue;
+		const personId = nameToProfileId.get(String(it.name).toLowerCase());
+		const empId = nameToProfileId.get(String(it.employer).toLowerCase());
+		if (!personId || !empId) continue;
+		upsertProfileLink(
+			{
+				fromProfileId: personId,
+				toProfileId: empId,
+				relationType: 'employed_by',
+				roleLabel: it.role ? String(it.role) : 'Founder / Executive',
+				startDate: it.startDate ? String(it.startDate) : null,
+				endDate: it.endDate ? String(it.endDate) : null,
+				angle: 'corporate',
+				sourceCorpus: 'regional-history-corpus',
+				evidenceNote: `${String(it.role || 'Founder')} of ${String(it.employer)}`,
+			},
+			tx,
+		);
+		links += 1;
+	}
+
+	return { corpus: 'regional-history-corpus', profiles, links, timelineEntries };
+}
+
+/** 13. Regional County Land Filings Subject Matter anchor (connects to knowledge.sqlite) */
 function backfillCountySubjectAnchor(tx: DatabaseSync): BackfillCorpusStats {
 	const sub = upsertProfile(
 		{
-			profileType: 'subject_matter',
+			profileType: 'historic_event',
 			name: 'Oklahoma & Dallas County Land Records & Deeds (OKCR)',
 			status: 'pinned',
 			startDate: '2016-01-01',
@@ -1598,6 +2061,194 @@ export type RunBackfillOptions = {
 };
 
 /**
+ * Upgrade/migrate legacy org profile types in-place (`university` → `education`,
+ * `medical_mental_hospital` → `medical_hospital`, `state_gov`/`federal_gov`/`agency` → `government`/`foreign`),
+ * preserving profile IDs, links, and timeline entries.
+ */
+function reclassifyExistingOrgProfiles(tx: DatabaseSync): BackfillCorpusStats {
+	const rows = tx
+		.prepare(
+			`SELECT id, slug, name, profile_type FROM profiles
+       WHERE profile_type IN ('firm', 'nonprofit', 'agency', 'foreign', 'university', 'education', 'medical_hospital', 'medical_mental_hospital', 'state_gov', 'federal_gov', 'government', 'subject_matter')`,
+		)
+		.all() as Array<{ id: string; slug: string; name: string; profile_type: string }>;
+
+	const now = new Date().toISOString();
+	let updated = 0;
+
+	const DELETED_TYPES = new Set([
+		'university',
+		'medical_mental_hospital',
+		'state_gov',
+		'federal_gov',
+		'agency',
+		'subject_matter',
+	]);
+
+	for (const r of rows) {
+		let nextType: string = classifyOrgType(r.name);
+		// Explicit mapping for retired categories
+		if (r.profile_type === 'subject_matter') nextType = 'historic_event';
+		else if (r.profile_type === 'university') nextType = 'education';
+		else if (r.profile_type === 'medical_mental_hospital') nextType = 'medical_hospital';
+		else if (r.profile_type === 'state_gov' || r.profile_type === 'federal_gov') nextType = 'government';
+
+		const isRetired = DELETED_TYPES.has(r.profile_type);
+		if (nextType === r.profile_type) continue;
+		const targetRefined =
+			isRetired ||
+			nextType === 'medical_hospital' ||
+			nextType === 'education' ||
+			nextType === 'government' ||
+			nextType === 'foreign';
+		if (!targetRefined) continue;
+
+		// Preserve custom slug suffix when migrating subject_matter:foo -> historic_event:foo
+		const nextSlug =
+			r.profile_type === 'subject_matter' && r.slug.startsWith('subject_matter:')
+				? `historic_event:${r.slug.slice('subject_matter:'.length)}`
+				: makeProfileSlug(nextType as ProfileType, r.name);
+		const conflict = tx
+			.prepare('SELECT id FROM profiles WHERE slug = ? AND id != ?')
+			.get(nextSlug, r.id) as { id?: string } | undefined;
+		if (conflict?.id) {
+			if (isRetired) {
+				tx.prepare('DELETE FROM profiles WHERE id = ?').run(r.id);
+				updated += 1;
+			}
+			continue;
+		}
+
+		tx.prepare('UPDATE profiles SET profile_type = ?, slug = ?, updated_at = ? WHERE id = ?').run(
+			nextType,
+			nextSlug,
+			now,
+			r.id,
+		);
+		updated += 1;
+	}
+
+	return { corpus: 'reclassify-orgs', profiles: updated, links: 0, timelineEntries: 0 };
+}
+
+/**
+ * Auto-merge high-confidence duplicate profiles:
+ *   1. Exact same `normalized_name` split across `firm` and a more specific org type
+ *      (e.g. `Central Bank of Bahrain (CBB)` in both `firm` and `foreign`).
+ *   2. Exact legal-suffix duplicates within the same org type
+ *      (e.g. `Palantir Technologies` and `Palantir Technologies Inc.`).
+ */
+function deduplicateProfiles(tx: DatabaseSync): BackfillCorpusStats {
+	let mergedCount = 0;
+
+	const TYPE_SPECIFICITY: Record<string, number> = {
+		government: 6,
+		foreign: 5,
+		medical_hospital: 5,
+		education: 5,
+		nonprofit: 4,
+		firm: 1,
+	};
+
+	// Pass 1: exact same normalized_name across different org types
+	const crossDupes = tx
+		.prepare(
+			`SELECT normalized_name
+       FROM profiles
+       WHERE profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government', 'foreign')
+       GROUP BY normalized_name
+       HAVING COUNT(*) > 1`,
+		)
+		.all() as Array<{ normalized_name: string }>;
+
+	for (const d of crossDupes) {
+		const group = tx
+			.prepare(
+				`SELECT id, name, profile_type, status,
+                (SELECT COUNT(*) FROM profile_links pl WHERE pl.from_profile_id = profiles.id OR pl.to_profile_id = profiles.id) AS lc
+         FROM profiles
+         WHERE normalized_name = ?
+           AND profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government', 'foreign')`,
+			)
+			.all(d.normalized_name) as Array<{
+			id: string;
+			name: string;
+			profile_type: string;
+			status: string;
+			lc: number;
+		}>;
+		if (group.length < 2) continue;
+
+		group.sort((a, b) => {
+			const specDiff = (TYPE_SPECIFICITY[b.profile_type] || 0) - (TYPE_SPECIFICITY[a.profile_type] || 0);
+			if (specDiff !== 0) return specDiff;
+			if (a.status !== b.status) return a.status === 'pinned' ? -1 : b.status === 'pinned' ? 1 : 0;
+			return Number(b.lc || 0) - Number(a.lc || 0);
+		});
+
+		const keep = group[0];
+		for (const dup of group.slice(1)) {
+			const res = mergeProfiles(keep.id, dup.id, tx);
+			if (res) mergedCount += 1;
+		}
+	}
+
+	// Pass 2: strict legal-suffix duplicates within the same org type (e.g. "Foo" vs "Foo Inc.")
+	const orgRows = tx
+		.prepare(
+			`SELECT id, name, normalized_name, profile_type, status,
+              (SELECT COUNT(*) FROM profile_links pl WHERE pl.from_profile_id = profiles.id OR pl.to_profile_id = profiles.id) AS lc
+       FROM profiles
+       WHERE profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government', 'foreign')`,
+		)
+		.all() as Array<{
+		id: string;
+		name: string;
+		normalized_name: string;
+		profile_type: string;
+		status: string;
+		lc: number;
+	}>;
+
+	const SUFFIX_TAIL_RE =
+		/\s+(?:inc|incorporated|llc|l l c|lp|l p|llp|corp|corporation|co|company|ltd|limited|plc|gmbh|s a)$/i;
+
+	const byBase = new Map<string, typeof orgRows>();
+	for (const r of orgRows) {
+		const base = r.normalized_name.replace(SUFFIX_TAIL_RE, '').trim();
+		const stripped = stripLegalSuffixes(r.normalized_name);
+		if (base.length < 7 || stripped.length < 5) continue;
+		const key = `${r.profile_type}|${base}`;
+		const list = byBase.get(key) || [];
+		list.push(r);
+		byBase.set(key, list);
+	}
+
+	for (const group of byBase.values()) {
+		if (group.length < 2) continue;
+		// Sort: pinned first, then cleaner shorter name, then highest link count
+		group.sort((a, b) => {
+			if (a.status !== b.status) return a.status === 'pinned' ? -1 : b.status === 'pinned' ? 1 : 0;
+			if (a.normalized_name.length !== b.normalized_name.length) {
+				return a.normalized_name.length - b.normalized_name.length;
+			}
+			return Number(b.lc || 0) - Number(a.lc || 0);
+		});
+		const keep = group[0];
+		for (const dup of group.slice(1)) {
+			// Verify dup is strictly keep + legal suffix (or same base with different suffix)
+			const baseKeep = keep.normalized_name.replace(SUFFIX_TAIL_RE, '').trim();
+			const baseDup = dup.normalized_name.replace(SUFFIX_TAIL_RE, '').trim();
+			if (baseKeep !== baseDup) continue;
+			const res = mergeProfiles(keep.id, dup.id, tx);
+			if (res) mergedCount += 1;
+		}
+	}
+
+	return { corpus: 'deduplicate-profiles', profiles: mergedCount, links: 0, timelineEntries: 0 };
+}
+
+/**
  * Run idempotent backfill across all structured `.data/*` corpora and optionally
  * execute the cross-source alignment pass.
  */
@@ -1611,6 +2262,7 @@ export function runProfilesBackfill(opts: RunBackfillOptions = {}): BackfillRepo
 		stats.push(res);
 	};
 
+	runStep((tx) => reclassifyExistingOrgProfiles(tx));
 	runStep((tx) => backfillEntityDossiers(dataRoot, tx));
 	runStep((tx) => backfillFinraRosters(dataRoot, tx));
 	runStep((tx) => backfillAuthorityTimelines(dataRoot, tx));
@@ -1639,7 +2291,10 @@ export function runProfilesBackfill(opts: RunBackfillOptions = {}): BackfillRepo
 	runStep((tx) => backfillWefAmnc(dataRoot, tx));
 	runStep((tx) => backfillDomainCorpora(dataRoot, tx));
 	runStep((tx) => backfillGeophysicalEvents(dataRoot, tx));
+	runStep((tx) => backfillIwmConflictTimeline(dataRoot, tx));
+	runStep((tx) => backfillRegionalHistory(dataRoot, tx));
 	runStep((tx) => backfillCountySubjectAnchor(tx));
+	runStep((tx) => deduplicateProfiles(tx));
 
 	const alignment =
 		opts.runAlignment !== false

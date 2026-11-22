@@ -4,6 +4,7 @@ import {
 	addAlias,
 	addIdentifier,
 	addLocation,
+	addPersonEmployment,
 	getProfileStats,
 	listProfiles,
 	upsertProfile,
@@ -28,6 +29,7 @@ export async function GET(request: Request) {
 	const url = new URL(request.url);
 	const q = url.searchParams.get('q') || undefined;
 	const typeRaw = url.searchParams.get('type') || 'all';
+	const tagRaw = url.searchParams.get('tag') || undefined;
 	const statusRaw = url.searchParams.get('status') || undefined;
 	const corpus = url.searchParams.get('corpus') || undefined;
 	const geo = url.searchParams.get('geo') || undefined;
@@ -41,11 +43,16 @@ export async function GET(request: Request) {
 			: PROFILE_TYPES.includes(typeRaw as ProfileType)
 				? (typeRaw as ProfileType)
 				: 'all';
+	const tag =
+		tagRaw && PROFILE_TYPES.includes(tagRaw as ProfileType)
+			? (tagRaw as ProfileType)
+			: undefined;
 
 	try {
 		const { profiles, total } = listProfiles({
 			query: q,
 			profileType,
+			tag,
 			status: statusRaw as ProfileStatus | undefined,
 			corpus,
 			geo,
@@ -81,6 +88,16 @@ export async function POST(request: Request) {
 			);
 		}
 
+		const metaInput: Record<string, unknown> =
+			body.metadata && typeof body.metadata === 'object'
+				? { ...(body.metadata as Record<string, unknown>) }
+				: {};
+		if (Array.isArray(body.categoryTags)) {
+			metaInput.categoryTags = body.categoryTags
+				.map((t) => String(t) as ProfileType)
+				.filter((t) => PROFILE_TYPES.includes(t) && t !== 'person');
+		}
+
 		const profile = upsertProfile({
 			profileType,
 			name,
@@ -89,12 +106,27 @@ export async function POST(request: Request) {
 			summary: body.summary ? String(body.summary) : '',
 			startDate: body.startDate ? String(body.startDate) : null,
 			endDate: body.endDate ? String(body.endDate) : null,
-			metadata:
-				body.metadata && typeof body.metadata === 'object'
-					? (body.metadata as Record<string, unknown>)
-					: undefined,
+			metadata: Object.keys(metaInput).length ? metaInput : undefined,
 			sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
 		});
+
+		if (profileType === 'person' && Array.isArray(body.employmentHistory)) {
+			for (const emp of body.employmentHistory as Array<Record<string, unknown>>) {
+				if (!emp?.orgName) continue;
+				addPersonEmployment({
+					personIdOrSlug: profile.id,
+					orgName: String(emp.orgName),
+					orgCategory: emp.orgCategory ? (String(emp.orgCategory) as ProfileType) : undefined,
+					role: emp.role ? String(emp.role) : null,
+					startDate: emp.startDate ? String(emp.startDate) : null,
+					endDate: emp.endDate ? String(emp.endDate) : null,
+					isCurrent: typeof emp.isCurrent === 'boolean' ? emp.isCurrent : undefined,
+					location: emp.location ? String(emp.location) : null,
+					notes: emp.notes ? String(emp.notes) : null,
+					sourceCorpus: 'manual',
+				});
+			}
+		}
 
 		if (Array.isArray(body.aliases)) {
 			for (const a of body.aliases) {

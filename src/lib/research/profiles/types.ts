@@ -1,13 +1,14 @@
 export const ACTOR_PROFILE_TYPES = [
 	'person',
 	'firm',
-	'university',
+	'education',
 	'nonprofit',
-	'agency',
+	'medical_hospital',
+	'government',
+	'foreign',
 ] as const;
 
 export const NARRATIVE_PROFILE_TYPES = [
-	'subject_matter',
 	'historic_event',
 ] as const;
 
@@ -138,6 +139,26 @@ export type Profile = {
 	timelineCount?: number;
 	alignmentCount?: number;
 	corpora?: string[];
+	/** Main category labels of connected organizations/events (used as tags, esp. on person profiles) */
+	categoryTags?: ProfileType[];
+	/** Primary location label for quick display */
+	primaryLocation?: string | null;
+};
+
+export type PersonEmploymentEntry = {
+	id: string;
+	orgProfileId: string | null;
+	orgSlug: string | null;
+	orgName: string;
+	orgCategory: ProfileType;
+	role: string | null;
+	relationType: ProfileRelationType;
+	startDate: string | null;
+	endDate: string | null;
+	isCurrent: boolean | null;
+	location: string | null;
+	sourceCorpus: string;
+	evidenceNote: string;
 };
 
 export type ProfileAlias = {
@@ -321,6 +342,10 @@ export type ProfileDetail = {
 	links: ProfileLink[];
 	alignments: AlignmentCandidate[];
 	recentTimeline: TimelineEntry[];
+	/** Structured employment / affiliation history (populated for person profiles) */
+	employmentHistory: PersonEmploymentEntry[];
+	/** Main category labels derived from linked orgs/events + manual tags */
+	categoryTags: ProfileType[];
 	counts: {
 		aliases: number;
 		identifiers: number;
@@ -328,6 +353,7 @@ export type ProfileDetail = {
 		links: number;
 		timelineEntries: number;
 		alignments: number;
+		employmentHistory: number;
 	};
 };
 

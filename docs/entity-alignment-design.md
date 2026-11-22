@@ -15,15 +15,16 @@ This layer introduces a **dedicated local SQLite profile & alignment database** 
 | --- | --- |
 | `person` | Individuals: executives, FINRA/SEC brokers (CRD), scientists, speakers, officials, named parties |
 | `firm` | Commercial firms, broker-dealers, corporations, banks, LLCs |
-| `university` | Universities, colleges, academic faculties |
-| `nonprofit` | Non-profits, foundations, NGOs, scientific societies, research institutes |
-| `agency` | Government agencies, military/defense departments, regulators (CDC, DoD, DHS, ICE, DEA, TWDB, USGS, FINRA, SEC) |
+| `education` | Universities, colleges, schools, school districts (ISDs), academies, educational boards/systems |
+| `nonprofit` | Non-profits, foundations, NGOs, scientific societies, museums, research institutes |
+| `medical_hospital` | Medical hospitals, medical centers, clinics, health systems, behavioral/psychiatric facilities |
+| `government` | Domestic government (federal, state, and local agencies, military/defense, regulators, boards — e.g. CDC, DoD, DHS, ICE, DEA, FBI, USGS, NOAA, TWDB, White House) |
+| `foreign` | Foreign national ministries, embassies, municipal governments, and intergovernmental/international bodies |
 
-### Narrative & Timeline Container Profiles
+### Events & Timeline Container Profiles
 | `profile_type` | Description |
 | --- | --- |
-| `subject_matter` | Overarching investigation topics, domains, or initiatives where multiple sources converge (e.g. *COVID-19 Pandemic Response & Timelines*, *Authority Initiatives & OK–TX Corridor Operations*) |
-| `historic_event` | Specific dated historical events, incidents, directives, conferences, or disasters linked into parent `subject_matter` timelines and participating actors |
+| `historic_event` | Dated historical events, incidents, conflicts, directives, conferences, disasters, and overarching timeline topics where multiple sources converge (e.g. *COVID-19 Pandemic Response & Timelines*, *Timeline of Conflict Since 1914 (IWM)*, *Authority Initiatives & OK–TX Corridor Operations*) |
 
 ### Normalized Locations
 Geographic locations are stored in `profile_locations` and on `timeline_entries.geo_key` using deterministic keys (e.g. `us:ok:county:bryan`, `us:tx:city:dallas`, `country:kazakhstan`) to enable geo-temporal alignment across corpora.

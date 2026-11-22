@@ -10,6 +10,8 @@ import { searchAuthorityTimelines } from '@/lib/research/authorityTimelineSearch
 import { searchCdcCovidTimeline } from '@/lib/research/cdcCovidTimelineSearch';
 import { searchConcealmentScrubs } from '@/lib/research/concealmentScrubSearch';
 import { searchDodCovidTimeline } from '@/lib/research/dodCovidTimelineSearch';
+import { searchIwmConflictTimeline } from '@/lib/research/iwmConflictTimelineSearch';
+import { searchRegionalHistory } from '@/lib/research/regionalHistorySearch';
 import { searchEntityDossiers } from '@/lib/research/entityDossierSearch';
 import { searchGeminiQa } from '@/lib/research/geminiQaSearch';
 import { searchFinraSidecar } from '@/lib/research/finraSidecarSearch';
@@ -38,6 +40,8 @@ export type ResearchToolName =
 	| 'search_authority_timelines'
 	| 'search_cdc_covid_timeline'
 	| 'search_dod_covid_timeline'
+	| 'search_iwm_conflict_timeline'
+	| 'search_regional_history'
 	| 'search_gemini_qa'
 	| 'search_entity_dossiers'
 	| 'search_profiles'
@@ -63,6 +67,62 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 	{
 		type: 'function' as const,
 		function: {
+			name: 'search_regional_history',
+			description:
+				'Search the local Regional History corpus (.data/regional-history-corpus): (1) New York & Boston financial history (Wall Street, NYSE, Buttonwood, NY/Boston Fed, State Street, Fidelity, BNY, JPM, Goldman, panics/crashes), (2) NY & Boston labor/union history (Lawrence Bread & Roses, Boston Police Strike, Lowell Mill Girls, Triangle Fire, ILGWU, ILA, IWW, AFL), (3) regional conflicts in NY & Boston (King Philip’s War, Boston Massacre/Tea Party, Lexington/Concord, Siege of Boston, NY/NJ Campaign, Shays’ Rebellion, Draft Riots, Wall Street Bombing, 9/11), and (4) Dallas–Fort Worth military/defense/industrial tech companies (Bell Textron, Halliburton, Rockwell Collins / Collins Aerospace, Emerson Electric, Tubacex, Lockheed Martin, Air Force Plant 4, Texas Instruments, Vought/LTV, L3Harris/E-Systems, RTX, General Dynamics) with SEC EDGAR CIK/former-name metadata.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords (company, union, bank, conflict, founder, date, city)' },
+					track: {
+						type: 'string',
+						description:
+							'Optional filter: ny_boston_finance | ny_boston_labor_unions | ny_boston_conflicts | dfw_military_tech',
+					},
+					profileType: {
+						type: 'string',
+						description: 'Optional: person | firm | nonprofit | government | historic_event',
+					},
+					fromYear: { type: 'number', description: 'Optional start year filter' },
+					toYear: { type: 'number', description: 'Optional end year filter' },
+					includeArticleText: { type: 'boolean', description: 'Include longer article excerpt' },
+					limit: { type: 'number', description: 'Max hits (default 12, max 30)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_iwm_conflict_timeline',
+			description:
+				'Search the local Imperial War Museums (IWM) Timeline of Conflict Since 1914 corpus (.data/iwm-conflict-timeline): 36 major conflicts (1899 Boer War through Ukraine/Syria/Yemen/ISIS) plus 26 full linked IWM /history/* overview articles (WWI outbreak, post-WWI Europe, WWII causes, Cold War, Malayan/Kenya/Cyprus/Aden Emergencies, Suez, Falklands, Troubles, Bosnia, Gulf, Afghanistan, Iraq, Ukraine, etc.).',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords (conflict name, country, person, date, topic)' },
+					fromYear: { type: 'number', description: 'Optional start year filter (e.g. 1914)' },
+					toYear: { type: 'number', description: 'Optional end year filter (e.g. 1945)' },
+					region: {
+						type: 'string',
+						description: 'Optional region filter: Europe | Middle East | South & East Asia | Africa | South Atlantic | United Kingdom | Global',
+					},
+					section: {
+						type: 'string',
+						description: 'Optional full-site section filter: history | research | learning | iwm-institute | collections | memorials | podcasts | visits',
+					},
+					ongoingOnly: { type: 'boolean', description: 'If true, only return conflicts marked ongoing / to date' },
+					includeArticleText: { type: 'boolean', description: 'Include longer article excerpt from local markdown digest' },
+					limit: { type: 'number', description: 'Max hits (default 15, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
 			name: 'search_profiles',
 			description:
 				'Search the unified canonical Entity Profile & Alignment store (.data/profiles/profiles.sqlite) spanning people, firms, universities, non-profits, government agencies, subject matters, and historic events across ALL local corpora (entity dossiers, FINRA rosters, WEF AMNC, CDC/DoD COVID timelines, authority timelines, physics/quantum/metamaterials conferences, TWDB aquifer, USGS seismic, NOAA tornadoes, and county deeds). Pass slug for full dossier with aliases, identifiers, locations, links, and alignments.',
@@ -72,12 +132,17 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					query: { type: 'string', description: 'Keyword, name, alias, CRD, ticker, or topic query' },
 					slug: {
 						type: 'string',
-						description: 'Exact profile id or slug (e.g. subject_matter:covid-19-pandemic-response, firm:halliburton)',
+						description: 'Exact profile id or slug (e.g. historic_event:covid-19-pandemic-response, firm:halliburton)',
 					},
 					profileType: {
 						type: 'string',
 						description:
-							'Optional filter: person | firm | university | nonprofit | agency | subject_matter | historic_event | actors | narratives | all',
+							'Optional filter: person | firm | education | nonprofit | medical_hospital | government | foreign | historic_event | actors | narratives | all',
+					},
+					tag: {
+						type: 'string',
+						description:
+							'Optional main-category tag filter (great for person profiles): firm | education | nonprofit | medical_hospital | government | foreign | historic_event',
 					},
 					corpus: {
 						type: 'string',
@@ -96,13 +161,13 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'get_profile_timeline',
 			description:
-				'Retrieve the merged multi-source timeline for any profile (especially a subject_matter or historic_event), grouped by source angle (civilian_health, defense_dod, law_enforcement, land_records, academic_research, geophysical, policy, etc.). Automatically detects chronological timeline gaps and returns cross-source gap-fill leads from other corpora and knowledge.sqlite.',
+				'Retrieve the merged multi-source timeline for any profile (especially a historic_event), grouped by source angle (civilian_health, defense_dod, law_enforcement, land_records, academic_research, geophysical, policy, etc.). Automatically detects chronological timeline gaps and returns cross-source gap-fill leads from other corpora and knowledge.sqlite.',
 			parameters: {
 				type: 'object',
 				properties: {
 					profile: {
 						type: 'string',
-						description: 'Profile id, slug, or name (e.g. subject_matter:covid-19-pandemic-response or "Authority Initiatives")',
+						description: 'Profile id, slug, or name (e.g. historic_event:covid-19-pandemic-response or "Authority Initiatives")',
 					},
 					from: { type: 'string', description: 'Optional start date YYYY-MM-DD' },
 					to: { type: 'string', description: 'Optional end date YYYY-MM-DD' },
@@ -1395,6 +1460,33 @@ export async function runResearchTool(
 		});
 	}
 
+	if (tool === 'search_iwm_conflict_timeline') {
+		return searchIwmConflictTimeline({
+			query: args.query != null ? String(args.query) : undefined,
+			fromYear: args.fromYear as number | string | undefined,
+			toYear: args.toYear as number | string | undefined,
+			region: args.region != null ? String(args.region) : undefined,
+			section: args.section != null ? String(args.section) : undefined,
+			ongoingOnly: args.ongoingOnly === undefined ? undefined : Boolean(args.ongoingOnly),
+			includeArticleText:
+				args.includeArticleText === undefined ? undefined : Boolean(args.includeArticleText),
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_regional_history') {
+		return searchRegionalHistory({
+			query: args.query != null ? String(args.query) : undefined,
+			track: args.track != null ? String(args.track) : undefined,
+			profileType: args.profileType != null ? String(args.profileType) : undefined,
+			fromYear: args.fromYear as number | string | undefined,
+			toYear: args.toYear as number | string | undefined,
+			includeArticleText:
+				args.includeArticleText === undefined ? undefined : Boolean(args.includeArticleText),
+			limit: args.limit as number | undefined,
+		});
+	}
+
 	if (tool === 'search_gemini_qa') {
 		return searchGeminiQa({
 			query: args.query != null ? String(args.query) : undefined,
@@ -1419,6 +1511,7 @@ export async function runResearchTool(
 			query: args.query != null ? String(args.query) : undefined,
 			slug: args.slug != null ? String(args.slug) : undefined,
 			profileType: args.profileType != null ? String(args.profileType) : undefined,
+			tag: args.tag != null ? String(args.tag) : undefined,
 			corpus: args.corpus != null ? String(args.corpus) : undefined,
 			geo: args.geo != null ? String(args.geo) : undefined,
 			status: args.status != null ? String(args.status) : undefined,

@@ -31,9 +31,9 @@ const TYPE_META: Record<
 		badge: 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-200 border-emerald-500/30',
 		group: 'actor',
 	},
-	university: {
-		label: 'University',
-		plural: 'Universities',
+	education: {
+		label: 'Education',
+		plural: 'Education',
 		badge: 'bg-indigo-500/15 text-indigo-800 dark:text-indigo-200 border-indigo-500/30',
 		group: 'actor',
 	},
@@ -43,17 +43,23 @@ const TYPE_META: Record<
 		badge: 'bg-violet-500/15 text-violet-800 dark:text-violet-200 border-violet-500/30',
 		group: 'actor',
 	},
-	agency: {
-		label: 'Agency',
-		plural: 'Agencies',
-		badge: 'bg-slate-500/15 text-slate-800 dark:text-slate-200 border-slate-500/30',
+	medical_hospital: {
+		label: 'Medical Hospital',
+		plural: 'Medical Hospitals',
+		badge: 'bg-teal-500/15 text-teal-800 dark:text-teal-200 border-teal-500/30',
 		group: 'actor',
 	},
-	subject_matter: {
-		label: 'Subject Matter',
-		plural: 'Subject Matters',
-		badge: 'bg-orange-500/15 text-orange-800 dark:text-orange-200 border-orange-500/35',
-		group: 'narrative',
+	government: {
+		label: 'Government',
+		plural: 'Government',
+		badge: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/35',
+		group: 'actor',
+	},
+	foreign: {
+		label: 'Foreign',
+		plural: 'Foreign',
+		badge: 'bg-slate-500/15 text-slate-800 dark:text-slate-200 border-slate-500/30',
+		group: 'actor',
 	},
 	historic_event: {
 		label: 'Historic Event',
@@ -83,13 +89,33 @@ const CAUTION_BADGE: Record<CautionTier, string> = {
 };
 
 const ALL_TYPES: ProfileType[] = [
-	'subject_matter',
 	'historic_event',
 	'person',
 	'firm',
-	'university',
+	'education',
 	'nonprofit',
-	'agency',
+	'medical_hospital',
+	'government',
+	'foreign',
+];
+
+const CATEGORY_TAG_TYPES: ProfileType[] = [
+	'firm',
+	'education',
+	'nonprofit',
+	'medical_hospital',
+	'government',
+	'foreign',
+	'historic_event',
+];
+
+const EMPLOYER_CATEGORY_TYPES: ProfileType[] = [
+	'firm',
+	'education',
+	'nonprofit',
+	'medical_hospital',
+	'government',
+	'foreign',
 ];
 
 const ALIGNMENT_KINDS: Array<{ value: AlignmentKind | ''; label: string }> = [
@@ -112,6 +138,7 @@ export default function ProfilesClient() {
 	// Filters
 	const [query, setQuery] = useState('');
 	const [typeFilter, setTypeFilter] = useState<string>('all');
+	const [tagFilter, setTagFilter] = useState<string>('');
 	const [corpusFilter, setCorpusFilter] = useState<string>('');
 	const [offset, setOffset] = useState(0);
 
@@ -140,12 +167,16 @@ export default function ProfilesClient() {
 	const [banner, setBanner] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [showCreate, setShowCreate] = useState(false);
-	const [newType, setNewType] = useState<ProfileType>('subject_matter');
+	const [newType, setNewType] = useState<ProfileType>('historic_event');
 	const [newName, setNewName] = useState('');
 	const [newSummary, setNewSummary] = useState('');
 	const [newAliases, setNewAliases] = useState('');
 	const [newLocation, setNewLocation] = useState('');
 	const [newStartDate, setNewStartDate] = useState('');
+	const [newCategoryTags, setNewCategoryTags] = useState<ProfileType[]>([]);
+	const [newEmployer, setNewEmployer] = useState('');
+	const [newEmployerCategory, setNewEmployerCategory] = useState<ProfileType>('firm');
+	const [newEmployerRole, setNewEmployerRole] = useState('');
 	const [creating, setCreating] = useState(false);
 
 	// Manual timeline observation form
@@ -157,8 +188,16 @@ export default function ProfilesClient() {
 	const [obsUrl, setObsUrl] = useState('');
 	const [savingObs, setSavingObs] = useState(false);
 
-	// Manual alias form
+	// Manual alias, location, and employment forms
 	const [aliasDraft, setAliasDraft] = useState('');
+	const [locationDraft, setLocationDraft] = useState('');
+	const [empOrgName, setEmpOrgName] = useState('');
+	const [empOrgCategory, setEmpOrgCategory] = useState<ProfileType>('firm');
+	const [empRole, setEmpRole] = useState('');
+	const [empStart, setEmpStart] = useState('');
+	const [empEnd, setEmpEnd] = useState('');
+	const [empLocation, setEmpLocation] = useState('');
+	const [savingEmp, setSavingEmp] = useState(false);
 
 	const loadList = useCallback(async () => {
 		setLoadingList(true);
@@ -167,6 +206,7 @@ export default function ProfilesClient() {
 			const params = new URLSearchParams();
 			if (query.trim()) params.set('q', query.trim());
 			if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
+			if (tagFilter) params.set('tag', tagFilter);
 			if (corpusFilter) params.set('corpus', corpusFilter);
 			params.set('limit', '60');
 			params.set('offset', String(offset));
@@ -186,7 +226,7 @@ export default function ProfilesClient() {
 		} finally {
 			setLoadingList(false);
 		}
-	}, [query, typeFilter, corpusFilter, offset, selectedId]);
+	}, [query, typeFilter, tagFilter, corpusFilter, offset, selectedId]);
 
 	const loadDetail = useCallback(async (id: string) => {
 		setLoadingDetail(true);
@@ -316,6 +356,17 @@ export default function ProfilesClient() {
 				.map((s) => s.trim())
 				.filter(Boolean);
 			const locations = newLocation.trim() ? [{ raw: newLocation.trim() }] : [];
+			const employmentHistory =
+				newType === 'person' && newEmployer.trim()
+					? [
+							{
+								orgName: newEmployer.trim(),
+								orgCategory: newEmployerCategory,
+								role: newEmployerRole.trim() || null,
+								location: newLocation.trim() || null,
+							},
+						]
+					: undefined;
 			const res = await fetch('/api/profiles', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -326,6 +377,8 @@ export default function ProfilesClient() {
 					startDate: newStartDate.trim() || null,
 					aliases,
 					locations,
+					categoryTags: newCategoryTags.length ? newCategoryTags : undefined,
+					employmentHistory,
 					status: 'pinned',
 				}),
 			});
@@ -337,6 +390,9 @@ export default function ProfilesClient() {
 			setNewAliases('');
 			setNewLocation('');
 			setNewStartDate('');
+			setNewCategoryTags([]);
+			setNewEmployer('');
+			setNewEmployerRole('');
 			setSelectedId(String(data.profile.id));
 			setMainView('profile');
 			await loadList();
@@ -401,6 +457,82 @@ export default function ProfilesClient() {
 		}
 	}
 
+	async function handleAddLocation() {
+		if (!selectedId || !locationDraft.trim()) return;
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ addLocation: { raw: locationDraft.trim(), role: 'residence' } }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
+			setLocationDraft('');
+			setDetail(data as ProfileDetail);
+			await loadList();
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	async function handleToggleCategoryTag(tag: ProfileType) {
+		if (!selectedId || !detail) return;
+		const existingManual = Array.isArray(detail.profile.metadata?.categoryTags)
+			? (detail.profile.metadata.categoryTags as ProfileType[])
+			: [];
+		const nextManual = existingManual.includes(tag)
+			? existingManual.filter((t) => t !== tag)
+			: [...existingManual, tag];
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ categoryTags: nextManual }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
+			setDetail(data as ProfileDetail);
+			await loadList();
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	async function handleAddEmployment(e: React.FormEvent) {
+		e.preventDefault();
+		if (!selectedId || !empOrgName.trim()) return;
+		setSavingEmp(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}/employment`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					orgName: empOrgName.trim(),
+					orgCategory: empOrgCategory,
+					role: empRole.trim() || null,
+					startDate: empStart.trim() || null,
+					endDate: empEnd.trim() || null,
+					location: empLocation.trim() || null,
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
+			setEmpOrgName('');
+			setEmpRole('');
+			setEmpStart('');
+			setEmpEnd('');
+			setEmpLocation('');
+			if (data.detail) setDetail(data.detail as ProfileDetail);
+			await loadList();
+			setBanner('Added employment history record.');
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingEmp(false);
+		}
+	}
+
 	async function handleTriageAlignment(id: string, status: AlignmentStatus) {
 		try {
 			const res = await fetch('/api/profiles/alignments', {
@@ -411,6 +543,34 @@ export default function ProfilesClient() {
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
 			if (selectedId && mainView === 'profile') await loadDetail(selectedId);
+			if (mainView === 'alignments') await loadGlobalAlignments();
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	async function handleMergeProfiles(keepId: string, mergeId: string, keepLabel: string, mergeLabel: string) {
+		if (
+			typeof window !== 'undefined' &&
+			!window.confirm(
+				`Merge "${mergeLabel}" into "${keepLabel}"? All aliases, identifiers, locations, links, and timeline entries will be consolidated onto "${keepLabel}".`,
+			)
+		) {
+			return;
+		}
+		setError(null);
+		try {
+			const res = await fetch('/api/profiles/merge', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ keepId, mergeId }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Merge failed');
+			setBanner(`Merged "${mergeLabel}" into "${keepLabel}".`);
+			if (selectedId === mergeId) setSelectedId(keepId);
+			await loadList();
+			if (mainView === 'profile') await loadDetail(keepId);
 			if (mainView === 'alignments') await loadGlobalAlignments();
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -440,11 +600,12 @@ export default function ProfilesClient() {
 					<h1 className="my-1.5 text-[24px] font-semibold tracking-tight">
 						Entity Profiles &amp; Cross-Source Alignment
 					</h1>
-					<p className="m-0 max-w-3xl text-xs leading-relaxed opacity-80">
+					<p className="m-0 max-w-4xl text-xs leading-relaxed opacity-80">
 						Unified canonical profiles for <strong>People</strong>, <strong>Firms</strong>,{' '}
-						<strong>Universities</strong>, <strong>Non-Profits</strong>, <strong>Agencies</strong>,{' '}
-						<strong>Subject Matters</strong>, and <strong>Historic Events</strong> — combining all local
-						corpora to fill timeline gaps, compare angles, and surface possible alignments.
+						<strong>Education</strong>, <strong>Non-Profits</strong>, <strong>Medical Hospitals</strong>,{' '}
+						<strong>Government</strong>, <strong>Foreign</strong>, and <strong>Historic Events</strong> —
+						combining all local corpora to fill timeline gaps, compare angles, and surface possible
+						alignments.
 					</p>
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
@@ -501,7 +662,7 @@ export default function ProfilesClient() {
 
 			{/* Stats Bar / Quick Type Filters */}
 			{stats ? (
-				<section className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+				<section className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
 					<button
 						type="button"
 						onClick={() => {
@@ -567,13 +728,14 @@ export default function ProfilesClient() {
 								<optgroup label="Main Actor Profiles">
 									<option value="person">Person</option>
 									<option value="firm">Firm / Company</option>
-									<option value="university">University</option>
+									<option value="education">Education (University / School / District)</option>
 									<option value="nonprofit">Non-Profit / Foundation / Institute</option>
-									<option value="agency">Government Agency</option>
+									<option value="medical_hospital">Medical Hospital / Health System</option>
+									<option value="government">Government (Federal / State / Local)</option>
+									<option value="foreign">Foreign (Ministries / Embassies / Intl)</option>
 								</optgroup>
-								<optgroup label="Narrative & Timeline Containers">
-									<option value="subject_matter">Subject Matter / Topic</option>
-									<option value="historic_event">Historic Event / Incident</option>
+								<optgroup label="Events &amp; Timelines">
+									<option value="historic_event">Historic Event / Topic</option>
 								</optgroup>
 							</select>
 						</label>
@@ -624,6 +786,69 @@ export default function ProfilesClient() {
 								className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs"
 							/>
 						</label>
+						{newType === 'person' ? (
+							<>
+								<label className="flex flex-col gap-1 text-xs">
+									<span className="opacity-75">Initial Employer / Organization (optional)</span>
+									<input
+										value={newEmployer}
+										onChange={(e) => setNewEmployer(e.target.value)}
+										placeholder="e.g. Rockefeller Financial LLC"
+										className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs"
+									/>
+								</label>
+								<label className="flex flex-col gap-1 text-xs">
+									<span className="opacity-75">Employer Category</span>
+									<select
+										value={newEmployerCategory}
+										onChange={(e) => setNewEmployerCategory(e.target.value as ProfileType)}
+										className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs"
+									>
+										{EMPLOYER_CATEGORY_TYPES.map((t) => (
+											<option key={t} value={t}>
+												{TYPE_META[t].label}
+											</option>
+										))}
+									</select>
+								</label>
+								<label className="flex flex-col gap-1 text-xs">
+									<span className="opacity-75">Role / Title (optional)</span>
+									<input
+										value={newEmployerRole}
+										onChange={(e) => setNewEmployerRole(e.target.value)}
+										placeholder="e.g. Managing Director, Professor"
+										className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs"
+									/>
+								</label>
+								<div className="flex flex-col gap-1 text-xs sm:col-span-3">
+									<span className="opacity-75">Category Tags (main category labels)</span>
+									<div className="flex flex-wrap gap-1.5">
+										{CATEGORY_TAG_TYPES.map((t) => {
+											const on = newCategoryTags.includes(t);
+											return (
+												<button
+													key={t}
+													type="button"
+													onClick={() =>
+														setNewCategoryTags((prev) =>
+															prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t],
+														)
+													}
+													className={`cursor-pointer rounded border px-2 py-0.5 text-[11px] font-semibold ${
+														on
+															? TYPE_META[t].badge
+															: 'border-[var(--app-border)] bg-[var(--app-bg)] opacity-65'
+													}`}
+												>
+													{on ? '✓ ' : '+ '}
+													{TYPE_META[t].label}
+												</button>
+											);
+										})}
+									</div>
+								</div>
+							</>
+						) : null}
 					</div>
 					<div className="mt-3 flex justify-end">
 						<button
@@ -708,6 +933,24 @@ export default function ProfilesClient() {
 											<span className="text-[11px] opacity-60">· {al.status}</span>
 										</div>
 										<div className="flex items-center gap-1.5">
+											{(al.alignmentKind === 'same_entity_alias' ||
+												al.alignmentKind === 'shared_identifier') &&
+											al.rightProfileId ? (
+												<button
+													type="button"
+													onClick={() =>
+														void handleMergeProfiles(
+															al.leftProfileId,
+															al.rightProfileId!,
+															al.leftName || al.leftSlug || al.leftProfileId,
+															al.rightName || al.rightSlug || al.rightProfileId!,
+														)
+													}
+													className="cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/15 px-2 py-0.5 text-[11px] font-semibold text-[#F97316]"
+												>
+													Merge
+												</button>
+											) : null}
 											{al.status !== 'confirmed' ? (
 												<button
 													type="button"
@@ -802,7 +1045,7 @@ export default function ProfilesClient() {
 								>
 									<option value="all">All types</option>
 									<option value="actors">All Actors (People/Orgs)</option>
-									<option value="narratives">Subject Matters &amp; Events</option>
+									<option value="narratives">Historic Events</option>
 									{ALL_TYPES.map((t) => (
 										<option key={t} value={t}>
 											{TYPE_META[t].plural}
@@ -825,6 +1068,21 @@ export default function ProfilesClient() {
 									))}
 								</select>
 							</div>
+							<select
+								value={tagFilter}
+								onChange={(e) => {
+									setTagFilter(e.target.value);
+									setOffset(0);
+								}}
+								className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
+							>
+								<option value="">All category tags</option>
+								{CATEGORY_TAG_TYPES.map((t) => (
+									<option key={t} value={t}>
+										Tag: {TYPE_META[t].label}
+									</option>
+								))}
+							</select>
 							<div className="flex items-center justify-between text-[11px] opacity-70">
 								<span>
 									{loadingList ? 'Searching…' : `${totalProfiles.toLocaleString()} matching`}
@@ -884,6 +1142,21 @@ export default function ProfilesClient() {
 												</span>
 											</div>
 											<div className="mt-1 text-xs font-semibold leading-snug">{p.name}</div>
+											{p.primaryLocation ? (
+												<div className="mt-0.5 text-[10px] opacity-75">📍 {p.primaryLocation}</div>
+											) : null}
+											{p.categoryTags && p.categoryTags.length > 0 ? (
+												<div className="mt-1 flex flex-wrap gap-1">
+													{p.categoryTags.slice(0, 4).map((tag) => (
+														<span
+															key={tag}
+															className={`rounded border px-1.5 py-0.2 text-[9px] font-semibold ${TYPE_META[tag].badge}`}
+														>
+															{TYPE_META[tag].label}
+														</span>
+													))}
+												</div>
+											) : null}
 											{p.corpora && p.corpora.length > 0 ? (
 												<div className="mt-1 flex flex-wrap gap-1">
 													{p.corpora.slice(0, 3).map((c) => (
@@ -931,6 +1204,47 @@ export default function ProfilesClient() {
 											) : null}
 										</div>
 										<h2 className="my-1.5 text-lg font-semibold">{detail.profile.name}</h2>
+										{detail.profile.primaryLocation ? (
+											<div className="mb-1.5 text-xs opacity-80">
+												📍 <strong>{detail.profile.primaryLocation}</strong>
+												{detail.locations.length > 1
+													? ` (+${detail.locations.length - 1} more location${detail.locations.length === 2 ? '' : 's'})`
+													: ''}
+											</div>
+										) : null}
+										{detail.profile.profileType === 'person' ? (
+											<div className="mb-2 flex flex-wrap items-center gap-1.5">
+												<span className="text-[11px] font-semibold opacity-70">Category tags:</span>
+												{CATEGORY_TAG_TYPES.map((tag) => {
+													const active = (detail.categoryTags || []).includes(tag);
+													const isManual = Array.isArray(detail.profile.metadata?.categoryTags)
+														? (detail.profile.metadata.categoryTags as ProfileType[]).includes(tag)
+														: false;
+													return (
+														<button
+															key={tag}
+															type="button"
+															title={
+																active
+																	? isManual
+																		? 'Click to remove manual tag'
+																		: 'Auto-tagged from linked profile; click to pin manually'
+																	: 'Click to tag with this main category'
+															}
+															onClick={() => void handleToggleCategoryTag(tag)}
+															className={`cursor-pointer rounded border px-2 py-0.5 text-[10px] font-semibold transition ${
+																active
+																	? TYPE_META[tag].badge
+																	: 'border-[var(--app-border)] bg-[var(--app-bg)] opacity-45 hover:opacity-90'
+															}`}
+														>
+															{active ? '' : '+ '}
+															{TYPE_META[tag].label}
+														</button>
+													);
+												})}
+											</div>
+										) : null}
 										{detail.profile.summary ? (
 											<p className="m-0 max-w-3xl text-xs leading-relaxed opacity-85">
 												{detail.profile.summary}
@@ -1030,22 +1344,161 @@ export default function ProfilesClient() {
 											{/* Locations */}
 											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
 												<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-													Normalized Locations ({detail.locations.length})
+													Locations ({detail.locations.length})
 												</h3>
 												{detail.locations.length === 0 ? (
-													<p className="m-0 text-[11px] opacity-65">No locations tagged yet.</p>
+													<p className="m-0 mb-2 text-[11px] opacity-65">No locations tagged yet.</p>
 												) : (
-													<ul className="m-0 list-none space-y-1 p-0 text-[11px]">
+													<ul className="m-0 mb-2 list-none space-y-1 p-0 text-[11px]">
 														{detail.locations.slice(0, 12).map((loc) => (
 															<li key={loc.id}>
-																<span>{loc.raw}</span>{' '}
-																<code className="text-[10px] opacity-60">({loc.geoKey})</code>
+																<span>📍 {loc.raw}</span>{' '}
+																<span className="text-[10px] opacity-60">({loc.role})</span>
 															</li>
 														))}
 													</ul>
 												)}
+												<div className="flex gap-1">
+													<input
+														value={locationDraft}
+														onChange={(e) => setLocationDraft(e.target.value)}
+														placeholder="Add location (e.g. Dallas, TX)…"
+														className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
+													/>
+													<button
+														type="button"
+														onClick={() => void handleAddLocation()}
+														className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
+													>
+														Add
+													</button>
+												</div>
 											</div>
 										</div>
+
+										{/* Employment History (Person profiles) */}
+										{detail.profile.profileType === 'person' ? (
+											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+												<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+													Employment History ({detail.employmentHistory.length})
+												</h3>
+												{detail.employmentHistory.length === 0 ? (
+													<p className="m-0 mb-3 text-xs opacity-70">
+														No employment history recorded yet. Add one below.
+													</p>
+												) : (
+													<div className="mb-3 space-y-1.5">
+														{detail.employmentHistory.map((emp) => (
+															<div
+																key={emp.id}
+																className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+															>
+																<div className="flex flex-wrap items-center gap-1.5">
+																	{emp.orgProfileId ? (
+																		<button
+																			type="button"
+																			onClick={() => jumpToProfile(emp.orgProfileId!)}
+																			className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																		>
+																			{emp.orgName}
+																		</button>
+																	) : (
+																		<span className="font-semibold">{emp.orgName}</span>
+																	)}
+																	<span
+																		className={`rounded border px-1.5 py-0.2 text-[10px] font-semibold ${TYPE_META[emp.orgCategory].badge}`}
+																	>
+																		{TYPE_META[emp.orgCategory].label}
+																	</span>
+																	{emp.role ? (
+																		<span className="text-[11px] opacity-85">— {emp.role}</span>
+																	) : null}
+																	{emp.isCurrent === true ? (
+																		<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+																			Current
+																		</span>
+																	) : emp.isCurrent === false ? (
+																		<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] opacity-75">
+																			Previous
+																		</span>
+																	) : null}
+																</div>
+																<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
+																	{emp.startDate || emp.endDate ? (
+																		<span>
+																			{emp.startDate || '?'} → {emp.endDate || 'Present'}
+																		</span>
+																	) : null}
+																	{emp.location ? <span>📍 {emp.location}</span> : null}
+																	<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
+																		{emp.sourceCorpus}
+																	</span>
+																</div>
+															</div>
+														))}
+													</div>
+												)}
+
+												<form
+													onSubmit={(e) => void handleAddEmployment(e)}
+													className="grid gap-2 border-t border-[var(--app-border)] pt-2.5 sm:grid-cols-6"
+												>
+													<input
+														required
+														value={empOrgName}
+														onChange={(e) => setEmpOrgName(e.target.value)}
+														placeholder="Employer / Organization *"
+														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs sm:col-span-2"
+													/>
+													<select
+														value={empOrgCategory}
+														onChange={(e) => setEmpOrgCategory(e.target.value as ProfileType)}
+														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
+													>
+														{EMPLOYER_CATEGORY_TYPES.map((t) => (
+															<option key={t} value={t}>
+																{TYPE_META[t].label}
+															</option>
+														))}
+													</select>
+													<input
+														value={empRole}
+														onChange={(e) => setEmpRole(e.target.value)}
+														placeholder="Role / Title"
+														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
+													/>
+													<input
+														value={empLocation}
+														onChange={(e) => setEmpLocation(e.target.value)}
+														placeholder="Location"
+														className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
+													/>
+													<div className="flex gap-1">
+														<input
+															value={empStart}
+															onChange={(e) => setEmpStart(e.target.value)}
+															placeholder="From"
+															className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
+														/>
+														<input
+															value={empEnd}
+															onChange={(e) => setEmpEnd(e.target.value)}
+															placeholder="To"
+															className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
+														/>
+													</div>
+													<div className="flex justify-end sm:col-span-6">
+														<button
+															type="submit"
+															disabled={savingEmp}
+															className="cursor-pointer rounded border-none bg-[#F97316] px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+														>
+															{savingEmp ? 'Adding…' : '+ Add Employment'}
+														</button>
+													</div>
+												</form>
+											</div>
+										) : null}
 
 										{/* Connected Profiles */}
 										<div>
@@ -1400,6 +1853,25 @@ export default function ProfilesClient() {
 																<span className="opacity-60">· {al.status}</span>
 															</div>
 															<div className="flex gap-1.5">
+																{(al.alignmentKind === 'same_entity_alias' ||
+																	al.alignmentKind === 'shared_identifier') &&
+																peerId &&
+																peerName ? (
+																	<button
+																		type="button"
+																		onClick={() =>
+																			void handleMergeProfiles(
+																				detail.profile.id,
+																				peerId,
+																				detail.profile.name,
+																				peerName,
+																			)
+																		}
+																		className="cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/15 px-2 py-0.5 text-[11px] font-semibold text-[#F97316]"
+																	>
+																		Merge into this
+																	</button>
+																) : null}
 																{al.status !== 'confirmed' ? (
 																	<button
 																		type="button"

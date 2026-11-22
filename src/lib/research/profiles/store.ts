@@ -23,6 +23,7 @@ import {
 	type IdentifierScheme,
 	type LinkStatus,
 	type LocationRole,
+	type PersonEmploymentEntry,
 	type Profile,
 	type ProfileAlias,
 	type ProfileDetail,
@@ -709,6 +710,8 @@ export function updateAlignmentStatus(
 export type ListProfilesFilter = {
 	query?: string;
 	profileType?: ProfileType | 'all' | 'actors' | 'narratives';
+	/** Filter profiles tagged with a main category label (e.g. firm, education, government, medical_hospital, nonprofit, foreign, historic_event) */
+	tag?: ProfileType;
 	status?: ProfileStatus;
 	corpus?: string;
 	geo?: string;
@@ -729,9 +732,11 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 
 	if (filter.profileType && filter.profileType !== 'all') {
 		if (filter.profileType === 'actors') {
-			where.push(`p.profile_type IN ('person','firm','university','nonprofit','agency')`);
+			where.push(
+				`p.profile_type IN ('person','firm','education','nonprofit','medical_hospital','government','foreign')`,
+			);
 		} else if (filter.profileType === 'narratives') {
-			where.push(`p.profile_type IN ('subject_matter','historic_event')`);
+			where.push(`p.profile_type = 'historic_event'`);
 		} else {
 			where.push('p.profile_type = ?');
 			params.push(filter.profileType);
@@ -741,6 +746,21 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 	if (filter.status) {
 		where.push('p.status = ?');
 		params.push(filter.status);
+	}
+
+	if (filter.tag && PROFILE_TYPES.includes(filter.tag)) {
+		where.push(
+			`(
+         EXISTS (
+           SELECT 1 FROM profile_links pl
+           JOIN profiles peer ON peer.id = CASE WHEN pl.from_profile_id = p.id THEN pl.to_profile_id ELSE pl.from_profile_id END
+           WHERE (pl.from_profile_id = p.id OR pl.to_profile_id = p.id)
+             AND peer.profile_type = ?
+         )
+         OR p.metadata_json LIKE ?
+       )`,
+		);
+		params.push(filter.tag, `%"${filter.tag}"%`);
 	}
 
 	if (filter.corpus) {
@@ -796,12 +816,18 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
               (SELECT COUNT(*) FROM profile_aliases pa WHERE pa.profile_id = p.id) AS alias_count,
               (SELECT COUNT(*) FROM profile_links pl WHERE pl.from_profile_id = p.id OR pl.to_profile_id = p.id) AS link_count,
               (SELECT COUNT(*) FROM timeline_entries te WHERE te.profile_id = p.id) AS timeline_count,
-              (SELECT COUNT(*) FROM alignment_candidates ac WHERE ac.left_profile_id = p.id OR ac.right_profile_id = p.id) AS alignment_count
+              (SELECT COUNT(*) FROM alignment_candidates ac WHERE ac.left_profile_id = p.id OR ac.right_profile_id = p.id) AS alignment_count,
+              (SELECT ploc.raw FROM profile_locations ploc WHERE ploc.profile_id = p.id ORDER BY CASE ploc.role WHEN 'residence' THEN 0 WHEN 'branch' THEN 1 WHEN 'hq' THEN 2 ELSE 3 END, ploc.raw ASC LIMIT 1) AS primary_location,
+              (SELECT GROUP_CONCAT(DISTINCT peer.profile_type)
+               FROM profile_links pl
+               JOIN profiles peer ON peer.id = CASE WHEN pl.from_profile_id = p.id THEN pl.to_profile_id ELSE pl.from_profile_id END
+               WHERE (pl.from_profile_id = p.id OR pl.to_profile_id = p.id)
+                 AND peer.profile_type != 'person') AS linked_categories
        FROM profiles p
        ${whereSql}
        ORDER BY
          CASE p.status WHEN 'pinned' THEN 0 WHEN 'active' THEN 1 WHEN 'candidate' THEN 2 ELSE 3 END,
-         CASE p.profile_type WHEN 'subject_matter' THEN 0 WHEN 'historic_event' THEN 1 ELSE 2 END,
+         CASE p.profile_type WHEN 'historic_event' THEN 0 ELSE 1 END,
          (link_count + timeline_count * 2 + alignment_count * 3) DESC,
          p.name ASC
        LIMIT ? OFFSET ?`,
@@ -817,6 +843,21 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		prof.corpora = Array.isArray(prof.metadata.corpora)
 			? (prof.metadata.corpora as unknown[]).map(String)
 			: [];
+		prof.primaryLocation = r.primary_location != null ? String(r.primary_location) : null;
+		const tagSet = new Set<ProfileType>();
+		if (typeof r.linked_categories === 'string' && r.linked_categories.trim()) {
+			for (const c of r.linked_categories.split(',')) {
+				const t = c.trim() as ProfileType;
+				if (PROFILE_TYPES.includes(t) && t !== 'person') tagSet.add(t);
+			}
+		}
+		if (Array.isArray(prof.metadata.categoryTags)) {
+			for (const c of prof.metadata.categoryTags) {
+				const t = String(c) as ProfileType;
+				if (PROFILE_TYPES.includes(t) && t !== 'person') tagSet.add(t);
+			}
+		}
+		prof.categoryTags = [...tagSet];
 		return prof;
 	});
 
@@ -942,6 +983,115 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 	profile.corpora = Array.isArray(profile.metadata.corpora)
 		? (profile.metadata.corpora as unknown[]).map(String)
 		: [];
+	profile.primaryLocation = locations[0]?.raw || null;
+
+	// Compute main category labels as tags from linked orgs/events + manual metadata.categoryTags
+	const tagSet = new Set<ProfileType>();
+	for (const l of links) {
+		const peerType = l.fromProfileId === profile.id ? l.toType : l.fromType;
+		if (peerType && peerType !== 'person' && PROFILE_TYPES.includes(peerType)) {
+			tagSet.add(peerType);
+		}
+	}
+	if (Array.isArray(profile.metadata.categoryTags)) {
+		for (const raw of profile.metadata.categoryTags) {
+			const t = String(raw) as ProfileType;
+			if (PROFILE_TYPES.includes(t) && t !== 'person') tagSet.add(t);
+		}
+	}
+	const categoryTags = [...tagSet];
+	profile.categoryTags = categoryTags;
+
+	// Build structured employment history for person profiles from org links
+	const EMPLOYMENT_RELS = new Set<ProfileRelationType>([
+		'employed_by',
+		'registered_at',
+		'alumni_or_faculty',
+		'affiliated_with',
+		'business_tie',
+	]);
+	const ORG_TYPES = new Set<ProfileType>([
+		'firm',
+		'education',
+		'nonprofit',
+		'medical_hospital',
+		'government',
+		'foreign',
+	]);
+
+	const employmentHistory: PersonEmploymentEntry[] = [];
+	if (profile.profileType === 'person') {
+		const byEmpKey = new Map<string, PersonEmploymentEntry>();
+		for (const l of links) {
+			const isOut = l.fromProfileId === profile.id;
+			const peerId = isOut ? l.toProfileId : l.fromProfileId;
+			const peerName = isOut ? l.toName : l.fromName;
+			const peerSlug = isOut ? l.toSlug : l.fromSlug;
+			const peerType = (isOut ? l.toType : l.fromType) || 'firm';
+			if (!ORG_TYPES.has(peerType)) continue;
+			if (!EMPLOYMENT_RELS.has(l.relationType)) continue;
+
+			const roleStr = l.roleLabel || '';
+			const noteStr = l.evidenceNote || '';
+			let isCurrent: boolean | null = null;
+			if (/current/i.test(roleStr) || (l.startDate && !l.endDate && l.sourceCorpus === 'manual')) {
+				isCurrent = true;
+			} else if (/previous|former/i.test(roleStr) || Boolean(l.endDate)) {
+				isCurrent = false;
+			}
+			const branchMatch = noteStr.match(/branch=([^;]+)/i);
+			const empLocation = branchMatch ? branchMatch[1].trim() : null;
+
+			const candidate: PersonEmploymentEntry = {
+				id: l.id,
+				orgProfileId: peerId,
+				orgSlug: peerSlug || null,
+				orgName: peerName || 'Unknown organization',
+				orgCategory: peerType,
+				role: l.roleLabel,
+				relationType: l.relationType,
+				startDate: l.startDate,
+				endDate: l.endDate,
+				isCurrent,
+				location: empLocation,
+				sourceCorpus: l.sourceCorpus,
+				evidenceNote: l.evidenceNote,
+			};
+
+			// Dedupe overlapping links to the same employer in the same date span, preferring entries with explicit role/employment relation
+			const dedupeEmpKey = `${peerId}|${l.startDate || ''}|${l.endDate || ''}`;
+			const existing = byEmpKey.get(dedupeEmpKey);
+			if (!existing) {
+				byEmpKey.set(dedupeEmpKey, candidate);
+			} else {
+				const existingScore =
+					(existing.role ? 2 : 0) +
+					(existing.relationType === 'employed_by' || existing.relationType === 'registered_at' ? 2 : 0) +
+					(existing.location ? 1 : 0);
+				const candScore =
+					(candidate.role ? 2 : 0) +
+					(candidate.relationType === 'employed_by' || candidate.relationType === 'registered_at' ? 2 : 0) +
+					(candidate.location ? 1 : 0);
+				if (candScore > existingScore) {
+					byEmpKey.set(dedupeEmpKey, candidate);
+				}
+			}
+		}
+
+		employmentHistory.push(...byEmpKey.values());
+
+		// Sort current first, then newest startDate desc, then org name
+		employmentHistory.sort((a, b) => {
+			if (a.isCurrent !== b.isCurrent) {
+				if (a.isCurrent === true) return -1;
+				if (b.isCurrent === true) return 1;
+			}
+			const da = a.startDate || a.endDate || '';
+			const dbDate = b.startDate || b.endDate || '';
+			if (da !== dbDate) return dbDate.localeCompare(da);
+			return a.orgName.localeCompare(b.orgName);
+		});
+	}
 
 	return {
 		profile,
@@ -951,6 +1101,8 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		links,
 		alignments,
 		recentTimeline,
+		employmentHistory,
+		categoryTags,
 		counts: {
 			aliases: aliases.length,
 			identifiers: identifiers.length,
@@ -958,8 +1110,328 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			links: linkTotal,
 			timelineEntries: timelineTotal,
 			alignments: alignTotal,
+			employmentHistory: employmentHistory.length,
 		},
 	};
+}
+
+export function addPersonEmployment(input: {
+	personIdOrSlug: string;
+	orgName: string;
+	orgCategory?: ProfileType;
+	role?: string | null;
+	startDate?: string | null;
+	endDate?: string | null;
+	isCurrent?: boolean;
+	location?: string | null;
+	notes?: string | null;
+	sourceCorpus?: string;
+}): { linkId: string; orgProfile: Profile } | null {
+	const db = getProfilesDb();
+	const person = getProfile(input.personIdOrSlug, db);
+	if (!person) return null;
+
+	const orgName = String(input.orgName || '').trim();
+	if (!orgName) throw new Error('orgName is required');
+
+	const allowedOrgCategories: ProfileType[] = [
+		'firm',
+		'education',
+		'nonprofit',
+		'medical_hospital',
+		'government',
+		'foreign',
+	];
+	const orgType: ProfileType =
+		input.orgCategory && allowedOrgCategories.includes(input.orgCategory)
+			? input.orgCategory
+			: 'firm';
+	const corpus = input.sourceCorpus || 'manual';
+
+	const orgProfile = upsertProfile(
+		{
+			profileType: orgType,
+			name: orgName,
+			sourceCorpus: corpus,
+		},
+		db,
+	);
+
+	const locClean = input.location ? String(input.location).trim() : '';
+	let geoKey: string | null = null;
+	if (locClean) {
+		geoKey = addLocation(
+			{
+				profileId: person.id,
+				raw: locClean,
+				role: 'branch',
+				sourceCorpus: corpus,
+			},
+			db,
+		);
+		addLocation(
+			{
+				profileId: orgProfile.id,
+				raw: locClean,
+				role: 'associated',
+				sourceCorpus: corpus,
+			},
+			db,
+		);
+	}
+
+	const roleBase = input.role ? String(input.role).trim() : '';
+	const roleLabel =
+		roleBase || (input.isCurrent === true ? 'Current employment' : input.isCurrent === false ? 'Previous employment' : null);
+
+	const relType: ProfileRelationType =
+		orgType === 'education' ? 'alumni_or_faculty' : 'employed_by';
+
+	const evidenceParts = [
+		input.notes ? String(input.notes).trim() : '',
+		locClean ? `branch=${locClean}` : '',
+		input.isCurrent === true ? 'status=current' : input.isCurrent === false ? 'status=previous' : '',
+	].filter(Boolean);
+
+	const linkId = upsertProfileLink(
+		{
+			fromProfileId: person.id,
+			toProfileId: orgProfile.id,
+			relationType: relType,
+			roleLabel,
+			startDate: input.startDate ? String(input.startDate).trim() : null,
+			endDate: input.endDate ? String(input.endDate).trim() : null,
+			status: 'verified',
+			confidence: 0.95,
+			angle: orgType === 'education' ? 'academic_research' : orgType === 'government' ? 'policy' : 'corporate',
+			sourceCorpus: corpus,
+			evidenceNote: evidenceParts.join('; ') || `Employment at ${orgName}`,
+		},
+		db,
+	);
+
+	// Also record on the person's timeline so employment history participates in timeline alignment
+	const startDate = input.startDate ? String(input.startDate).trim() : null;
+	const endDate = input.endDate ? String(input.endDate).trim() : null;
+	if (startDate || endDate) {
+		upsertTimelineEntry(
+			{
+				profileId: person.id,
+				eventDate: startDate || endDate,
+				endDate,
+				title: `${roleLabel ? `${roleLabel} at ` : 'Employed at '}${orgName}`,
+				summary: evidenceParts.join(' · ') || `${orgName} (${orgType})`,
+				angle: orgType === 'education' ? 'academic_research' : orgType === 'government' ? 'policy' : 'corporate',
+				entryKind: 'employment',
+				geoKey,
+				geoLabel: locClean || null,
+				sourceCorpus: corpus,
+				dedupeHint: `emp:${orgProfile.slug}:${roleLabel || ''}:${startDate || ''}`,
+			},
+			db,
+		);
+	}
+
+	return { linkId, orgProfile };
+}
+
+/**
+ * Merge `mergeIdOrSlug` into `keepIdOrSlug`: transfers aliases, identifiers, locations,
+ * timeline entries, links (deduped, no self-loops), alignment candidates, and metadata
+ * (corpora/categoryTags/summary/dates), adds the merged profile's name as an alias on
+ * `keep`, and deletes the duplicate `merge` profile.
+ */
+export function mergeProfiles(
+	keepIdOrSlug: string,
+	mergeIdOrSlug: string,
+	dbOverride?: DatabaseSync,
+): { kept: Profile; mergedId: string; mergedName: string } | null {
+	const db = dbOverride ?? getProfilesDb();
+	const keep = getProfile(keepIdOrSlug, db);
+	const merge = getProfile(mergeIdOrSlug, db);
+	if (!keep || !merge || keep.id === merge.id) return null;
+
+	const runMerge = (tx: DatabaseSync) => {
+		const now = new Date().toISOString();
+
+		// 1. Merge metadata (corpora, categoryTags), summary, status, dates
+		const keepCorpora = Array.isArray(keep.metadata.corpora) ? keep.metadata.corpora.map(String) : [];
+		const mergeCorpora = Array.isArray(merge.metadata.corpora) ? merge.metadata.corpora.map(String) : [];
+		const keepTags = Array.isArray(keep.metadata.categoryTags) ? keep.metadata.categoryTags.map(String) : [];
+		const mergeTags = Array.isArray(merge.metadata.categoryTags) ? merge.metadata.categoryTags.map(String) : [];
+
+		const mergedMeta: Record<string, unknown> = {
+			...merge.metadata,
+			...keep.metadata,
+			corpora: [...new Set([...keepCorpora, ...mergeCorpora])],
+		};
+		const combinedTags = [...new Set([...keepTags, ...mergeTags])];
+		if (combinedTags.length) mergedMeta.categoryTags = combinedTags;
+
+		const nextStatus: ProfileStatus =
+			keep.status === 'pinned' || merge.status === 'pinned' ? 'pinned' : keep.status;
+		const nextSummary =
+			merge.summary.trim().length > keep.summary.trim().length ? merge.summary.trim() : keep.summary.trim();
+		const nextStart =
+			keep.startDate && merge.startDate
+				? keep.startDate < merge.startDate
+					? keep.startDate
+					: merge.startDate
+				: keep.startDate || merge.startDate;
+		const nextEnd =
+			keep.endDate && merge.endDate
+				? keep.endDate > merge.endDate
+					? keep.endDate
+					: merge.endDate
+				: keep.endDate || merge.endDate;
+
+		tx.prepare(
+			`UPDATE profiles
+       SET status = ?, summary = ?, start_date = ?, end_date = ?, metadata_json = ?, updated_at = ?
+       WHERE id = ?`,
+		).run(nextStatus, nextSummary, nextStart, nextEnd, JSON.stringify(mergedMeta), now, keep.id);
+
+		// 2. Preserve merged name + all aliases
+		addAlias({ profileId: keep.id, alias: merge.name, aliasKind: 'former_name', confidence: 0.95 }, tx);
+		const mergeAliases = tx
+			.prepare('SELECT alias, alias_kind, confidence, source_corpus FROM profile_aliases WHERE profile_id = ?')
+			.all(merge.id) as Array<Record<string, unknown>>;
+		for (const a of mergeAliases) {
+			addAlias(
+				{
+					profileId: keep.id,
+					alias: String(a.alias),
+					aliasKind: String(a.alias_kind || 'name') as AliasKind,
+					confidence: Number(a.confidence ?? 1),
+					sourceCorpus: a.source_corpus != null ? String(a.source_corpus) : null,
+				},
+				tx,
+			);
+		}
+
+		// 3. Move identifiers (ignore duplicates)
+		const mergeIdents = tx
+			.prepare('SELECT scheme, value, source_corpus FROM profile_identifiers WHERE profile_id = ?')
+			.all(merge.id) as Array<Record<string, unknown>>;
+		for (const i of mergeIdents) {
+			addIdentifier(
+				{
+					profileId: keep.id,
+					scheme: String(i.scheme) as IdentifierScheme,
+					value: String(i.value),
+					sourceCorpus: i.source_corpus != null ? String(i.source_corpus) : null,
+				},
+				tx,
+			);
+		}
+
+		// 4. Move locations (ignore duplicates)
+		const mergeLocs = tx
+			.prepare(
+				'SELECT raw, city, county, state, country, lat, lon, role, source_corpus FROM profile_locations WHERE profile_id = ?',
+			)
+			.all(merge.id) as Array<Record<string, unknown>>;
+		for (const loc of mergeLocs) {
+			addLocation(
+				{
+					profileId: keep.id,
+					raw: String(loc.raw),
+					city: loc.city != null ? String(loc.city) : null,
+					county: loc.county != null ? String(loc.county) : null,
+					state: loc.state != null ? String(loc.state) : null,
+					country: loc.country != null ? String(loc.country) : null,
+					lat: loc.lat != null ? Number(loc.lat) : null,
+					lon: loc.lon != null ? Number(loc.lon) : null,
+					role: String(loc.role || 'associated') as LocationRole,
+					sourceCorpus: loc.source_corpus != null ? String(loc.source_corpus) : null,
+				},
+				tx,
+			);
+		}
+
+		// 5. Re-attach timeline entries (re-keying dedupe_key via upsert)
+		const mergeTimeline = tx
+			.prepare('SELECT * FROM timeline_entries WHERE profile_id = ?')
+			.all(merge.id) as Array<Record<string, unknown>>;
+		for (const te of mergeTimeline) {
+			upsertTimelineEntry(
+				{
+					profileId: keep.id,
+					eventDate: te.event_date != null ? String(te.event_date) : null,
+					datePrecision: String(te.date_precision || 'day') as DatePrecision,
+					endDate: te.end_date != null ? String(te.end_date) : null,
+					title: String(te.title),
+					summary: String(te.summary || ''),
+					angle: String(te.angle || 'general') as TimelineAngle,
+					entryKind: String(te.entry_kind || 'event') as TimelineEntryKind,
+					geoKey: te.geo_key != null ? String(te.geo_key) : null,
+					geoLabel: te.geo_label != null ? String(te.geo_label) : null,
+					confidence: Number(te.confidence ?? 1),
+					sourceCorpus: String(te.source_corpus),
+					sourceRecordId: te.source_record_id != null ? String(te.source_record_id) : null,
+					metadata: safeJsonParse<Record<string, unknown>>(te.metadata_json, {}),
+				},
+				tx,
+			);
+		}
+
+		// 6. Rewrite profile_links (skip self-loops, dedupe via upsertProfileLink)
+		const mergeLinks = tx
+			.prepare('SELECT * FROM profile_links WHERE from_profile_id = ? OR to_profile_id = ?')
+			.all(merge.id, merge.id) as Array<Record<string, unknown>>;
+		for (const l of mergeLinks) {
+			const nextFrom = String(l.from_profile_id) === merge.id ? keep.id : String(l.from_profile_id);
+			const nextTo = String(l.to_profile_id) === merge.id ? keep.id : String(l.to_profile_id);
+			if (nextFrom === nextTo) continue;
+			upsertProfileLink(
+				{
+					fromProfileId: nextFrom,
+					toProfileId: nextTo,
+					relationType: String(l.relation_type) as ProfileRelationType,
+					roleLabel: l.role_label != null ? String(l.role_label) : null,
+					startDate: l.start_date != null ? String(l.start_date) : null,
+					endDate: l.end_date != null ? String(l.end_date) : null,
+					status: String(l.status || 'observed') as LinkStatus,
+					confidence: Number(l.confidence ?? 0.8),
+					angle: String(l.angle || 'general') as TimelineAngle,
+					sourceCorpus: String(l.source_corpus),
+					sourceRecordId: l.source_record_id != null ? String(l.source_record_id) : null,
+					evidenceNote: String(l.evidence_note || ''),
+				},
+				tx,
+			);
+		}
+
+		// 7. Delete alignments directly linking keep <-> merge, and delete the merged profile (cascade cleans remaining rows)
+		tx.prepare(
+			`DELETE FROM alignment_candidates
+       WHERE (left_profile_id = ? AND right_profile_id = ?)
+          OR (left_profile_id = ? AND right_profile_id = ?)`,
+		).run(keep.id, merge.id, merge.id, keep.id);
+
+		tx.prepare('DELETE FROM profiles WHERE id = ?').run(merge.id);
+	};
+
+	if (dbOverride) {
+		runMerge(dbOverride);
+	} else {
+		db.exec('BEGIN IMMEDIATE;');
+		try {
+			runMerge(db);
+			db.exec('COMMIT;');
+		} catch (error) {
+			try {
+				db.exec('ROLLBACK;');
+			} catch {
+				/* ignore */
+			}
+			throw error;
+		}
+	}
+
+	const kept = getProfile(keep.id, db);
+	if (!kept) return null;
+	return { kept, mergedId: merge.id, mergedName: merge.name };
 }
 
 export function getProfileStats(): ProfileStats {
@@ -967,10 +1439,11 @@ export function getProfileStats(): ProfileStats {
 	const byType: Record<ProfileType, number> = {
 		person: 0,
 		firm: 0,
-		university: 0,
+		education: 0,
 		nonprofit: 0,
-		agency: 0,
-		subject_matter: 0,
+		medical_hospital: 0,
+		government: 0,
+		foreign: 0,
 		historic_event: 0,
 	};
 

@@ -175,9 +175,9 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
        JOIN profiles hub ON hub.id = l1.to_profile_id
        JOIN profiles a1 ON a1.id = l1.from_profile_id
        JOIN profiles a2 ON a2.id = l2.from_profile_id
-       WHERE hub.profile_type IN ('firm', 'university', 'nonprofit', 'agency')
-         AND a1.profile_type IN ('person', 'firm', 'university', 'nonprofit')
-         AND a2.profile_type IN ('person', 'firm', 'university', 'nonprofit')
+       WHERE hub.profile_type IN ('firm', 'education', 'nonprofit', 'medical_hospital', 'government', 'foreign')
+         AND a1.profile_type IN ('person', 'firm', 'education', 'nonprofit', 'medical_hospital')
+         AND a2.profile_type IN ('person', 'firm', 'education', 'nonprofit', 'medical_hospital')
        LIMIT 250`,
 		)
 		.all() as Array<Record<string, unknown>>;
@@ -196,7 +196,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		)
 		.all() as Array<Record<string, unknown>>;
 
-	// 6. Multi-Angle Overlaps on subject_matter / historic_event profiles
+	// 6. Multi-Angle Overlaps on historic_event / actor profiles
 	const multiAngleRows = db
 		.prepare(
 			`SELECT p.id, p.name, p.profile_type,
@@ -437,11 +437,18 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				.prepare(
 					`SELECT p.id, p.name, p.slug, p.profile_type, p.status
            FROM profiles p
-           WHERE p.profile_type IN ('person', 'firm', 'university', 'nonprofit')
+           WHERE p.profile_type IN ('person', 'firm', 'education', 'nonprofit', 'medical_hospital', 'government')
              AND length(p.normalized_name) >= 5
            ORDER BY
              CASE p.status WHEN 'pinned' THEN 0 ELSE 1 END,
-             CASE p.profile_type WHEN 'firm' THEN 0 WHEN 'nonprofit' THEN 1 WHEN 'university' THEN 2 ELSE 3 END,
+             CASE p.profile_type
+               WHEN 'firm' THEN 0
+               WHEN 'medical_hospital' THEN 1
+               WHEN 'nonprofit' THEN 2
+               WHEN 'education' THEN 3
+               WHEN 'government' THEN 4
+               ELSE 5
+             END,
              (SELECT COUNT(*) FROM profile_links pl WHERE pl.from_profile_id = p.id OR pl.to_profile_id = p.id) DESC
            LIMIT ?`,
 				)

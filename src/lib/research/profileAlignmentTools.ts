@@ -18,6 +18,7 @@ export type SearchProfilesToolArgs = {
 	query?: string;
 	slug?: string;
 	profileType?: string;
+	tag?: string;
 	corpus?: string;
 	geo?: string;
 	status?: string;
@@ -65,6 +66,8 @@ export async function searchProfilesTool(args: SearchProfilesToolArgs): Promise<
 					ok: true,
 					mode: 'detail',
 					profile: detail.profile,
+					categoryTags: detail.categoryTags,
+					employmentHistory: detail.employmentHistory.slice(0, 30),
 					aliases: detail.aliases.slice(0, 20).map((a) => ({ alias: a.alias, kind: a.aliasKind })),
 					identifiers: detail.identifiers.slice(0, 15).map((i) => ({ scheme: i.scheme, value: i.value })),
 					locations: detail.locations.slice(0, 15).map((l) => ({ raw: l.raw, geoKey: l.geoKey, role: l.role })),
@@ -101,10 +104,14 @@ export async function searchProfilesTool(args: SearchProfilesToolArgs): Promise<
 					? (typeRaw as ProfileType)
 					: 'all';
 
+		const tagRaw = String(args.tag || '').trim().toLowerCase();
+		const tag = PROFILE_TYPES.includes(tagRaw as ProfileType) ? (tagRaw as ProfileType) : undefined;
+
 		const limit = Math.max(1, Math.min(40, Math.floor(Number(args.limit ?? 15))));
 		const { profiles, total } = listProfiles({
 			query: args.query ? String(args.query) : undefined,
 			profileType,
+			tag,
 			status: args.status ? (String(args.status) as ProfileStatus) : undefined,
 			corpus: args.corpus ? String(args.corpus) : undefined,
 			geo: args.geo ? String(args.geo) : undefined,
@@ -126,6 +133,8 @@ export async function searchProfilesTool(args: SearchProfilesToolArgs): Promise<
 					name: p.name,
 					status: p.status,
 					summary: p.summary.slice(0, 260),
+					primaryLocation: p.primaryLocation,
+					categoryTags: p.categoryTags,
 					startDate: p.startDate,
 					endDate: p.endDate,
 					corpora: p.corpora,
@@ -158,7 +167,7 @@ export async function getProfileTimelineTool(args: GetProfileTimelineToolArgs): 
 		if (!target) {
 			return {
 				ok: false,
-				result: { ok: false, error: 'profile (id or slug, e.g. subject_matter:covid-19-pandemic-response) is required' },
+				result: { ok: false, error: 'profile (id or slug, e.g. historic_event:covid-19-pandemic-response) is required' },
 			};
 		}
 

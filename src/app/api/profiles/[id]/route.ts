@@ -7,7 +7,12 @@ import {
 	getProfileDetail,
 	updateProfileFields,
 } from '@/lib/research/profiles/store';
-import type { LocationRole, ProfileStatus, ProfileType } from '@/lib/research/profiles/types';
+import {
+	PROFILE_TYPES,
+	type LocationRole,
+	type ProfileStatus,
+	type ProfileType,
+} from '@/lib/research/profiles/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -35,6 +40,15 @@ export async function PATCH(request: Request, context: Ctx) {
 	const key = decodeURIComponent(String(id || '').trim());
 	try {
 		const body = (await request.json()) as Record<string, unknown>;
+		const metadataPatch =
+			Array.isArray(body.categoryTags)
+				? {
+						categoryTags: body.categoryTags
+							.map((t) => String(t) as ProfileType)
+							.filter((t) => PROFILE_TYPES.includes(t) && t !== 'person'),
+					}
+				: undefined;
+
 		const updated = updateProfileFields(key, {
 			name: body.name != null ? String(body.name) : undefined,
 			profileType: body.profileType != null ? (String(body.profileType) as ProfileType) : undefined,
@@ -42,6 +56,7 @@ export async function PATCH(request: Request, context: Ctx) {
 			summary: body.summary != null ? String(body.summary) : undefined,
 			startDate: body.startDate !== undefined ? (body.startDate ? String(body.startDate) : null) : undefined,
 			endDate: body.endDate !== undefined ? (body.endDate ? String(body.endDate) : null) : undefined,
+			metadata: metadataPatch,
 		});
 		if (!updated) {
 			return NextResponse.json({ ok: false, error: 'Profile not found' }, { status: 404 });

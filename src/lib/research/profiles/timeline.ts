@@ -116,8 +116,8 @@ function searchKnowledgeForGap(
 }
 
 /**
- * Retrieve a merged multi-source timeline for any profile (especially subject_matter
- * or historic_event), compute angle/corpus breakdowns, detect chronological gaps,
+ * Retrieve a merged multi-source timeline for any profile (especially historic_event),
+ * compute angle/corpus breakdowns, detect chronological gaps,
  * and surface cross-source gap-fill leads.
  */
 export function getProfileTimeline(
@@ -161,12 +161,12 @@ export function getProfileTimeline(
 
 			relatedActorIds.add(otherId);
 
-			// Merge timelines from child historic events, parent subjects, or direct participations
+			// Merge timelines from child historic events, parent events, or direct participations
 			if (
 				otherType === 'historic_event' ||
 				rel === 'part_of_subject' ||
 				rel === 'participated_in' ||
-				(profile.profileType !== 'subject_matter' && rel === 'mentioned_in')
+				(profile.profileType !== 'historic_event' && rel === 'mentioned_in')
 			) {
 				targetIds.add(otherId);
 			}
