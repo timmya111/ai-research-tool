@@ -48,7 +48,7 @@ const HARD_RE =
 const URL_RE = /https?:\/\/[^\s]+/i;
 /** Local Bryan / knowledge / chart questions need tools even when phrased analytically. */
 const LOCAL_DATA_RE =
-	/\b(bryan|filing|filings|mortgage|\bmtg\b|warranty deed|\bwd\b|grantor|grantee|chart|okcounty|recorded|instrument|book\/pages|knowledge store|search_knowledge|chart_filings|seismic|earthquake|earthquakes|comcat|usgs|oklahoma quake|texas quake|magnitude|\bm[2-9](\.\d)?\b|tornado|tornadoes|tornadic|\bef[0-5]\b|\befu\b|spc|ncei|storm events|authority timeline|authority initiatives|\bice\b|\bdhs\b|\bdea\b|executive order|\beos?\b|entity dossier|palantir|halliburton|campion trail|wikipedia|kiwix|offline wiki|youtube|scrub|scrubs|concealment|mindunveiled|mind unveiled|control alt history|eyes.?wide.?open|freshboosters|philip thompson|dig\.?archaeology|caption|captions|ocr digest|video timeline)\b/i;
+	/\b(bryan|filing|filings|mortgage|\bmtg\b|warranty deed|\bwd\b|grantor|grantee|chart|okcounty|recorded|instrument|book\/pages|knowledge store|search_knowledge|chart_filings|seismic|earthquake|earthquakes|comcat|usgs|oklahoma quake|texas quake|magnitude|\bm[2-9](\.\d)?\b|tornado|tornadoes|tornadic|\bef[0-5]\b|\befu\b|spc|ncei|storm events|authority timeline|authority initiatives|\bice\b|\bdhs\b|\bdea\b|executive order|\beos?\b|entity dossier|palantir|halliburton|campion trail|wikipedia|kiwix|offline wiki|youtube|scrub|scrubs|concealment|mindunveiled|mind unveiled|control alt history|eyes.?wide.?open|freshboosters|philip thompson|dig\.?archaeology|hidden.?amura.?ka|hiddenamura|utd.?geoscience|utdgeoscience|mystery.?abyss|themysteryabyss|fall of civilizations|epichistory|history matters|global history scope|joanne freeman|ancient lives|silk road|ottoman history|spark docs|timeline.?world.?history|caption|captions|ocr digest|video timeline|trinity aquifer|\btwdb\b|groundwater management|\bgma\b|petersburg quantum|\bpqw\b|pqw\.itmo|quantum weeks|\bisctp\b|\bmeta\s*2025\b|\bmeta25\b|metamaterial|plasmonic|photonic crystal|metaconferences|physics.?congress|physics-congress|\bisos2026\b|dynamics days|nazarbayev|astana congress|covid|covid-19|cdc museum|cdc timeline|operation warp speed|remdesivir|paxlovid|moderna|pfizer|biontech|astrazeneca|omicron|hydroxychloroquine|gilead|warp speed|war\.gov|defense\.gov|dod response|force health protection|\bfhp\b|covid mandate|vaccine mandate|gemini qa|gemini-qa|google takeout|\bgemini\b)\b/i;
 
 export function isResearchChatModel(name: string): boolean {
 	const n = String(name || '').trim();
@@ -122,7 +122,7 @@ function buildMultiPlan(
 			role: hasUrl ? 'fetch' : 'tools',
 			model: toolsModel,
 			focus: hasUrl
-				? 'Use tools (including fetch_url) to gather facts from allowlisted URLs and local helpers.'
+				? 'Use tools (including fetch_url for any pasted public URL/PDF) to gather facts and local helpers.'
 				: LOCAL_DATA_RE.test(question)
 					? 'Use search_knowledge and/or chart_filings for Bryan County / local store facts. Do not invent filings or dates.'
 					: 'Use tools to gather exact facts. Do not invent sources or numbers.',

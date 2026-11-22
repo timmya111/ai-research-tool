@@ -1,11 +1,23 @@
+import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createBryanFilingChart, createLogo } from '@/lib/research/charts';
 import { inspectCanvasSnapshot, type CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { lookupBrokercheckIndividual } from '@/lib/research/brokercheckLookup';
 import { lookupFirmConnections } from '@/lib/research/firmConnectionsLookup';
 import { searchAuthorityTimelines } from '@/lib/research/authorityTimelineSearch';
+import { searchCdcCovidTimeline } from '@/lib/research/cdcCovidTimelineSearch';
 import { searchConcealmentScrubs } from '@/lib/research/concealmentScrubSearch';
+import { searchDodCovidTimeline } from '@/lib/research/dodCovidTimelineSearch';
 import { searchEntityDossiers } from '@/lib/research/entityDossierSearch';
+import { searchGeminiQa } from '@/lib/research/geminiQaSearch';
 import { searchFinraSidecar } from '@/lib/research/finraSidecarSearch';
+import { searchDigitalEarth } from '@/lib/research/digitalEarthSearch';
+import { searchMeta25 } from '@/lib/research/meta25Search';
+import { searchPhysicsCongress } from '@/lib/research/physicsCongressSearch';
+import { searchPqwItmo } from '@/lib/research/pqwItmoSearch';
+import { searchTwdbTrinity } from '@/lib/research/twdbTrinitySearch';
 import { searchWikipedia } from '@/lib/research/wikipediaSearch';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
@@ -19,8 +31,16 @@ export type ResearchToolName =
 	| 'lookup_brokercheck'
 	| 'lookup_firm_connections'
 	| 'search_authority_timelines'
+	| 'search_cdc_covid_timeline'
+	| 'search_dod_covid_timeline'
+	| 'search_gemini_qa'
 	| 'search_entity_dossiers'
 	| 'search_concealment_scrubs'
+	| 'search_twdb_trinity'
+	| 'search_digital_earth'
+	| 'search_pqw_itmo'
+	| 'search_meta25'
+	| 'search_physics_congress'
 	| 'search_wikipedia'
 	| 'search_knowledge'
 	| 'chart_filings'
@@ -246,6 +266,94 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 	{
 		type: 'function' as const,
 		function: {
+			name: 'search_cdc_covid_timeline',
+			description:
+				'Search the local CDC Museum COVID-19 timeline (.data/cdc-covid-timeline): dated events for diseases, variants/strains, vaccines, treatments/therapeutics, pharma/companies, named persons, agencies, and funding/$ figures as worded on the CDC page. Use for COVID chronology, Warp Speed, Remdesivir pricing, Omicron/Delta, Moderna/Pfizer/J&J/AstraZeneca. CDC narrative leads only — not a full SEC/pharma P&L corpus. No literal “superstrain” term on this page; use entityType=variant.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: {
+						type: 'string',
+						description: 'Keywords (vaccine, Omicron, Pfizer, Remdesivir, Fauci, CARES, …)',
+					},
+					from: { type: 'string', description: 'Optional start date YYYY-MM-DD' },
+					to: { type: 'string', description: 'Optional end date YYYY-MM-DD' },
+					entityType: {
+						type: 'string',
+						description:
+							'Optional: company | person | vaccine | treatment | variant | disease | org',
+					},
+					entity: {
+						type: 'string',
+						description: 'Optional entity name substring (e.g. Moderna, Omicron, Fauci)',
+					},
+					financialsOnly: {
+						type: 'boolean',
+						description: 'If true, only events with dollar/funding mentions',
+					},
+					limit: { type: 'number', description: 'Max event hits (default 12, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_dod_covid_timeline',
+			description:
+				'Search the local DoD / War.gov Coronavirus Response Timeline (.data/dod-covid-timeline): DOD Response, Federal Response, Virus Progression, and Vaccine filter events (Force Health Protection, mandates, Warp Speed, USNORTHCOM/FEMA/DLA support, vaccine EUAs). Pair with search_cdc_covid_timeline for civilian CDC narrative. Live war.gov is often Akamai-blocked; corpus from Wayback. Institutional leads only.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: {
+						type: 'string',
+						description: 'Keywords (mandate, Warp Speed, NORTHCOM, Pfizer, Omicron, …)',
+					},
+					from: { type: 'string', description: 'Optional start date YYYY-MM-DD' },
+					to: { type: 'string', description: 'Optional end date YYYY-MM-DD' },
+					category: {
+						type: 'string',
+						description: 'Optional: dod | fed | virus | vaccine (or full labels)',
+					},
+					entityType: {
+						type: 'string',
+						description:
+							'Optional: company | person | vaccine | treatment | variant | disease | org',
+					},
+					entity: {
+						type: 'string',
+						description: 'Optional entity name substring',
+					},
+					financialsOnly: {
+						type: 'boolean',
+						description: 'If true, only events with dollar/funding mentions',
+					},
+					limit: { type: 'number', description: 'Max event hits (default 12, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_gemini_qa',
+			description:
+				'Search local Gemini / Google Takeout Q&A under .data/gemini-qa (conversation digests). Use for prior Gemini chats the user imported. If corpusConversations=0, the Takeout likely only had empty Gemini stubs — ask for My Activity→Gemini Apps export or chat JSON/MD. Also search_knowledge on project “Gemini Q&A” after ingest.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords from prior Gemini chats' },
+					limit: { type: 'number', description: 'Max hits (default 10, max 40)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
 			name: 'search_entity_dossiers',
 			description:
 				'Search local entity dossiers / alias buckets / edges (.data/entity-dossiers): people, orgs, places (Karp, Thiel, Palantir, Halliburton, Campion Trail, Rockefeller hub, …) cross-linked to authority events. Use for business details, aliases, and entity↔authority edges. Do not invent conspiracy links.',
@@ -299,9 +407,116 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 	{
 		type: 'function' as const,
 		function: {
+			name: 'search_digital_earth',
+			description:
+				'Search the local Digital Earth ISDE corpus (.data/digitalearth-isde): crawled site pages, PDFs, data-layer/GIS references, and lecture videos with English transcripts/translations. Use for ISDE / Digital Earth / Big Earth Data / GHSL questions.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords' },
+					kind: {
+						type: 'string',
+						description: 'Optional: page | pdf | video | data_layer | any (default any)',
+					},
+					limit: { type: 'number', description: 'Max hits (default 8, max 30)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_pqw_itmo',
+			description:
+				'Search the local Petersburg Quantum Weeks / PQW ITMO 2026 corpus (.data/pqw-itmo): EN/RU site pages, program/speakers, Book of Abstracts and program PDFs. Use for pqw.itmo.ru / quantum weeks / ISCTP school questions.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords (speaker, topic, fee, …)' },
+					kind: {
+						type: 'string',
+						description: 'Optional: page | pdf | speaker | any (default any)',
+					},
+					limit: { type: 'number', description: 'Max hits (default 8, max 30)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_meta25',
+			description:
+				'Search the local META 2025 conference archive (.data/meta25): Malaga metamaterials/photonic crystals/plasmonics program, plenaries, sessions, proceedings PDF, and META 2025 talks with English transcripts. Excludes META 2026/2027 promotional material.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords (speaker, plenary, session, …)' },
+					kind: {
+						type: 'string',
+						description: 'Optional: page | pdf | video | speaker | any (default any)',
+					},
+					limit: { type: 'number', description: 'Max hits (default 8, max 30)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_physics_congress',
+			description:
+				'Search the local Physics Congress 2026 archive (.data/physics-congress): Nazarbayev University / Astana site pages, plenary speakers, Dynamics Days, KPS, ISOS2026, program docs/PDFs from Google Drive. Use for physics-congress.kz questions.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords (speaker, track, venue, …)' },
+					kind: {
+						type: 'string',
+						description: 'Optional: page | pdf | speaker | doc | any (default any)',
+					},
+					limit: { type: 'number', description: 'Max hits (default 8, max 30)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'search_twdb_trinity',
+			description:
+				'Search the local TWDB Trinity Aquifer PDF corpus (.data/twdb-trinity-aquifer): GAMs, advisory reports, GMPs, water-level/hydraulic studies. Filters: docType, GMA, topic, year. Logs retrieval feedback so facet structure improves over time. Prefer this for Trinity aquifer / TWDB Texas groundwater questions once the corpus is built.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Keywords (aquifer unit, county, DFC, water levels, …)' },
+					docType: {
+						type: 'string',
+						description: 'Optional: gam | advisory | report | gmp | water_level | hydraulic | org | other',
+					},
+					gma: { type: 'string', description: 'Optional GMA id, e.g. 8 or GMA-8' },
+					topic: {
+						type: 'string',
+						description:
+							'Optional topic: water_levels | recharge | pumping | quality | management | geology',
+					},
+					year: { type: 'number', description: 'Optional year filter' },
+					limit: { type: 'number', description: 'Max hits (default 8, max 30)' },
+				},
+				required: [],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
 			name: 'search_concealment_scrubs',
 			description:
-				'Search the local YouTube concealment-scrub archive (.data/concealment-scrubs): ControlAltHistory, MindUnveiled, eyes_wideopen, dig.archaeology, FRESHboosters, PhilipThompson, playlist-PLo7mt, plus deep SCRUB-01…05 notes and MindUnveiled OCR digests. Use for YouTube videos the user added, captions/cards, timeline anchors, naming/hiding patterns. Pass timelinesOnly=true to prefer Timeline sections. Claims are narration/OCR leads — not verified facts. Do NOT say you lack YouTube access when this archive exists.',
+				'Search the local YouTube concealment-scrub archive (.data/concealment-scrubs): ControlAltHistory, MindUnveiled, eyes_wideopen, dig.archaeology, FRESHboosters, PhilipThompson, HiddenAmuraKa, UTDGeoscienceStudio, TheMysteryAbyss, FallOfCivilizations, TimelineWorldHistory, EpicHistoryTV, HistoryMatters, GlobalHistoryScope, DrJoanneFreeman, AncientLives, SilkRoadAsianHistory, SparkDocs, OttomanHistory, HistorysMysteries-WWI, playlist-PLo7mt, plus deep SCRUB-01…05 notes and MindUnveiled OCR digests. Use for YouTube videos the user added, captions/cards, timeline anchors, naming/hiding patterns. Pass timelinesOnly=true to prefer Timeline sections. Claims are narration/OCR leads — not verified facts. Do NOT say you lack YouTube access when this archive exists.',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -362,14 +577,24 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'fetch_url',
 			description:
-				'GET an API endpoint or page URL the user provided for research. Returns truncated JSON or readable text. Allowlisted / safe hosts only (includes the live FINRA SEC visualizer, BrokerCheck, AdviserInfo). Read-only.',
+				'GET any public http(s) URL the user pasted (HTML page, API JSON, or PDF). Extracts readable text; for HTML also discovers linked PDFs, downloads them under .data/fetched/pdfs/, and extracts text with pdftotext. Private/local hosts stay blocked unless allowlisted. Use whenever the user pastes a link (e.g. pubs.usgs.gov).',
 			parameters: {
 				type: 'object',
 				properties: {
 					url: { type: 'string', description: 'Absolute http(s) URL to fetch' },
 					maxChars: {
 						type: 'number',
-						description: 'Max characters of body to return (default 8000, max 48000)',
+						description: 'Max characters of body/text to return (default 12000, max 48000)',
+					},
+					downloadPdfs: {
+						type: 'boolean',
+						description:
+							'When the URL is an HTML page, also download linked PDFs (default true). Ignored for direct PDF URLs (always saved).',
+					},
+					maxPdfs: {
+						type: 'number',
+						description:
+							'Max linked PDFs to download from an HTML page (default: all discovered up to 20, hard max 40)',
 					},
 				},
 				required: ['url'],
@@ -412,13 +637,19 @@ const FETCH_URL_DEFAULT_HOSTS = new Set([
 	'www.okcountyrecords.com',
 	'earthquake.usgs.gov',
 	'www.earthquake.usgs.gov',
+	'pubs.usgs.gov',
+	'www.pubs.usgs.gov',
+	'usgs.gov',
+	'www.usgs.gov',
 	'spc.noaa.gov',
 	'www.spc.noaa.gov',
 	'ncei.noaa.gov',
 	'www.ncei.noaa.gov',
 ]);
 const FETCH_URL_MAX_BYTES = 512_000;
-const FETCH_URL_TIMEOUT_MS = 15_000;
+const FETCH_PDF_MAX_BYTES = 40 * 1024 * 1024;
+const FETCH_URL_TIMEOUT_MS = 45_000;
+const FETCHED_ROOT = path.join(process.cwd(), '.data', 'fetched');
 
 function fetchUrlAllowedHosts(): Set<string> {
 	const hosts = new Set(FETCH_URL_DEFAULT_HOSTS);
@@ -431,7 +662,11 @@ function fetchUrlAllowedHosts(): Set<string> {
 }
 
 function openFetchEnabled(): boolean {
-	return process.env.RESEARCH_OPEN_FETCH === '1' || process.env.ALLOW_OPEN_FETCH === '1';
+	// Default ON so pasted URLs work; set RESEARCH_OPEN_FETCH=0 to require allowlist only.
+	const raw = String(process.env.RESEARCH_OPEN_FETCH || process.env.ALLOW_OPEN_FETCH || '1')
+		.trim()
+		.toLowerCase();
+	return raw !== '0' && raw !== 'false' && raw !== 'off' && raw !== 'no';
 }
 
 function normalizeFetchHost(hostname: string): string {
@@ -501,12 +736,179 @@ function truncateChars(text: string, maxChars: number): { text: string; truncate
 	return { text: text.slice(0, maxChars), truncated: true };
 }
 
+function ensureFetchedDirs() {
+	fs.mkdirSync(path.join(FETCHED_ROOT, 'pdfs'), { recursive: true });
+	fs.mkdirSync(path.join(FETCHED_ROOT, 'pages'), { recursive: true });
+}
+
+function safeFetchedName(url: string, ext: string): string {
+	const u = new URL(url);
+	const base = path.basename(u.pathname) || 'download';
+	const cleaned = base.replace(/[^\w.\-]+/g, '_').slice(0, 80) || 'download';
+	const hash = crypto.createHash('sha1').update(url).digest('hex').slice(0, 10);
+	const hasExt = /\.[a-z0-9]{2,8}$/i.test(cleaned);
+	return hasExt ? `${hash}-${cleaned}` : `${hash}-${cleaned}${ext}`;
+}
+
+function extractPdfTextFromBuffer(buffer: Buffer): string {
+	const result = spawnSync('pdftotext', ['-layout', '-nopgbrk', '-', '-'], {
+		input: buffer,
+		encoding: 'buffer',
+		maxBuffer: 24 * 1024 * 1024,
+	});
+	if (result.status !== 0) {
+		const err = String(result.stderr || result.error || 'pdftotext failed');
+		throw new Error(`PDF text extract failed: ${err.slice(0, 240)}`);
+	}
+	return Buffer.from(result.stdout || []).toString('utf8').trim();
+}
+
+function isPdfPayload(contentType: string, url: string, buf: Buffer): boolean {
+	if (contentType.includes('pdf')) return true;
+	if (/\.pdf(\?|#|$)/i.test(url)) return true;
+	return buf.subarray(0, 5).toString('utf8') === '%PDF-';
+}
+
+function discoverPdfLinks(html: string, baseUrl: string): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	const push = (href: string) => {
+		try {
+			const abs = new URL(href, baseUrl).href;
+			if (!/\.pdf(\?|#|$)/i.test(abs)) return;
+			if (seen.has(abs)) return;
+			seen.add(abs);
+			out.push(abs);
+		} catch {
+			/* ignore */
+		}
+	};
+	for (const m of html.matchAll(/citation_pdf_url["']\s+content=["']([^"']+)["']/gi)) {
+		push(m[1]);
+	}
+	for (const m of html.matchAll(/href=["']([^"']+\.pdf[^"']*)["']/gi)) {
+		push(m[1]);
+	}
+	// Prefer main report-like PDFs first
+	out.sort((a, b) => {
+		const score = (u: string) => {
+			const n = u.toLowerCase();
+			if (/report\.pdf|main\.pdf|full[-_]?text|document\.pdf/.test(n)) return 0;
+			if (/plate|figure|map|suppl/.test(n)) return 2;
+			return 1;
+		};
+		return score(a) - score(b);
+	});
+	return out;
+}
+
+async function httpGetBuffer(
+	url: string,
+	maxBytes: number,
+	timeoutMs = FETCH_URL_TIMEOUT_MS,
+): Promise<{ ok: boolean; status: number; contentType: string; finalUrl: string; buf: Buffer }> {
+	const parsed = new URL(url);
+	const allowed = isFetchUrlAllowed(parsed);
+	if (allowed.ok === false) {
+		throw new Error(allowed.error);
+	}
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetch(parsed.href, {
+			method: 'GET',
+			redirect: 'follow',
+			cache: 'no-store',
+			signal: controller.signal,
+			headers: {
+				Accept: 'application/pdf,application/json,text/plain,text/html;q=0.9,*/*;q=0.8',
+				'User-Agent': 'ai-research-tool-fetch/1.1',
+			},
+		});
+		const finalUrl = new URL(res.url);
+		const finalAllowed = isFetchUrlAllowed(finalUrl);
+		if (!finalAllowed.ok) {
+			throw new Error(`redirect landed on disallowed host: ${finalUrl.hostname}`);
+		}
+		const contentType = String(res.headers.get('content-type') || '')
+			.split(';')[0]
+			.trim()
+			.toLowerCase();
+		const buf = Buffer.from(await res.arrayBuffer());
+		if (buf.length > maxBytes) {
+			throw new Error(`response too large (${buf.length} bytes > ${maxBytes})`);
+		}
+		return {
+			ok: res.ok,
+			status: res.status,
+			contentType,
+			finalUrl: finalUrl.href,
+			buf,
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function saveAndExtractPdf(
+	pdfUrl: string,
+	maxChars: number,
+	prefetched?: { buf: Buffer; contentType: string; finalUrl: string; status: number; ok: boolean },
+): Promise<Record<string, unknown>> {
+	ensureFetchedDirs();
+	const got =
+		prefetched ||
+		(await httpGetBuffer(pdfUrl, FETCH_PDF_MAX_BYTES, 90_000));
+	if (!got.ok) {
+		return { ok: false, url: pdfUrl, status: got.status, error: `HTTP ${got.status}` };
+	}
+	if (!isPdfPayload(got.contentType, got.finalUrl, got.buf)) {
+		return {
+			ok: false,
+			url: pdfUrl,
+			finalUrl: got.finalUrl,
+			error: `not a PDF (content-type=${got.contentType || 'unknown'})`,
+		};
+	}
+	const fileName = safeFetchedName(got.finalUrl, '.pdf');
+	const savedPath = path.join(FETCHED_ROOT, 'pdfs', fileName);
+	fs.writeFileSync(savedPath, got.buf);
+	let text = '';
+	let extractError: string | undefined;
+	try {
+		text = extractPdfTextFromBuffer(got.buf);
+	} catch (e: unknown) {
+		extractError = e instanceof Error ? e.message : String(e);
+	}
+	const { text: excerpt, truncated } = truncateChars(text, maxChars);
+	return {
+		ok: true,
+		url: pdfUrl,
+		finalUrl: got.finalUrl,
+		status: got.status,
+		contentType: got.contentType || 'application/pdf',
+		byteLength: got.buf.length,
+		savedPath: path.relative(process.cwd(), savedPath),
+		textChars: text.length,
+		truncated,
+		excerpt,
+		extractError,
+	};
+}
+
 async function fetchUrlForResearch(
 	rawUrl: unknown,
 	maxCharsRaw: unknown,
+	downloadPdfsRaw?: unknown,
+	maxPdfsRaw?: unknown,
 ): Promise<{ ok: boolean; result: Record<string, unknown> }> {
-	// Default 8k keeps tool rounds inside typical laptop GPU contexts (was 24k).
-	const maxChars = Math.max(1000, Math.min(48_000, Number(maxCharsRaw) || 8_000));
+	const maxChars = Math.max(1000, Math.min(48_000, Number(maxCharsRaw) || 12_000));
+	const downloadPdfs = downloadPdfsRaw === undefined ? true : Boolean(downloadPdfsRaw);
+	// Default: pull all discovered PDFs (cap 20). Explicit 0 disables linked downloads.
+	const maxPdfs =
+		maxPdfsRaw === undefined || maxPdfsRaw === null || maxPdfsRaw === ''
+			? 20
+			: Math.max(0, Math.min(40, Number(maxPdfsRaw) || 0));
 	let parsed: URL;
 	try {
 		parsed = new URL(String(rawUrl || '').trim());
@@ -518,39 +920,45 @@ async function fetchUrlForResearch(
 		return { ok: false, result: { error: allowed.error, url: parsed.href } };
 	}
 
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), FETCH_URL_TIMEOUT_MS);
 	try {
-		const res = await fetch(parsed.href, {
-			method: 'GET',
-			redirect: 'follow',
-			cache: 'no-store',
-			signal: controller.signal,
-			headers: {
-				Accept: 'application/json, text/plain, text/html;q=0.9, */*;q=0.8',
-				'User-Agent': 'ai-research-tool-fetch/1.0',
-			},
-		});
-		const finalUrl = new URL(res.url);
-		const finalAllowed = isFetchUrlAllowed(finalUrl);
-		if (!finalAllowed.ok) {
+		const directPdf = /\.pdf(\?|#|$)/i.test(parsed.pathname) || /\.pdf(\?|#|$)/i.test(parsed.href);
+		if (directPdf) {
+			const pdf = await saveAndExtractPdf(parsed.href, maxChars);
 			return {
-				ok: false,
+				ok: Boolean(pdf.ok),
 				result: {
-					error: `redirect landed on disallowed host: ${finalUrl.hostname}`,
+					ok: Boolean(pdf.ok),
+					kind: 'pdf',
 					requestedUrl: parsed.href,
-					finalUrl: finalUrl.href,
+					...pdf,
+					hint: pdf.ok
+						? 'PDF saved under .data/fetched/pdfs/ and text extracted with pdftotext.'
+						: undefined,
 				},
 			};
 		}
 
-		const contentType = String(res.headers.get('content-type') || '')
-			.split(';')[0]
-			.trim()
-			.toLowerCase();
-		const buf = Buffer.from(await res.arrayBuffer());
-		const byteTruncated = buf.length > FETCH_URL_MAX_BYTES;
-		const slice = byteTruncated ? buf.subarray(0, FETCH_URL_MAX_BYTES) : buf;
+		const got = await httpGetBuffer(
+			parsed.href,
+			Math.max(FETCH_URL_MAX_BYTES, FETCH_PDF_MAX_BYTES),
+			FETCH_URL_TIMEOUT_MS,
+		);
+		if (isPdfPayload(got.contentType, got.finalUrl, got.buf)) {
+			const pdf = await saveAndExtractPdf(got.finalUrl, maxChars, got);
+			return {
+				ok: Boolean(pdf.ok),
+				result: {
+					ok: Boolean(pdf.ok),
+					kind: 'pdf',
+					requestedUrl: parsed.href,
+					...pdf,
+				},
+			};
+		}
+
+		const contentType = got.contentType;
+		const byteTruncated = got.buf.length > FETCH_URL_MAX_BYTES;
+		const slice = byteTruncated ? got.buf.subarray(0, FETCH_URL_MAX_BYTES) : got.buf;
 		const rawText = slice.toString('utf8');
 
 		let kind: 'json' | 'text' | 'html' = 'text';
@@ -580,22 +988,55 @@ async function fetchUrlForResearch(
 			}
 		}
 
+		ensureFetchedDirs();
+		const pageName = safeFetchedName(got.finalUrl, kind === 'html' ? '.html' : '.txt');
+		const pagePath = path.join(FETCHED_ROOT, 'pages', pageName);
+		try {
+			fs.writeFileSync(pagePath, kind === 'html' ? got.buf : Buffer.from(serialized, 'utf8'));
+		} catch {
+			/* non-fatal */
+		}
+
+		const discoveredPdfs = kind === 'html' ? discoverPdfLinks(rawText, got.finalUrl) : [];
+		const pdfDownloads: Record<string, unknown>[] = [];
+		if (kind === 'html' && downloadPdfs && maxPdfs > 0) {
+			for (const pdfUrl of discoveredPdfs.slice(0, maxPdfs)) {
+				try {
+					pdfDownloads.push(await saveAndExtractPdf(pdfUrl, Math.min(maxChars, 16_000)));
+				} catch (e: unknown) {
+					pdfDownloads.push({
+						ok: false,
+						url: pdfUrl,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				}
+			}
+		}
+
 		return {
-			ok: res.ok,
+			ok: got.ok,
 			result: {
-				ok: res.ok,
-				status: res.status,
+				ok: got.ok,
+				status: got.status,
 				contentType: contentType || null,
 				kind,
 				requestedUrl: parsed.href,
-				finalUrl: finalUrl.href,
-				byteLength: buf.length,
+				finalUrl: got.finalUrl,
+				byteLength: got.buf.length,
 				truncated: truncated || byteTruncated,
 				body: returnedBody,
+				savedPagePath: path.relative(process.cwd(), pagePath),
+				discoveredPdfCount: discoveredPdfs.length,
+				discoveredPdfs: discoveredPdfs.slice(0, 20),
+				pdfDownloads,
 				hint:
 					truncated || byteTruncated
-						? 'Body truncated for model context; ask for a narrower URL or field if needed.'
-						: undefined,
+						? 'Body truncated for model context; PDFs (if any) are saved under .data/fetched/pdfs/.'
+						: pdfDownloads.length
+							? 'Page text plus downloaded PDF excerpts. Full PDFs saved under .data/fetched/pdfs/.'
+							: discoveredPdfs.length
+								? 'Page has PDF links; pass downloadPdfs=true (default) or raise maxPdfs to pull more.'
+								: undefined,
 			},
 		};
 	} catch (e: unknown) {
@@ -603,8 +1044,6 @@ async function fetchUrlForResearch(
 		const message =
 			err?.name === 'AbortError' ? `timeout after ${FETCH_URL_TIMEOUT_MS}ms` : err?.message || String(e);
 		return { ok: false, result: { error: message, url: parsed.href } };
-	} finally {
-		clearTimeout(timer);
 	}
 }
 
@@ -838,6 +1277,38 @@ export async function runResearchTool(
 		});
 	}
 
+	if (tool === 'search_cdc_covid_timeline') {
+		return searchCdcCovidTimeline({
+			query: args.query != null ? String(args.query) : undefined,
+			from: args.from != null ? String(args.from) : undefined,
+			to: args.to != null ? String(args.to) : undefined,
+			entityType: args.entityType != null ? String(args.entityType) : undefined,
+			entity: args.entity != null ? String(args.entity) : undefined,
+			financialsOnly: args.financialsOnly === undefined ? undefined : Boolean(args.financialsOnly),
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_dod_covid_timeline') {
+		return searchDodCovidTimeline({
+			query: args.query != null ? String(args.query) : undefined,
+			from: args.from != null ? String(args.from) : undefined,
+			to: args.to != null ? String(args.to) : undefined,
+			category: args.category != null ? String(args.category) : undefined,
+			entityType: args.entityType != null ? String(args.entityType) : undefined,
+			entity: args.entity != null ? String(args.entity) : undefined,
+			financialsOnly: args.financialsOnly === undefined ? undefined : Boolean(args.financialsOnly),
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_gemini_qa') {
+		return searchGeminiQa({
+			query: args.query != null ? String(args.query) : undefined,
+			limit: args.limit as number | undefined,
+		});
+	}
+
 	if (tool === 'search_entity_dossiers') {
 		return searchEntityDossiers({
 			query: args.query != null ? String(args.query) : undefined,
@@ -870,6 +1341,49 @@ export async function runResearchTool(
 		});
 	}
 
+	if (tool === 'search_twdb_trinity') {
+		return searchTwdbTrinity({
+			query: args.query != null ? String(args.query) : undefined,
+			docType: args.docType != null ? String(args.docType) : undefined,
+			gma: args.gma != null ? String(args.gma) : undefined,
+			topic: args.topic != null ? String(args.topic) : undefined,
+			year: args.year as number | string | undefined,
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_digital_earth') {
+		return searchDigitalEarth({
+			query: args.query != null ? String(args.query) : undefined,
+			kind: args.kind as 'page' | 'pdf' | 'video' | 'data_layer' | 'any' | undefined,
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_pqw_itmo') {
+		return searchPqwItmo({
+			query: args.query != null ? String(args.query) : undefined,
+			kind: args.kind as 'page' | 'pdf' | 'speaker' | 'any' | undefined,
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_meta25') {
+		return searchMeta25({
+			query: args.query != null ? String(args.query) : undefined,
+			kind: args.kind as 'page' | 'pdf' | 'video' | 'speaker' | 'any' | undefined,
+			limit: args.limit as number | undefined,
+		});
+	}
+
+	if (tool === 'search_physics_congress') {
+		return searchPhysicsCongress({
+			query: args.query != null ? String(args.query) : undefined,
+			kind: args.kind as 'page' | 'pdf' | 'speaker' | 'doc' | 'any' | undefined,
+			limit: args.limit as number | undefined,
+		});
+	}
+
 	if (tool === 'current_time') {
 		const now = new Date();
 		return {
@@ -884,7 +1398,12 @@ export async function runResearchTool(
 	}
 
 	if (tool === 'fetch_url') {
-		const fetched = await fetchUrlForResearch(args.url, args.maxChars);
+		const fetched = await fetchUrlForResearch(
+			args.url,
+			args.maxChars,
+			args.downloadPdfs,
+			args.maxPdfs,
+		);
 		return { ok: fetched.ok, result: fetched.result };
 	}
 

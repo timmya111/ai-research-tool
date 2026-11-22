@@ -110,6 +110,45 @@ function lineForEntry(entry: TraceEntry): string {
 		return `- search_authority_timelines ok=${ok}${hits}${agency}${q} :: ${digestBody(result, 240)}`;
 	}
 
+	if (tool === 'search_cdc_covid_timeline') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		const et = entry.args?.entityType != null ? ` type=${collapse(String(entry.args.entityType), 16)}` : '';
+		const en = entry.args?.entity != null ? ` entity=${collapse(String(entry.args.entity), 24)}` : '';
+		return `- search_cdc_covid_timeline ok=${ok}${hits}${et}${en}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_dod_covid_timeline') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		const cat = entry.args?.category != null ? ` cat=${collapse(String(entry.args.category), 12)}` : '';
+		const et = entry.args?.entityType != null ? ` type=${collapse(String(entry.args.entityType), 16)}` : '';
+		return `- search_dod_covid_timeline ok=${ok}${hits}${cat}${et}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_gemini_qa') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		const n =
+			typeof result.corpusConversations === 'number' ? ` corpus=${result.corpusConversations}` : '';
+		return `- search_gemini_qa ok=${ok}${hits}${n}${q} :: ${digestBody(result, 240)}`;
+	}
+
 	if (tool === 'search_entity_dossiers') {
 		const hits =
 			typeof result.returned === 'number'
@@ -137,6 +176,61 @@ function lineForEntry(entry: TraceEntry): string {
 					: '';
 		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
 		return `- search_wikipedia ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_digital_earth') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		return `- search_digital_earth ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_pqw_itmo') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		return `- search_pqw_itmo ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_meta25') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		return `- search_meta25 ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_physics_congress') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		return `- search_physics_congress ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
+	}
+
+	if (tool === 'search_twdb_trinity') {
+		const hits =
+			typeof result.returned === 'number'
+				? ` hits=${result.returned}`
+				: Array.isArray(result.hits)
+					? ` hits=${(result.hits as unknown[]).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		return `- search_twdb_trinity ok=${ok}${hits}${q} :: ${digestBody(result, 240)}`;
 	}
 
 	if (tool === 'search_concealment_scrubs') {
