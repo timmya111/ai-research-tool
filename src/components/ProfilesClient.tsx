@@ -2211,7 +2211,7 @@ export default function ProfilesClient({
 												})()
 											: null}
 
-										{/* Connected Profiles (deduplicated & excluding orgs already shown in Employment History for people) */}
+										{/* Connected Historic Events (chronological cards) & Connected Profiles */}
 										{(() => {
 											const empPeerIds = new Set(
 												detail.profile.profileType === 'person'
@@ -2242,11 +2242,36 @@ export default function ProfilesClient({
 												}
 												return null;
 											};
-											const connectedLinks = detail.links
+											const nonEmpLinks = detail.links.filter((l) => {
+												const peerId =
+													l.fromProfileId === detail.profile.id ? l.toProfileId : l.fromProfileId;
+												return !empPeerIds.has(peerId);
+											});
+
+											const historicEventLinks = nonEmpLinks
 												.filter((l) => {
-													const peerId =
-														l.fromProfileId === detail.profile.id ? l.toProfileId : l.fromProfileId;
-													return !empPeerIds.has(peerId);
+													const peerType =
+														(l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
+													return peerType === 'historic_event';
+												})
+												.sort((a, b) => {
+													const da = a.startDate || a.peerStartDate || a.endDate || a.peerEndDate || '';
+													const dbDate = b.startDate || b.peerStartDate || b.endDate || b.peerEndDate || '';
+													if (da && !dbDate) return -1;
+													if (!da && dbDate) return 1;
+													if (da !== dbDate) return da.localeCompare(dbDate);
+													const na =
+														(a.fromProfileId === detail.profile.id ? a.toName : a.fromName) || '';
+													const nb =
+														(b.fromProfileId === detail.profile.id ? b.toName : b.fromName) || '';
+													return na.localeCompare(nb);
+												});
+
+											const connectedLinks = nonEmpLinks
+												.filter((l) => {
+													const peerType =
+														(l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
+													return peerType !== 'historic_event';
 												})
 												.map((l) => ({ link: l, connStatus: getConnStatus(l) }))
 												.sort((a, b) => {
@@ -2285,7 +2310,56 @@ export default function ProfilesClient({
 													: connectedLinks.filter((x) => x.connStatus === connStatusFilter);
 
 											return (
-												<div>
+												<div className="space-y-4">
+													{historicEventLinks.length > 0 ? (
+														<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+																Historic Events ({historicEventLinks.length})
+															</h3>
+															<div className="space-y-2">
+																{historicEventLinks.map((l) => {
+																	const isOut = l.fromProfileId === detail.profile.id;
+																	const peerId = isOut ? l.toProfileId : l.fromProfileId;
+																	const peerName = isOut ? l.toName : l.fromName;
+																	const evStart = l.startDate || l.peerStartDate || null;
+																	const evEnd = l.endDate || l.peerEndDate || null;
+																	const dateSpan = formatDateSpan(evStart, evEnd, false, false);
+																	return (
+																		<button
+																			key={l.id}
+																			type="button"
+																			onClick={() => jumpToProfile(peerId)}
+																			className="block w-full cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 text-left transition hover:border-[#F97316]/60 hover:bg-[var(--app-surface-hover)]"
+																		>
+																			<div className="flex flex-wrap items-center gap-2">
+																				{dateSpan ? (
+																					<span className="shrink-0 rounded border border-amber-500/35 bg-amber-500/12 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+																						{dateSpan}
+																					</span>
+																				) : null}
+																				<span className="text-xs font-semibold text-[#F97316] underline">
+																					{peerName}
+																				</span>
+																				<CountryFlags codes={l.peerCountryCodes} size="sm" />
+																				{l.peerPrimaryLocation ? (
+																					<span className="text-[11px] opacity-70">
+																						📍 {l.peerPrimaryLocation}
+																					</span>
+																				) : null}
+																			</div>
+																			{l.peerSummary ? (
+																				<p className="mt-1 mb-0 line-clamp-2 text-[11px] leading-relaxed opacity-80">
+																					{l.peerSummary}
+																				</p>
+																			) : null}
+																		</button>
+																	);
+																})}
+															</div>
+														</div>
+													) : null}
+
+													<div>
 													<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
 														<h3 className="m-0 text-xs font-semibold uppercase opacity-75">
 															Connected Profiles (
@@ -2415,6 +2489,7 @@ export default function ProfilesClient({
 															})}
 														</div>
 													)}
+													</div>
 												</div>
 											);
 										})()}

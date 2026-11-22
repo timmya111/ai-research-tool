@@ -1357,7 +1357,14 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 	if (allPeerIds.length > 0) {
 		const peerInfoById = new Map<
 			string,
-			{ name: string; profileType: string; summary: string; metadata: Record<string, unknown> }
+			{
+				name: string;
+				profileType: string;
+				summary: string;
+				startDate: string | null;
+				endDate: string | null;
+				metadata: Record<string, unknown>;
+			}
 		>();
 		const peerLocsById = new Map<
 			string,
@@ -1370,13 +1377,17 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			const chunkIds = allPeerIds.slice(i, i + CHUNK);
 			const placeholders = chunkIds.map(() => '?').join(',');
 			const peerRows = db
-				.prepare(`SELECT id, name, profile_type, summary, metadata_json FROM profiles WHERE id IN (${placeholders})`)
+				.prepare(
+					`SELECT id, name, profile_type, summary, start_date, end_date, metadata_json FROM profiles WHERE id IN (${placeholders})`,
+				)
 				.all(...chunkIds) as Array<Record<string, unknown>>;
 			for (const r of peerRows) {
 				peerInfoById.set(String(r.id), {
 					name: String(r.name || ''),
 					profileType: String(r.profile_type || 'firm'),
 					summary: String(r.summary || ''),
+					startDate: r.start_date != null ? String(r.start_date) : null,
+					endDate: r.end_date != null ? String(r.end_date) : null,
 					metadata: safeJsonParse<Record<string, unknown>>(r.metadata_json, {}),
 				});
 			}
@@ -1447,6 +1458,14 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		for (const l of dedupedLinks) {
 			const peerId = l.fromProfileId === profile.id ? l.toProfileId : l.fromProfileId;
 			l.peerCountryCodes = getPeerFlags(peerId);
+			const peerInfo = peerInfoById.get(peerId);
+			if (peerInfo) {
+				l.peerStartDate = peerInfo.startDate;
+				l.peerEndDate = peerInfo.endDate;
+				l.peerSummary = peerInfo.summary || null;
+			}
+			const peerLocs = peerLocsById.get(peerId) || [];
+			l.peerPrimaryLocation = peerLocs[0]?.raw || null;
 		}
 	}
 

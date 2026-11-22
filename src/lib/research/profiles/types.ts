@@ -342,6 +342,11 @@ export type ProfileLink = {
 	toType?: ProfileType;
 	/** Resolved country flags for the connected peer profile */
 	peerCountryCodes?: string[];
+	/** Peer profile dates, summary & primary location (used for chronological Historic Event cards) */
+	peerStartDate?: string | null;
+	peerEndDate?: string | null;
+	peerSummary?: string | null;
+	peerPrimaryLocation?: string | null;
 	/** Merged source corpora when multiple duplicate links to the same peer were collapsed */
 	sources?: string[];
 };
