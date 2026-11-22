@@ -8,7 +8,10 @@ import {
 import type { CanvasSnapshot } from '@/lib/research/canvasSnapshot';
 import { ensureDefaultProject } from '@/lib/research/knowledge/projects';
 import { formatSnippetsForPrompt, retrieve } from '@/lib/research/knowledge/retrieve';
-import { RESEARCH_TOOL_DEFINITIONS, runResearchTool } from '@/lib/research/tools';
+import {
+	runResearchTool,
+	selectResearchToolsForQuestion,
+} from '@/lib/research/tools';
 import {
 	RESEARCH_AUTO_MODEL,
 	routeResearchModel,
@@ -165,12 +168,16 @@ async function runToolAgentLoop(options: {
 		projectId: options.projectId,
 	};
 
+	const activeTools = options.useTools
+		? selectResearchToolsForQuestion(options.question, options.aboutNodeGraph)
+		: undefined;
+
 	try {
 		for (let round = 0; round < options.maxRounds; round++) {
 			const { message } = await ollamaChat({
 				model: options.model,
 				messages,
-				tools: options.useTools ? RESEARCH_TOOL_DEFINITIONS : undefined,
+				tools: activeTools,
 			});
 			messages.push(message);
 

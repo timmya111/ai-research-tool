@@ -53,10 +53,10 @@ export async function searchPqwItmo(args: PqwItmoSearchArgs) {
 	};
 
 	if (kind === 'any' || kind === 'page') {
-		for (const [url, meta] of Object.entries(catalog.pages || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.pages || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
-			const title = meta.title || url;
-			const sc = score(`${title}\n${url}\n${meta.lang || ''}`);
+			const title = String(meta.title || url);
+			const sc = score(`${title}\n${url}\n${String(meta.lang || '')}`);
 			if (toks.length && sc < 1) continue;
 			hits.push({
 				kind: 'page',
@@ -70,7 +70,7 @@ export async function searchPqwItmo(args: PqwItmoSearchArgs) {
 	}
 
 	if (kind === 'any' || kind === 'pdf') {
-		for (const [url, meta] of Object.entries(catalog.assets || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.assets || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
 			const p = String(meta.path || '');
 			if (!String(url).toLowerCase().includes('.pdf') && !p.endsWith('.pdf')) continue;
@@ -91,7 +91,13 @@ export async function searchPqwItmo(args: PqwItmoSearchArgs) {
 		const speakersPath = path.join(base, 'speakers.json');
 		if (fs.existsSync(speakersPath)) {
 			const data = JSON.parse(fs.readFileSync(speakersPath, 'utf8'));
-			for (const sp of [...(data.speakers || []), ...(data.programCommittee || []).map((s: any) => ({ ...s, role: 'committee' }))]) {
+			const allSpeakers: Array<Record<string, unknown>> = [
+				...((data.speakers || []) as Array<Record<string, unknown>>),
+				...((data.programCommittee || []) as Array<Record<string, unknown>>).map(
+					(s): Record<string, unknown> => ({ ...s, role: 'committee' }),
+				),
+			];
+			for (const sp of allSpeakers) {
 				const hay = `${sp.name || ''}\n${sp.affiliation || ''}\n${sp.country || ''}\n${sp.role || 'speaker'}`;
 				const sc = score(hay);
 				if (toks.length && sc < 1) continue;

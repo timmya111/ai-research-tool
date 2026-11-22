@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { rejectUnlessLocalResearch } from '@/lib/research/guard';
+import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
 import { ingestNote } from '@/lib/research/knowledge/ingest';
 import { createProject, ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import {
@@ -22,7 +22,7 @@ function resolveProjectId(opts: { projectId?: string | null; projectName?: strin
 }
 
 export async function POST(request: Request) {
-	const blocked = rejectUnlessLocalResearch(request);
+	const blocked = rejectUnlessLocalKnowledge(request);
 	if (blocked) return blocked;
 
 	let body: Record<string, unknown> | null = null;

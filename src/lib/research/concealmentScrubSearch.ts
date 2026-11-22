@@ -120,7 +120,14 @@ function walkMarkdownFiles(dir: string, out: string[], depth = 0): void {
 	}
 }
 
+const DOCS_CACHE_TTL_MS = 60_000;
+const docsCache = new Map<boolean, { at: number; docs: ScrubDoc[] }>();
+
 function loadDocs(includeOcr: boolean): ScrubDoc[] {
+	const cached = docsCache.get(includeOcr);
+	if (cached && Date.now() - cached.at < DOCS_CACHE_TTL_MS) {
+		return cached.docs;
+	}
 	const root = ROOT();
 	if (!fs.existsSync(root)) return [];
 	const files: string[] = [];
@@ -134,9 +141,9 @@ function loadDocs(includeOcr: boolean): ScrubDoc[] {
 		if (/^SCRUB-\d+/i.test(base)) kind = 'deep_scrub';
 		else if (base === 'INDEX.md' || base === 'README.md') kind = 'index';
 		else if (rel.includes(`${path.sep}ocr${path.sep}`) && base === 'digest.md') kind = 'ocr_digest';
-		else if (!rel.includes(`${path.sep}cards${path.sep}`) && kind === 'card' && !/^P\d+/i.test(base)) {
+		else if (!rel.includes(`${path.sep}cards${path.sep}`) && !/^P\d+/i.test(base)) {
 			// skip misc markdown outside cards/deep unless OCR digest
-			if (kind !== 'ocr_digest' && kind !== 'deep_scrub' && kind !== 'index') continue;
+			continue;
 		}
 		if (kind === 'index') continue; // searchable separately if needed; skip noise for Q&A
 		let text = '';
@@ -161,6 +168,7 @@ function loadDocs(includeOcr: boolean): ScrubDoc[] {
 			timelineSection,
 		});
 	}
+	docsCache.set(includeOcr, { at: Date.now(), docs });
 	return docs;
 }
 

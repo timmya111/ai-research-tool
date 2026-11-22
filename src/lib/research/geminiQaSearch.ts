@@ -77,7 +77,6 @@ function scoreText(hay: string, tokens: string[]): number {
 
 export function searchGeminiQa(args: GeminiQaSearchArgs = {}): Record<string, unknown> {
 	const root = dataRoot();
-	const indexPath = path.join(root, 'conversations', 'index.json');
 	const overviewPath = path.join(root, 'digests', 'OVERVIEW.md');
 
 	if (!fs.existsSync(root)) {

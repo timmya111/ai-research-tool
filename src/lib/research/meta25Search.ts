@@ -54,9 +54,9 @@ export async function searchMeta25(args: Meta25SearchArgs) {
 	};
 
 	if (kind === 'any' || kind === 'page') {
-		for (const [url, meta] of Object.entries(catalog.pages || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.pages || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
-			const title = meta.title || url;
+			const title = String(meta.title || url);
 			const sc = score(`${title}\n${url}`);
 			if (toks.length && sc < 1) continue;
 			hits.push({ kind: 'page', url, title, digest: meta.digest, score: sc });
@@ -64,7 +64,7 @@ export async function searchMeta25(args: Meta25SearchArgs) {
 	}
 
 	if (kind === 'any' || kind === 'pdf') {
-		for (const [url, meta] of Object.entries(catalog.assets || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.assets || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
 			const p = String(meta.path || '');
 			if (!String(url).toLowerCase().includes('.pdf') && !p.endsWith('.pdf')) continue;
@@ -82,7 +82,7 @@ export async function searchMeta25(args: Meta25SearchArgs) {
 	}
 
 	if (kind === 'any' || kind === 'video') {
-		for (const [url, meta] of Object.entries(catalog.videos || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.videos || {}) as Array<[string, Record<string, unknown>]>) {
 			const title = meta.title || url;
 			const sc = score(`${title}\n${url}`);
 			if (toks.length && sc < 1) continue;

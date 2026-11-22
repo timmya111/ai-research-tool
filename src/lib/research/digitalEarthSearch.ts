@@ -53,18 +53,18 @@ export async function searchDigitalEarth(args: DigitalEarthSearchArgs) {
 	};
 
 	if (kind === 'any' || kind === 'page') {
-		for (const [url, meta] of Object.entries(catalog.pages || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.pages || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
-			const title = meta.title || url;
+			const title = String(meta.title || url);
 			const sc = score(`${title}\n${url}`);
 			if (toks.length && sc < 1) continue;
 			hits.push({ kind: 'page', url, title, digest: meta.digest, score: sc });
 		}
 	}
 	if (kind === 'any' || kind === 'video') {
-		for (const [url, meta] of Object.entries(catalog.videos || {}) as [string, any][]) {
-			const title = meta.title || url;
-			const sc = score(`${title}\n${url}\n${meta.language || ''}`);
+		for (const [url, meta] of Object.entries(catalog.videos || {}) as Array<[string, Record<string, unknown>]>) {
+			const title = String(meta.title || url);
+			const sc = score(`${title}\n${url}\n${String(meta.language || '')}`);
 			if (toks.length && sc < 1) continue;
 			hits.push({
 				kind: 'video',
@@ -78,7 +78,7 @@ export async function searchDigitalEarth(args: DigitalEarthSearchArgs) {
 		}
 	}
 	if (kind === 'any' || kind === 'pdf') {
-		for (const [url, meta] of Object.entries(catalog.assets || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.assets || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
 			if (!String(url).toLowerCase().includes('.pdf') && !String(meta.path || '').endsWith('.pdf')) continue;
 			const sc = score(`${url}\n${meta.path || ''}`);

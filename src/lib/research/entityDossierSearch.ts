@@ -215,7 +215,9 @@ export async function searchEntityDossiers(args: EntityDossierSearchArgs): Promi
 		.sort((a, b) => b.score - a.score)
 		.slice(0, limit);
 
-	const hits = ranked.map(({ d, score }) => ({ ...slim(d), score }));
+	const hits: Array<Record<string, unknown> & { slug?: string; score: number }> = ranked.map(
+		({ d, score }) => ({ ...slim(d), slug: d.slug, score }),
+	);
 
 	let relatedEdges: Edge[] = [];
 	if (includeEdges && hits.length) {

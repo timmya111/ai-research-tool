@@ -102,10 +102,13 @@ export default function ThemeToggle() {
 	const [ready, setReady] = useState(false);
 
 	useEffect(() => {
-		const next = readStoredTheme() || systemTheme();
-		setTheme(next);
-		applyTheme(next);
-		setReady(true);
+		const timer = window.setTimeout(() => {
+			const next = readStoredTheme() || systemTheme();
+			setTheme(next);
+			applyTheme(next);
+			setReady(true);
+		}, 0);
+		return () => window.clearTimeout(timer);
 	}, []);
 
 	const toggle = useCallback(() => {

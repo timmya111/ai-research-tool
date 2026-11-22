@@ -1376,6 +1376,99 @@ async function runMakeLogo(args: Record<string, unknown>): Promise<{ ok: boolean
 	}
 }
 
+export type ResearchToolDefinition = (typeof RESEARCH_TOOL_DEFINITIONS)[number];
+
+const CORE_TOOLS = new Set<ResearchToolName>([
+	'search_knowledge',
+	'search_profiles',
+	'get_profile_timeline',
+	'find_profile_alignments',
+	'fetch_url',
+	'search_wikipedia',
+	'current_time',
+]);
+
+/**
+ * Select a focused subset of tools for a given user question so local Ollama models
+ * don't burn ~5k+ prompt tokens on 26 tool schemas every turn.
+ * Set RESEARCH_ALL_TOOLS=1 to disable filtering and send all definitions.
+ */
+export function selectResearchToolsForQuestion(
+	question: string,
+	aboutNodeGraph = false,
+): ResearchToolDefinition[] {
+	if (process.env.RESEARCH_ALL_TOOLS === '1') {
+		return [...RESEARCH_TOOL_DEFINITIONS];
+	}
+
+	const q = String(question || '').toLowerCase();
+	const selected = new Set<ResearchToolName>(CORE_TOOLS);
+
+	if (aboutNodeGraph || /\b(canvas|node\s*graph|on[- ]?screen|graph\s+snapshot)\b/.test(q)) {
+		selected.add('inspect_canvas_graph');
+	}
+	if (/\b(finra|crd|brokercheck|adviserinfo|sec\b|broker|roster|registered|firm\s+connection|unclaimed|shell|nominee)\b/.test(q)) {
+		selected.add('search_finra_sidecar');
+		selected.add('lookup_brokercheck');
+		selected.add('lookup_firm_connections');
+	}
+	if (/\b(chart|plot|graph|volume|trend|by[- ]?type|histogram|bar\s+chart|monthly|weekly|daily|mtg|wd\b|bryan)\b/.test(q)) {
+		selected.add('chart_filings');
+	}
+	if (/\b(logo|wordmark|svg\s+mark|brand\s+mark)\b/.test(q)) {
+		selected.add('make_logo');
+	}
+	if (/\b(covid|coronavirus|pandemic|vaccine|pfizer|moderna|remdesivir|fauci|omicron|delta|warp\s+speed|cares\s+act|cdc\b|dod\b|war\.gov|northcom)\b/.test(q)) {
+		selected.add('search_cdc_covid_timeline');
+		selected.add('search_dod_covid_timeline');
+	}
+	if (/\b(ice\b|dhs\b|dea\b|cbp\b|fbi\b|executive\s+order|\beo\b|directive|authority|corridor|sanctuary|promo\s+timeline)\b/.test(q)) {
+		selected.add('search_authority_timelines');
+	}
+	if (/\b(iwm\b|imperial\s+war|first\s+world\s+war|second\s+world\s+war|wwi\b|wwii\b|ww1\b|ww2\b|cold\s+war|boer|falklands|suez|troubles|malayan|mau\s+mau|bosnia|kosovo|gulf\s+war|afghanistan|iraq\s+war|syria|ukraine|yemen|isis|conflict\s+since\s+1914)\b/.test(q)) {
+		selected.add('search_iwm_conflict_timeline');
+	}
+	if (/\b(wall\s+street|nyse|buttonwood|boston|new\s+york|state\s+street|fidelity|bny|goldman|j\.?p\.?\s*morgan|brown\s+brothers|glass[- ]?steagall|panic\s+of|1929|lawrence\s+strike|bread\s+and\s+roses|lowell\s+mill|triangle\s+shirtwaist|draft\s+riot|shays|king\s+philip|tammany|union|strike|bell\s+textron|bell\s+helicopter|bell\s+aircraft|halliburton|kbr\b|brown\s*&\s*root|rockwell\s+collins|collins\s+radio|collins\s+aerospace|emerson|tubacex|lockheed|air\s+force\s+plant|texas\s+instruments|vought|l3harris|e-systems|rtx\b|dallas|fort\s+worth|dfw\b)\b/.test(q)) {
+		selected.add('search_regional_history');
+	}
+	if (/\b(dossier|karp|thiel|vance|palantir|rockefeller|rothschild|silverstein|musk|grimes|campion\s+trail|halliburton|rockwell|alias\s+bucket)\b/.test(q)) {
+		selected.add('search_entity_dossiers');
+	}
+	if (/\b(youtube|video|channel|playlist|scrub|transcript|caption|ocr\b|controlalthistory|mindunveiled|eyes_wideopen|archaeology|freshboosters|hiddenamuraka|utdgeoscience|mysteryabyss|fall\s+of\s+civilizations|epichistory|history\s+matters|great\s+war|old\s+britannia|history\s+mapped|interesting\s+books|athens\s+unveiled)\b/.test(q)) {
+		selected.add('search_concealment_scrubs');
+	}
+	if (/\b(trinity|aquifer|twdb|groundwater|antlers|gam\b|water\s+level)\b/.test(q)) {
+		selected.add('search_twdb_trinity');
+	}
+	if (/\b(digital\s+earth|isde\b|big\s+earth\s+data)\b/.test(q)) {
+		selected.add('search_digital_earth');
+	}
+	if (/\b(pqw\b|itmo\b|petersburg\s+quantum|quantum\s+weeks)\b/.test(q)) {
+		selected.add('search_pqw_itmo');
+	}
+	if (/\b(meta\s*25|metamaterial|photonic\s+crystal|plasmonic|malaga)\b/.test(q)) {
+		selected.add('search_meta25');
+	}
+	if (/\b(physics\s+congress|nazarbayev|astana|isos\s*2026|dynamics\s+days|kazakh\s+physical)\b/.test(q)) {
+		selected.add('search_physics_congress');
+	}
+	if (/\b(gemini|takeout|prior\s+chat|google\s+chat)\b/.test(q)) {
+		selected.add('search_gemini_qa');
+	}
+
+	// If no domain keyword matched, include the most commonly used broad research tools as fallback
+	if (selected.size === CORE_TOOLS.size) {
+		selected.add('search_entity_dossiers');
+		selected.add('search_regional_history');
+		selected.add('search_iwm_conflict_timeline');
+		selected.add('search_authority_timelines');
+		selected.add('search_concealment_scrubs');
+		selected.add('search_finra_sidecar');
+	}
+
+	return RESEARCH_TOOL_DEFINITIONS.filter((def) => selected.has(def.function.name as ResearchToolName));
+}
+
 export async function runResearchTool(
 	name: string,
 	args: Record<string, unknown>,
@@ -1436,7 +1529,7 @@ export async function runResearchTool(
 	}
 
 	if (tool === 'search_cdc_covid_timeline') {
-		return searchCdcCovidTimeline({
+		const res = searchCdcCovidTimeline({
 			query: args.query != null ? String(args.query) : undefined,
 			from: args.from != null ? String(args.from) : undefined,
 			to: args.to != null ? String(args.to) : undefined,
@@ -1445,10 +1538,11 @@ export async function runResearchTool(
 			financialsOnly: args.financialsOnly === undefined ? undefined : Boolean(args.financialsOnly),
 			limit: args.limit as number | undefined,
 		});
+		return { ok: Boolean(res.ok), result: res };
 	}
 
 	if (tool === 'search_dod_covid_timeline') {
-		return searchDodCovidTimeline({
+		const res = searchDodCovidTimeline({
 			query: args.query != null ? String(args.query) : undefined,
 			from: args.from != null ? String(args.from) : undefined,
 			to: args.to != null ? String(args.to) : undefined,
@@ -1458,6 +1552,7 @@ export async function runResearchTool(
 			financialsOnly: args.financialsOnly === undefined ? undefined : Boolean(args.financialsOnly),
 			limit: args.limit as number | undefined,
 		});
+		return { ok: Boolean(res.ok), result: res };
 	}
 
 	if (tool === 'search_iwm_conflict_timeline') {
@@ -1488,10 +1583,11 @@ export async function runResearchTool(
 	}
 
 	if (tool === 'search_gemini_qa') {
-		return searchGeminiQa({
+		const res = searchGeminiQa({
 			query: args.query != null ? String(args.query) : undefined,
 			limit: args.limit as number | undefined,
 		});
+		return { ok: Boolean(res.ok), result: res };
 	}
 
 	if (tool === 'search_entity_dossiers') {

@@ -53,9 +53,9 @@ export async function searchPhysicsCongress(args: PhysicsCongressSearchArgs) {
 	};
 
 	if (kind === 'any' || kind === 'page') {
-		for (const [url, meta] of Object.entries(catalog.pages || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.pages || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
-			const title = meta.title || url;
+			const title = String(meta.title || url);
 			const sc = score(`${title}\n${url}`);
 			if (toks.length && sc < 1) continue;
 			hits.push({ kind: 'page', url, title, digest: meta.digest, score: sc });
@@ -63,7 +63,7 @@ export async function searchPhysicsCongress(args: PhysicsCongressSearchArgs) {
 	}
 
 	if (kind === 'any' || kind === 'pdf' || kind === 'doc') {
-		for (const [url, meta] of Object.entries(catalog.assets || {}) as [string, any][]) {
+		for (const [url, meta] of Object.entries(catalog.assets || {}) as Array<[string, Record<string, unknown>]>) {
 			if (!meta?.ok) continue;
 			const p = String(meta.path || '');
 			const isPdf = String(url).toLowerCase().includes('.pdf') || p.endsWith('.pdf');

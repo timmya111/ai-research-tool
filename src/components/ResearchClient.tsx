@@ -208,7 +208,7 @@ const LS_REMEMBER = 'research.persistChat';
 const LS_FETCHES = 'research.persistFetches';
 const LS_RAG = 'research.ragAuto';
 /** Collapsible block under KnowledgePanel (toggles, model, canvas, suggested questions). */
-const LS_BELOW_KNOWLEDGE = 'research.belowKnowledgeOpen';
+const LS_BELOW_KNOWLEDGE = 'research.belowKnowledgeOpen.v2';
 
 function extractChartUrls(toolTrace: unknown, answer?: string): string[] {
 	const urls: string[] = [];
@@ -319,18 +319,21 @@ export default function ResearchClient() {
 		toolTrace: unknown[];
 	} | null>(null);
 	const [savingFetches, setSavingFetches] = useState(false);
-	/** Options / suggested questions under knowledge store; remembered in localStorage. */
-	const [belowKnowledgeOpen, setBelowKnowledgeOpen] = useState(true);
+	/** Options / suggested questions under knowledge store; closed by default, remembered in localStorage. */
+	const [belowKnowledgeOpen, setBelowKnowledgeOpen] = useState(false);
 	const liveWindowRef = useRef<Window | null>(null);
 
 	useEffect(() => {
-		try {
-			const v = window.localStorage.getItem(LS_BELOW_KNOWLEDGE);
-			if (v === '0') setBelowKnowledgeOpen(false);
-			else if (v === '1') setBelowKnowledgeOpen(true);
-		} catch {
-			/* ignore */
-		}
+		const timer = window.setTimeout(() => {
+			try {
+				const v = window.localStorage.getItem(LS_BELOW_KNOWLEDGE);
+				if (v === '0') setBelowKnowledgeOpen(false);
+				else if (v === '1') setBelowKnowledgeOpen(true);
+			} catch {
+				/* ignore */
+			}
+		}, 0);
+		return () => window.clearTimeout(timer);
 	}, []);
 
 	const toggleBelowKnowledge = useCallback(() => {
@@ -353,9 +356,12 @@ export default function ResearchClient() {
 	}, [status]);
 
 	useEffect(() => {
-		setPersistChat(readFlag(LS_REMEMBER, projectId));
-		setPersistFetches(readFlag(LS_FETCHES, projectId));
-		setRagAuto(readFlag(LS_RAG, projectId));
+		const timer = window.setTimeout(() => {
+			setPersistChat(readFlag(LS_REMEMBER, projectId));
+			setPersistFetches(readFlag(LS_FETCHES, projectId));
+			setRagAuto(readFlag(LS_RAG, projectId));
+		}, 0);
+		return () => window.clearTimeout(timer);
 	}, [projectId]);
 
 	const refreshCanvasInfo = useCallback(async () => {
@@ -521,7 +527,7 @@ export default function ResearchClient() {
 		question,
 		ragAuto,
 		refreshCanvasInfo,
-		status?.models,
+		status,
 	]);
 
 	const applyBryanExample = useCallback(

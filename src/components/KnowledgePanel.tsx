@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 const LS_PROJECT_KEY = 'research.activeProjectId';
-const LS_PANEL_OPEN_KEY = 'research.knowledgePanelOpen';
+const LS_PANEL_OPEN_KEY = 'research.knowledgePanelOpen.v2';
 
 export type KnowledgeProject = {
 	id: string;
@@ -58,7 +58,7 @@ export default function KnowledgePanel({
 	onProjectIdChange,
 	refreshToken = 0,
 }: Props) {
-	const [open, setOpen] = useState(true);
+	const [open, setOpen] = useState(false);
 	const [projects, setProjects] = useState<KnowledgeProject[]>([]);
 	const [docs, setDocs] = useState<KnowledgeDocListItem[]>([]);
 	const [total, setTotal] = useState(0);
@@ -72,13 +72,16 @@ export default function KnowledgePanel({
 	const [reindexing, setReindexing] = useState(false);
 
 	useEffect(() => {
-		try {
-			const v = window.localStorage.getItem(LS_PANEL_OPEN_KEY);
-			if (v === '0') setOpen(false);
-			else if (v === '1') setOpen(true);
-		} catch {
-			/* ignore */
-		}
+		const timer = window.setTimeout(() => {
+			try {
+				const v = window.localStorage.getItem(LS_PANEL_OPEN_KEY);
+				if (v === '0') setOpen(false);
+				else if (v === '1') setOpen(true);
+			} catch {
+				/* ignore */
+			}
+		}, 0);
+		return () => window.clearTimeout(timer);
 	}, []);
 
 	const toggleOpen = useCallback(() => {
@@ -149,7 +152,10 @@ export default function KnowledgePanel({
 	}, [loadDocs, loadProjects, projectId]);
 
 	useEffect(() => {
-		void refresh();
+		const timer = window.setTimeout(() => {
+			void refresh();
+		}, 0);
+		return () => window.clearTimeout(timer);
 		// intentionally mount-only; project changes reload docs below
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);

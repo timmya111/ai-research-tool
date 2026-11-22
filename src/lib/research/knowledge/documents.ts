@@ -63,8 +63,17 @@ export function listDocuments(options: {
 	const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
 	const documents = rows.map((row) => {
 		const doc = rowToDoc({ ...row, raw_text: '' });
-		const { rawText: _raw, ...rest } = doc;
-		return rest;
+		return {
+			id: doc.id,
+			projectId: doc.projectId,
+			sourceType: doc.sourceType,
+			title: doc.title,
+			url: doc.url,
+			contentHash: doc.contentHash,
+			metadata: doc.metadata,
+			createdAt: doc.createdAt,
+			updatedAt: doc.updatedAt,
+		};
 	});
 
 	return { documents, total };
