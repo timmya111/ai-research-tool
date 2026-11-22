@@ -8,6 +8,12 @@ import {
 	type BrokercheckEmployment,
 	type BrokercheckExam,
 } from '@/lib/research/brokercheckLookup';
+import { finraApiUrl } from '@/lib/research/finraApp';
+import { hydrateFirmConnectionDates } from '@/lib/research/finraEmploymentDates';
+import {
+	ingestFirmDetailsFromVisualizer,
+	ingestIndividualFromVisualizer,
+} from '@/lib/research/finraVisualizerMirror';
 import { getProfilesDb, withProfilesTransaction } from '@/lib/research/profiles/db';
 import {
 	buildProfileIdentityContext,
@@ -1669,6 +1675,240 @@ async function enrichFromBrokercheck(ctx: ProfileIdentityContext): Promise<Enric
 	};
 }
 
+/**
+ * Enrich a FINRA-registered firm profile with all current and previous connected individuals
+ * via `GET /api/finra/firm/{crd}/connections` on the FINRA/SEC visualizer API.
+ */
+async function enrichFirmFromFinraConnections(ctx: ProfileIdentityContext): Promise<EnrichSourceOutcome> {
+	const counts = emptyCounts();
+	if (ctx.profileType !== 'firm') {
+		return {
+			source: 'brokercheck',
+			status: 'skipped',
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: 'Firm connections lookup applies to firm profiles.',
+		};
+	}
+	const crdIdent = ctx.identifiers.find((i) => i.scheme === 'finra_crd');
+	if (!crdIdent) {
+		return {
+			source: 'brokercheck',
+			status: 'skipped',
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: 'No FINRA CRD identifier on firm profile.',
+		};
+	}
+
+	const firmCrd = String(crdIdent.value).replace(/\D/g, '');
+	if (!firmCrd) {
+		return {
+			source: 'brokercheck',
+			status: 'skipped',
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: 'Invalid FINRA CRD identifier on firm profile.',
+		};
+	}
+
+	// Step A: Ingest full merged firm dossier (HQ/mailing addresses, direct owners/officers, approval date, disclosures)
+	let firmDetailNote = '';
+	try {
+		const fd = await ingestFirmDetailsFromVisualizer(firmCrd, { profileIdOverride: ctx.profileId });
+		if (fd.found) {
+			counts.locations += fd.locationsAdded;
+			counts.links += fd.ownersLinked;
+			counts.aliases += fd.aliasesAdded;
+			counts.timelineEntries += fd.timelineAdded;
+			firmDetailNote = ` Firm dossier synced (${fd.locationsAdded} locations, ${fd.ownersLinked} direct owners/officers, ${fd.timelineAdded} milestones).`;
+		}
+	} catch {
+		/* non-fatal; proceed with connections */
+	}
+
+	const url = finraApiUrl(`/api/finra/firm/${firmCrd}/connections`);
+	let payload: Record<string, unknown> | null = null;
+	try {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 45_000);
+		try {
+			const res = await fetch(url, {
+				method: 'GET',
+				cache: 'no-store',
+				signal: controller.signal,
+				headers: { Accept: 'application/json' },
+			});
+			if (!res.ok) {
+				return {
+					source: 'brokercheck',
+					status: 'error',
+					candidateUrl: url,
+					fieldsUpdated: [],
+					countsAdded: counts,
+					note: `FINRA connections HTTP ${res.status}`,
+				};
+			}
+			payload = (await res.json()) as Record<string, unknown>;
+		} finally {
+			clearTimeout(timer);
+		}
+	} catch (err) {
+		return {
+			source: 'brokercheck',
+			status: 'error',
+			candidateUrl: url,
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: `FINRA connections error: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
+
+	const curRaw = Array.isArray(payload?.currentConnections)
+		? (payload.currentConnections as Array<Record<string, unknown>>)
+		: [];
+	const prevRaw = Array.isArray(payload?.previousConnections)
+		? (payload.previousConnections as Array<Record<string, unknown>>)
+		: [];
+
+	if (payload?.found === false || (curRaw.length === 0 && prevRaw.length === 0)) {
+		return {
+			source: 'brokercheck',
+			status: 'not_found',
+			candidateUrl: url,
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: `No FINRA firm connections found for CRD# ${firmCrd}.`,
+		};
+	}
+
+	const evalRes = evaluateIdentityMatch(ctx, {
+		candidateName: ctx.name,
+		candidateIdentifiers: [{ scheme: 'finra_crd', value: firmCrd }],
+		candidateText: `FINRA Firm Connections CRD# ${firmCrd} ${ctx.name}`,
+	});
+
+	const fieldsUpdated: string[] = [];
+	const CORPUS = 'finra-visualizer';
+
+	withProfilesTransaction((tx) => {
+		const srId = upsertSourceRecord(
+			{
+				corpus: CORPUS,
+				sourceRef: `finra:firm:${firmCrd}:connections`,
+				sourceUrl: url,
+				title: `FINRA Connections: ${ctx.name} (CRD# ${firmCrd})`,
+				excerpt: `${curRaw.length} current · ${prevRaw.length} previous connected registrations.`,
+			},
+			tx,
+		);
+
+		const ingestGroup = (rows: Array<Record<string, unknown>>, isCurrent: boolean) => {
+			const seen = new Set<string>();
+			for (const r of rows) {
+				const indCrd = String(r.individualId || r.crd || '').replace(/\D/g, '');
+				const name = String(r.name || '').replace(/\s+/g, ' ').trim();
+				if (!indCrd || !name || seen.has(indCrd)) continue;
+				seen.add(indCrd);
+				const bcScope = typeof r.bcScope === 'string' && r.bcScope.trim() ? r.bcScope.trim() : null;
+				const iaScope = typeof r.iaScope === 'string' && r.iaScope.trim() ? r.iaScope.trim() : null;
+				const address = typeof r.address === 'string' && r.address.trim() ? r.address.trim() : null;
+
+				const personProf = upsertProfile(
+					{
+						profileType: 'person',
+						name,
+						sourceCorpus: CORPUS,
+						metadata: {
+							finraCrd: indCrd,
+							finraBcScope: bcScope,
+							finraIaScope: iaScope,
+						},
+					},
+					tx,
+				);
+				addIdentifier(
+					{
+						profileId: personProf.id,
+						scheme: 'finra_crd',
+						value: indCrd,
+						sourceCorpus: CORPUS,
+					},
+					tx,
+				);
+				if (address) {
+					const parts = parseAddressParts(address);
+					addLocation(
+						{
+							profileId: personProf.id,
+							raw: address,
+							city: parts.city,
+							county: parts.county,
+							state: parts.state,
+							country: parts.country,
+							role: 'branch',
+							sourceCorpus: CORPUS,
+						},
+						tx,
+					);
+				}
+				const noteParts = [
+					`status=${isCurrent ? 'current' : 'previous'}`,
+					`CRD# ${indCrd}`,
+					bcScope ? `bcScope=${bcScope}` : '',
+					iaScope ? `iaScope=${iaScope}` : '',
+					address ? `branch=${address}` : '',
+				].filter(Boolean);
+				upsertProfileLink(
+					{
+						fromProfileId: personProf.id,
+						toProfileId: ctx.profileId,
+						relationType: 'registered_at',
+						roleLabel: isCurrent ? 'Current registration' : 'Previous registration',
+						status: 'verified',
+						confidence: 0.96,
+						angle: 'regulatory_finra',
+						sourceCorpus: CORPUS,
+						sourceRecordId: srId,
+						evidenceNote: noteParts.join('; '),
+					},
+					tx,
+				);
+				counts.links += 1;
+			}
+		};
+
+		ingestGroup(curRaw, true);
+		ingestGroup(prevRaw, false);
+		if (counts.links > 0) fieldsUpdated.push('links');
+	});
+
+	let dateNote = '';
+	try {
+		const dateRes = await hydrateFirmConnectionDates(ctx.profileId, {
+			maxPeople: 150,
+			concurrency: 4,
+		});
+		if (dateRes && dateRes.linksUpdated > 0) {
+			fieldsUpdated.push('employment_dates');
+			dateNote = ` Hydrated employment dates on ${dateRes.linksUpdated} links (${dateRes.peopleWithDates}/${dateRes.peopleChecked} people).`;
+		}
+	} catch {
+		/* non-fatal */
+	}
+
+	return {
+		source: 'brokercheck',
+		status: 'merged',
+		candidateTitle: `${ctx.name} (CRD# ${firmCrd})`,
+		candidateUrl: url,
+		evaluation: evalRes,
+		fieldsUpdated: [...new Set(fieldsUpdated)],
+		countsAdded: counts,
+		note: `Synced ${curRaw.length} current and ${prevRaw.length} previous FINRA connections via ${url}.${firmDetailNote}${dateNote}`,
+	};
+}
+
 function extractDateFromText(title: string, text: string): string | null {
 	const hay = `${title}\n${text}`;
 	const recMatch = hay.match(/(?:recorded|filed|date)[:\s]+(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})/i);
@@ -2095,12 +2335,37 @@ export async function enrichProfile(
 	const kiwixBaseUrl = opts.kiwixBaseUrl || DEFAULT_KIWIX_BASE;
 	const outcomes: EnrichSourceOutcome[] = [];
 
-	// Step 1: BrokerCheck FIRST if person has a FINRA CRD (exact identifier match enriches employment + branch locations,
-	// which then provides strong corroboration signals for Wikipedia & county filings!)
+	// Step 1: FINRA Visualizer (read-only local-first 24h cache) + BrokerCheck FIRST if profile has a FINRA CRD
 	if (opts.includeBrokercheck !== false) {
 		const ctx1 = buildProfileIdentityContext(detail);
-		if (ctx1.profileType === 'person' && ctx1.identifiers.some((i) => i.scheme === 'finra_crd')) {
-			outcomes.push(await enrichFromBrokercheck(ctx1));
+		const crdIdent = ctx1.identifiers.find((i) => i.scheme === 'finra_crd');
+		if (ctx1.profileType === 'person' && crdIdent) {
+			const vis = await ingestIndividualFromVisualizer(crdIdent.value, {
+				profileIdOverride: ctx1.profileId,
+			});
+			if (vis.found) {
+				outcomes.push({
+					source: 'brokercheck',
+					status: 'merged',
+					candidateTitle: vis.name || ctx1.name,
+					candidateUrl: vis.sourceUrl,
+					fieldsUpdated: vis.linksUpdated > 0 ? ['employment_history', 'locations', 'metadata'] : ['metadata'],
+					countsAdded: {
+						aliases: 0,
+						identifiers: 0,
+						locations: vis.locationsAdded,
+						employments: vis.employmentsCount,
+						links: vis.linksUpdated,
+						timelineEntries: 0,
+						notes: 0,
+					},
+					note: `Synced ${vis.currentCount} current & ${vis.previousCount} previous employments from read-only FINRA visualizer (${vis.fromCache ? 'local 24h cache' : 'live refresh'}).`,
+				});
+			} else {
+				outcomes.push(await enrichFromBrokercheck(ctx1));
+			}
+		} else if (ctx1.profileType === 'firm' && crdIdent) {
+			outcomes.push(await enrichFirmFromFinraConnections(ctx1));
 		}
 	}
 

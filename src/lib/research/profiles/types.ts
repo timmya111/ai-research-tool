@@ -230,6 +230,10 @@ export type PersonEmploymentEntry = {
 	orgName: string;
 	orgCategory: ProfileType;
 	orgCountryCodes?: string[];
+	firmCrd?: string | null;
+	secNumber?: string | null;
+	iaOnly?: boolean;
+	firmFinraScope?: string | null;
 	role: string | null;
 	relationType: ProfileRelationType;
 	startDate: string | null;

@@ -1799,7 +1799,7 @@ function backfillRegionalHistory(dataRoot: string, tx: DatabaseSync): BackfillCo
 			startDate: '1917',
 			geo: 'Fort Worth, TX',
 			summary:
-				'Defense, aerospace, and industrial technology companies anchored in Dallas–Fort Worth and North Texas/Southern Oklahoma: Bell Textron / Bell Helicopter, Halliburton / KBR, Rockwell Collins / Collins Aerospace, Emerson Electric, Tubacex, Lockheed Martin Aeronautics (Air Force Plant 4), Texas Instruments, Vought / LTV, L3Harris / E-Systems, RTX, General Dynamics.',
+				'Defense, aerospace, and industrial technology companies anchored in Dallas–Fort Worth and North Texas/Southern Oklahoma: Bell Textron / Bell Helicopter, Halliburton / KBR, Rockwell Collins / Collins Aerospace, Emerson Electric, Lockheed Martin Aeronautics (Air Force Plant 4), Texas Instruments, Vought / LTV, L3Harris / E-Systems, RTX, and General Dynamics.',
 		},
 	};
 
@@ -1932,7 +1932,8 @@ function backfillRegionalHistory(dataRoot: string, tx: DatabaseSync): BackfillCo
 			);
 		}
 
-		const anchorId = anchorIds.get(track);
+		const anchorId =
+			track === 'dfw_military_tech' && /tubacex/i.test(name) ? undefined : anchorIds.get(track);
 		if (anchorId && anchorId !== prof.id) {
 			upsertProfileLink(
 				{

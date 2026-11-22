@@ -5,6 +5,7 @@ import { getProfilesDb } from '@/lib/research/profiles/db';
 import {
 	buildSafeFtsQuery,
 	deduplicateLocations,
+	isTooGenericLocation,
 	makeProfileSlug,
 	normalizeIsoDate,
 	normalizeLocationRecord,
@@ -275,8 +276,9 @@ export function updateProfileFields(
 		endDate?: string | null;
 		metadata?: Record<string, unknown>;
 	},
+	dbOverride?: DatabaseSync,
 ): Profile | null {
-	const db = getProfilesDb();
+	const db = dbOverride || getProfilesDb();
 	const current = getProfile(idOrSlug, db);
 	if (!current) return null;
 
@@ -405,6 +407,7 @@ export function addLocation(
 		state: input.state,
 		country: input.country,
 	});
+	if (isTooGenericLocation(norm)) return norm.geoKey;
 	const id = crypto.randomUUID();
 	db.prepare(
 		`INSERT OR IGNORE INTO profile_locations(
@@ -561,18 +564,21 @@ export function upsertProfileLink(
 		sourceCorpus: string;
 		sourceRecordId?: string | null;
 		evidenceNote?: string;
+		dedupeHint?: string | null;
 	},
 	dbOverride?: DatabaseSync,
 ): string {
 	const db = dbOverride ?? getProfilesDb();
 	if (input.fromProfileId === input.toProfileId) return '';
-	const dedupeKey = sha256Key([
+	const dedupeParts = [
 		input.fromProfileId,
 		input.toProfileId,
 		input.relationType,
 		input.sourceCorpus,
 		input.roleLabel || '',
-	]);
+	];
+	if (input.dedupeHint) dedupeParts.push(input.dedupeHint);
+	const dedupeKey = sha256Key(dedupeParts);
 
 	const existing = db.prepare('SELECT id FROM profile_links WHERE dedupe_key = ?').get(dedupeKey) as
 		| { id?: string }
@@ -1000,6 +1006,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 	}));
 	const locations: ProfileLocation[] = deduplicateLocations(rawLocations);
 
+	const LINK_DETAIL_LIMIT = 2000;
 	const linkRows = db
 		.prepare(
 			`SELECT pl.*,
@@ -1009,11 +1016,33 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
        JOIN profiles fp ON fp.id = pl.from_profile_id
        JOIN profiles tp ON tp.id = pl.to_profile_id
        WHERE pl.from_profile_id = ? OR pl.to_profile_id = ?
-       ORDER BY pl.confidence DESC, pl.created_at DESC
-       LIMIT 250`,
+       ORDER BY
+         CASE WHEN COALESCE(pl.start_date, pl.end_date) IS NOT NULL THEN 0 ELSE 1 END ASC,
+         COALESCE(pl.start_date, pl.end_date, '') DESC,
+         CASE
+           WHEN LOWER(COALESCE(pl.role_label, '')) LIKE '%current%'
+             OR LOWER(COALESCE(pl.evidence_note, '')) LIKE '%status=current%' THEN 0
+           WHEN LOWER(COALESCE(pl.role_label, '')) LIKE '%previous%'
+             OR LOWER(COALESCE(pl.role_label, '')) LIKE '%former%'
+             OR LOWER(COALESCE(pl.evidence_note, '')) LIKE '%status=previous%' THEN 2
+           ELSE 1
+         END ASC,
+         pl.confidence DESC,
+         pl.created_at DESC
+       LIMIT ${LINK_DETAIL_LIMIT}`,
 		)
 		.all(profile.id, profile.id) as Array<Record<string, unknown>>;
 	const links = linkRows.map(rowToLink);
+	const rawLinkTotal =
+		linkRows.length >= LINK_DETAIL_LIMIT
+			? Number(
+					(
+						db
+							.prepare('SELECT COUNT(*) AS c FROM profile_links WHERE from_profile_id = ? OR to_profile_id = ?')
+							.get(profile.id, profile.id) as { c?: number }
+					)?.c || linkRows.length,
+				)
+			: linkRows.length;
 
 	const alignRows = db
 		.prepare(
@@ -1167,6 +1196,10 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			}
 			const branchMatch = noteStr.match(/branch=([^;]+)/i);
 			const empLocation = branchMatch ? branchMatch[1].trim() : null;
+			const firmCrdMatch = noteStr.match(/firmCrd=(\d+)/i);
+			const secMatch = noteStr.match(/sec=([^;]+)/i);
+			const iaOnlyMatch = noteStr.match(/iaOnly=([A-Za-z0-9]+)/i);
+			const firmBcScopeMatch = noteStr.match(/firmBcScope=([^;]+)/i);
 
 			const candidate: PersonEmploymentEntry = {
 				id: l.id,
@@ -1174,6 +1207,10 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				orgSlug: peerSlug || null,
 				orgName: peerName || 'Unknown organization',
 				orgCategory: peerType,
+				firmCrd: firmCrdMatch ? firmCrdMatch[1].trim() : null,
+				secNumber: secMatch ? secMatch[1].trim() : null,
+				iaOnly: iaOnlyMatch ? /^y|true|1$/i.test(iaOnlyMatch[1].trim()) : false,
+				firmFinraScope: firmBcScopeMatch ? firmBcScopeMatch[1].trim() : null,
 				role: l.roleLabel,
 				relationType: l.relationType,
 				startDate: l.startDate,
@@ -1201,6 +1238,10 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				const loser = candScore > existingScore ? existing : candidate;
 				winner.role = mergeRoleLabels(winner.role, loser.role);
 				winner.location = winner.location || loser.location;
+				winner.firmCrd = winner.firmCrd || loser.firmCrd;
+				winner.secNumber = winner.secNumber || loser.secNumber;
+				winner.iaOnly = Boolean(winner.iaOnly || loser.iaOnly);
+				winner.firmFinraScope = winner.firmFinraScope || loser.firmFinraScope;
 				if (winner.isCurrent == null && loser.isCurrent != null) winner.isCurrent = loser.isCurrent;
 				byEmpKey.set(dedupeEmpKey, winner);
 			}
@@ -1288,7 +1329,23 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		winner.sources = [...mergedSources];
 		linkByPeer.set(peerId, winner);
 	}
-	const dedupedLinks = [...linkByPeer.values()];
+	const dedupedLinks = [...linkByPeer.values()].sort((a, b) => {
+		const da = a.startDate || a.endDate || '';
+		const dbDate = b.startDate || b.endDate || '';
+		if (da && !dbDate) return -1;
+		if (!da && dbDate) return 1;
+		if (da !== dbDate) return dbDate.localeCompare(da);
+		const rankStatus = (l: ProfileLink) => {
+			const r = `${l.roleLabel || ''} ${l.evidenceNote || ''}`.toLowerCase();
+			if (r.includes('current')) return 0;
+			if (r.includes('previous') || r.includes('former') || Boolean(l.endDate)) return 2;
+			return 1;
+		};
+		const ra = rankStatus(a);
+		const rb = rankStatus(b);
+		if (ra !== rb) return ra - rb;
+		return b.confidence - a.confidence;
+	});
 
 	// Batch-resolve country flags ONCE for all connected peer profiles (employmentHistory + dedupedLinks)
 	const allPeerIds = [
@@ -1298,54 +1355,59 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		]),
 	];
 	if (allPeerIds.length > 0) {
-		const placeholders = allPeerIds.map(() => '?').join(',');
-		const peerRows = db
-			.prepare(`SELECT id, name, profile_type, summary, metadata_json FROM profiles WHERE id IN (${placeholders})`)
-			.all(...allPeerIds) as Array<Record<string, unknown>>;
 		const peerInfoById = new Map<
 			string,
 			{ name: string; profileType: string; summary: string; metadata: Record<string, unknown> }
 		>();
-		for (const r of peerRows) {
-			peerInfoById.set(String(r.id), {
-				name: String(r.name || ''),
-				profileType: String(r.profile_type || 'firm'),
-				summary: String(r.summary || ''),
-				metadata: safeJsonParse<Record<string, unknown>>(r.metadata_json, {}),
-			});
-		}
-
 		const peerLocsById = new Map<
 			string,
 			Array<{ raw: string; city: string | null; state: string | null; country: string | null; geoKey: string }>
 		>();
-		const peerLocRows = db
-			.prepare(
-				`SELECT profile_id, raw, city, state, country, geo_key FROM profile_locations WHERE profile_id IN (${placeholders})`,
-			)
-			.all(...allPeerIds) as Array<Record<string, unknown>>;
-		for (const lr of peerLocRows) {
-			const pid = String(lr.profile_id);
-			const list = peerLocsById.get(pid) || [];
-			list.push({
-				raw: String(lr.raw || ''),
-				city: lr.city != null ? String(lr.city) : null,
-				state: lr.state != null ? String(lr.state) : null,
-				country: lr.country != null ? String(lr.country) : null,
-				geoKey: String(lr.geo_key || ''),
-			});
-			peerLocsById.set(pid, list);
-		}
-
 		const peerIdentsById = new Map<string, Array<{ scheme: string; value: string }>>();
-		const peerIdentRows = db
-			.prepare(`SELECT profile_id, scheme, value FROM profile_identifiers WHERE profile_id IN (${placeholders})`)
-			.all(...allPeerIds) as Array<Record<string, unknown>>;
-		for (const ir of peerIdentRows) {
-			const pid = String(ir.profile_id);
-			const list = peerIdentsById.get(pid) || [];
-			list.push({ scheme: String(ir.scheme), value: String(ir.value) });
-			peerIdentsById.set(pid, list);
+
+		const CHUNK = 500;
+		for (let i = 0; i < allPeerIds.length; i += CHUNK) {
+			const chunkIds = allPeerIds.slice(i, i + CHUNK);
+			const placeholders = chunkIds.map(() => '?').join(',');
+			const peerRows = db
+				.prepare(`SELECT id, name, profile_type, summary, metadata_json FROM profiles WHERE id IN (${placeholders})`)
+				.all(...chunkIds) as Array<Record<string, unknown>>;
+			for (const r of peerRows) {
+				peerInfoById.set(String(r.id), {
+					name: String(r.name || ''),
+					profileType: String(r.profile_type || 'firm'),
+					summary: String(r.summary || ''),
+					metadata: safeJsonParse<Record<string, unknown>>(r.metadata_json, {}),
+				});
+			}
+
+			const peerLocRows = db
+				.prepare(
+					`SELECT profile_id, raw, city, state, country, geo_key FROM profile_locations WHERE profile_id IN (${placeholders})`,
+				)
+				.all(...chunkIds) as Array<Record<string, unknown>>;
+			for (const lr of peerLocRows) {
+				const pid = String(lr.profile_id);
+				const list = peerLocsById.get(pid) || [];
+				list.push({
+					raw: String(lr.raw || ''),
+					city: lr.city != null ? String(lr.city) : null,
+					state: lr.state != null ? String(lr.state) : null,
+					country: lr.country != null ? String(lr.country) : null,
+					geoKey: String(lr.geo_key || ''),
+				});
+				peerLocsById.set(pid, list);
+			}
+
+			const peerIdentRows = db
+				.prepare(`SELECT profile_id, scheme, value FROM profile_identifiers WHERE profile_id IN (${placeholders})`)
+				.all(...chunkIds) as Array<Record<string, unknown>>;
+			for (const ir of peerIdentRows) {
+				const pid = String(ir.profile_id);
+				const list = peerIdentsById.get(pid) || [];
+				list.push({ scheme: String(ir.scheme), value: String(ir.value) });
+				peerIdentsById.set(pid, list);
+			}
 		}
 
 		const peerFlagsCache = new Map<string, string[]>();
@@ -1368,6 +1430,18 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		for (const emp of employmentHistory) {
 			if (emp.orgProfileId) {
 				emp.orgCountryCodes = getPeerFlags(emp.orgProfileId, emp.location);
+				const peerMeta = peerInfoById.get(emp.orgProfileId)?.metadata || {};
+				if (!emp.firmCrd) {
+					const crdIdent = (peerIdentsById.get(emp.orgProfileId) || []).find((i) => i.scheme === 'finra_crd');
+					emp.firmCrd = crdIdent?.value || (peerMeta.finraCrd ? String(peerMeta.finraCrd) : null);
+				}
+				if (!emp.secNumber) {
+					const sec = peerMeta.bdSecNumber || peerMeta.iaSecNumber;
+					if (sec) emp.secNumber = String(sec);
+				}
+				if (!emp.firmFinraScope && peerMeta.finraBcScope) {
+					emp.firmFinraScope = String(peerMeta.finraBcScope);
+				}
 			}
 		}
 		for (const l of dedupedLinks) {
@@ -1412,7 +1486,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			aliases: aliases.length,
 			identifiers: identifiers.length,
 			locations: locations.length,
-			links: dedupedLinks.length,
+			links: linkRows.length >= LINK_DETAIL_LIMIT ? Math.max(dedupedLinks.length, rawLinkTotal) : dedupedLinks.length,
 			timelineEntries: timelineTotal,
 			alignments: alignTotal,
 			employmentHistory: employmentHistory.length,

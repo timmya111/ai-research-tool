@@ -342,6 +342,25 @@ export function normalizeLocationRecord(input: {
 	};
 }
 
+const GENERIC_COUNTRY_ONLY_RE =
+	/^(?:u\.?s\.?a?\.?|united states(?: of america)?|america|unknown|n\/a|none)$/i;
+
+/**
+ * Return true when a location string is too generic to be useful as a location row
+ * (e.g. bare "USA", "United States", "U.S.", "US" with no city, county, state, or street).
+ */
+export function isTooGenericLocation(loc: {
+	raw?: string | null;
+	city?: string | null;
+	county?: string | null;
+	state?: string | null;
+}): boolean {
+	if (loc.city || loc.county || loc.state) return false;
+	const raw = String(loc.raw || '').replace(/\s+/g, ' ').trim();
+	if (!raw) return true;
+	return GENERIC_COUNTRY_ONLY_RE.test(raw);
+}
+
 const LOCATION_ROLE_PRIORITY: Record<string, number> = {
 	hq: 7,
 	residence: 6,
@@ -371,10 +390,11 @@ export function deduplicateLocations<
 		role: string;
 	},
 >(locations: T[]): T[] {
-	// Step 1 & 2: Normalize and dedupe exact normalized address string
+	// Step 1 & 2: Normalize and dedupe exact normalized address string (dropping bare generic country-only rows like "USA")
 	const byExact = new Map<string, T>();
 	for (const loc of locations) {
 		const norm = normalizeLocationRecord(loc);
+		if (isTooGenericLocation(norm)) continue;
 		const normalizedLoc: T = {
 			...loc,
 			raw: norm.raw,

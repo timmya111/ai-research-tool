@@ -162,7 +162,10 @@ export async function lookupFirmConnections(args: {
 		.toLowerCase();
 	const saveFull = args.saveFull !== false;
 
-	const url = finraApiUrl(`/api/finra/firm/${firmId}/connections?bucket=${bucket}&light=1`);
+	const url =
+		bucket === 'all'
+			? finraApiUrl(`/api/finra/firm/${firmId}/connections`)
+			: finraApiUrl(`/api/finra/firm/${firmId}/connections?bucket=${bucket}`);
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 90_000);
 	let payload: unknown = null;

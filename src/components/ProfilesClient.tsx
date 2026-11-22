@@ -16,6 +16,8 @@ import type {
 	ProfileType,
 } from '@/lib/research/profiles/types';
 
+const HIDDEN_SOURCE_TAGS = new Set(['wikipedia-local', 'finra-visualizer']);
+
 const TYPE_META: Record<
 	ProfileType,
 	{ label: string; plural: string; badge: string; group: 'actor' | 'narrative' }
@@ -101,7 +103,6 @@ const ALL_TYPES: ProfileType[] = [
 ];
 
 const CATEGORY_TAG_TYPES: ProfileType[] = [
-	'firm',
 	'education',
 	'nonprofit',
 	'medical_hospital',
@@ -166,6 +167,24 @@ const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
 	{ key: 'causes', label: 'Causes' },
 	{ key: 'finraBcScope', label: 'FINRA BrokerCheck Scope' },
 	{ key: 'finraIaScope', label: 'SEC IA Scope' },
+	{ key: 'finraYearsExperience', label: 'Years of Experience' },
+	{ key: 'finraFirmsAllTime', label: 'Firms (all time)' },
+	{ key: 'finraStateLicenses', label: 'State Licenses' },
+	{ key: 'finraPrimaryOffice', label: 'Primary Office' },
+	{ key: 'finraRegCount', label: 'FINRA Registrations' },
+	{ key: 'finraSroCount', label: 'SRO Registrations' },
+	{ key: 'finraStateBrokerCount', label: 'State Broker Lic.' },
+	{ key: 'finraStateIaCount', label: 'State (IA) Lic.' },
+	{ key: 'finraFirmType', label: 'Firm Type' },
+	{ key: 'finraFormedState', label: 'Formed State' },
+	{ key: 'finraFirmSize', label: 'Firm Size' },
+	{ key: 'finraFirmStatus', label: 'Firm Status' },
+	{ key: 'finraDistrict', label: 'FINRA District' },
+	{ key: 'finraApprovedDate', label: 'FINRA Approved' },
+	{ key: 'finraPhone', label: 'Business Phone' },
+	{ key: 'bdSecNumber', label: 'BD SEC#' },
+	{ key: 'iaSecNumber', label: 'IA SEC#' },
+	{ key: 'finraDaysInIndustrySince', label: 'In Industry Since' },
 	{ key: 'finraDaysInIndustry', label: 'Days in Industry' },
 	{ key: 'finraDisclosureCount', label: 'FINRA Disclosures' },
 	{ key: 'finraExams', label: 'FINRA Exams' },
@@ -211,6 +230,27 @@ function formatMonthYear(iso?: string | null): string {
 	const y = raw.match(/^(\d{4})$/);
 	if (y) return y[1];
 	return raw;
+}
+
+function formatExactDate(iso?: string | null): string {
+	const raw = String(iso || '').trim();
+	if (!raw) return '';
+	const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+	if (ymd) return `${Number(ymd[2])}/${Number(ymd[3])}/${ymd[1]}`;
+	return formatMonthYear(raw);
+}
+
+function formatEmploymentDateSpan(
+	startDate?: string | null,
+	endDate?: string | null,
+	isCurrent?: boolean | null,
+): string | null {
+	const s = formatExactDate(startDate);
+	const e = formatExactDate(endDate);
+	if (s && e) return s === e ? s : `${s} → ${e}`;
+	if (s) return isCurrent === true ? `Employed since ${s}` : isCurrent === false ? s : `${s} → Present`;
+	if (e) return `Ended ${e}`;
+	return null;
 }
 
 function formatDateSpan(
@@ -352,7 +392,6 @@ export default function ProfilesClient({
 	const [newAliases, setNewAliases] = useState('');
 	const [newLocation, setNewLocation] = useState('');
 	const [newStartDate, setNewStartDate] = useState('');
-	const [newCategoryTags, setNewCategoryTags] = useState<ProfileType[]>([]);
 	const [newEmployer, setNewEmployer] = useState('');
 	const [newEmployerCategory, setNewEmployerCategory] = useState<ProfileType>('firm');
 	const [newEmployerRole, setNewEmployerRole] = useState('');
@@ -377,6 +416,8 @@ export default function ProfilesClient({
 	const [empEnd, setEmpEnd] = useState('');
 	const [empLocation, setEmpLocation] = useState('');
 	const [savingEmp, setSavingEmp] = useState(false);
+	const [connStatusFilter, setConnStatusFilter] = useState<'all' | 'current' | 'old'>('all');
+	const [hydratingDates, setHydratingDates] = useState(false);
 
 	const syncUrl = useCallback(
 		(next: { profile?: string | null; view?: 'profile' | 'alignments' }, mode: 'push' | 'replace' = 'push') => {
@@ -527,6 +568,7 @@ export default function ProfilesClient({
 	useEffect(() => {
 		if (!selectedId || mainView !== 'profile') return;
 		const timer = setTimeout(() => {
+			setConnStatusFilter('all');
 			void loadDetail(selectedId);
 		}, 0);
 		return () => clearTimeout(timer);
@@ -577,6 +619,32 @@ export default function ProfilesClient({
 		}
 	}
 
+	async function handleHydrateFirmDates() {
+		if (!detail) return;
+		setHydratingDates(true);
+		setError(null);
+		setBanner(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(detail.profile.id)}/finra-dates`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ maxPeople: 150, concurrency: 4 }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || `Date lookup failed (${res.status})`);
+			if (data.detail) setDetail(data.detail);
+			else await loadDetail(detail.profile.id);
+			const r = data.result;
+			setBanner(
+				`Fetched employment dates for ${r.peopleWithDates}/${r.peopleChecked} connected people (${r.linksUpdated} links updated${r.remainingUndated > 0 ? `, ${r.remainingUndated} remaining` : ''}${r.rateLimited ? ' — paused on FINRA rate limit, retry in ~1 min' : ''}).`,
+			);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setHydratingDates(false);
+		}
+	}
+
 	async function handleCreateProfile(e: React.FormEvent) {
 		e.preventDefault();
 		if (!newName.trim()) return;
@@ -609,7 +677,6 @@ export default function ProfilesClient({
 					startDate: newStartDate.trim() || null,
 					aliases,
 					locations,
-					categoryTags: newCategoryTags.length ? newCategoryTags : undefined,
 					employmentHistory,
 					status: 'pinned',
 				}),
@@ -622,7 +689,6 @@ export default function ProfilesClient({
 			setNewAliases('');
 			setNewLocation('');
 			setNewStartDate('');
-			setNewCategoryTags([]);
 			setNewEmployer('');
 			setNewEmployerRole('');
 			setSelectedId(String(data.profile.id));
@@ -700,29 +766,6 @@ export default function ProfilesClient({
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
 			setLocationDraft('');
-			setDetail(data as ProfileDetail);
-			await loadList();
-		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : String(e));
-		}
-	}
-
-	async function handleToggleCategoryTag(tag: ProfileType) {
-		if (!selectedId || !detail) return;
-		const existingManual = Array.isArray(detail.profile.metadata?.categoryTags)
-			? (detail.profile.metadata.categoryTags as ProfileType[])
-			: [];
-		const nextManual = existingManual.includes(tag)
-			? existingManual.filter((t) => t !== tag)
-			: [...existingManual, tag];
-		try {
-			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ categoryTags: nextManual }),
-			});
-			const data = await res.json();
-			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
 			setDetail(data as ProfileDetail);
 			await loadList();
 		} catch (e: unknown) {
@@ -1131,33 +1174,6 @@ export default function ProfilesClient({
 										className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs"
 									/>
 								</label>
-								<div className="flex flex-col gap-1 text-xs sm:col-span-3">
-									<span className="opacity-75">Category Tags (main category labels)</span>
-									<div className="flex flex-wrap gap-1.5">
-										{CATEGORY_TAG_TYPES.map((t) => {
-											const on = newCategoryTags.includes(t);
-											return (
-												<button
-													key={t}
-													type="button"
-													onClick={() =>
-														setNewCategoryTags((prev) =>
-															prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t],
-														)
-													}
-													className={`cursor-pointer rounded border px-2 py-0.5 text-[11px] font-semibold ${
-														on
-															? TYPE_META[t].badge
-															: 'border-[var(--app-border)] bg-[var(--app-bg)] opacity-65'
-													}`}
-												>
-													{on ? '✓ ' : '+ '}
-													{TYPE_META[t].label}
-												</button>
-											);
-										})}
-									</div>
-								</div>
 							</>
 						) : null}
 					</div>
@@ -1477,7 +1493,7 @@ export default function ProfilesClient({
 												setSelectedId(p.slug || p.id);
 												setLastEnrichReport(null);
 											}}
-											className={`w-full cursor-pointer border-0 px-3 py-2.5 text-left transition ${
+											className={`w-full cursor-pointer border-0 border-b border-b-[var(--app-border)] px-3 py-2.5 text-left transition last:border-b-0 ${
 												active
 													? 'border-l-2 border-l-[#F97316] bg-[#F97316]/14'
 													: 'bg-transparent hover:bg-[var(--app-surface-hover)]'
@@ -1485,16 +1501,11 @@ export default function ProfilesClient({
 										>
 											{typeFilter === 'all' || typeFilter === 'actors' ? (
 												<>
-													<div className="flex items-center justify-between gap-2">
+													<div className="flex items-center gap-2">
 														<span
 															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tm.badge}`}
 														>
 															{tm.label}
-														</span>
-														<span className="text-[10px] opacity-65">
-															{p.timelineCount ? `${p.timelineCount} tl` : ''}
-															{p.linkCount ? ` · ${p.linkCount} lnk` : ''}
-															{p.alignmentCount ? ` · ${p.alignmentCount} aln` : ''}
 														</span>
 													</div>
 													<div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
@@ -1503,16 +1514,9 @@ export default function ProfilesClient({
 													</div>
 												</>
 											) : (
-												<div className="flex items-start justify-between gap-2">
-													<div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
-														<span>{p.name}</span>
-														<CountryFlags codes={p.countryCodes} size="sm" />
-													</div>
-													<span className="shrink-0 text-[10px] opacity-65">
-														{p.timelineCount ? `${p.timelineCount} tl` : ''}
-														{p.linkCount ? ` · ${p.linkCount} lnk` : ''}
-														{p.alignmentCount ? ` · ${p.alignmentCount} aln` : ''}
-													</span>
+												<div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
+													<span>{p.name}</span>
+													<CountryFlags codes={p.countryCodes} size="sm" />
 												</div>
 											)}
 											{p.profileType === 'person' && p.alternateNames && p.alternateNames.length > 0 ? (
@@ -1651,39 +1655,6 @@ export default function ProfilesClient({
 													: ''}
 											</div>
 										) : null}
-										{detail.profile.profileType === 'person' ? (
-											<div className="mb-2 flex flex-wrap items-center gap-1.5">
-												<span className="text-[11px] font-semibold opacity-70">Category tags:</span>
-												{CATEGORY_TAG_TYPES.map((tag) => {
-													const active = (detail.categoryTags || []).includes(tag);
-													const isManual = Array.isArray(detail.profile.metadata?.categoryTags)
-														? (detail.profile.metadata.categoryTags as ProfileType[]).includes(tag)
-														: false;
-													return (
-														<button
-															key={tag}
-															type="button"
-															title={
-																active
-																	? isManual
-																		? 'Click to remove manual tag'
-																		: 'Auto-tagged from linked profile; click to pin manually'
-																	: 'Click to tag with this main category'
-															}
-															onClick={() => void handleToggleCategoryTag(tag)}
-															className={`cursor-pointer rounded border px-2 py-0.5 text-[10px] font-semibold transition ${
-																active
-																	? TYPE_META[tag].badge
-																	: 'border-[var(--app-border)] bg-[var(--app-bg)] opacity-45 hover:opacity-90'
-															}`}
-														>
-															{active ? '' : '+ '}
-															{TYPE_META[tag].label}
-														</button>
-													);
-												})}
-											</div>
-										) : null}
 										{detail.profile.summary ? (
 											<p className="m-0 max-w-3xl text-xs leading-relaxed opacity-85">
 												{detail.profile.summary}
@@ -1800,16 +1771,56 @@ export default function ProfilesClient({
 														<h3 className="m-0 text-xs font-semibold uppercase opacity-75">
 															Captured Entity Details ({detailRows.length})
 														</h3>
-														{typeof meta.wikipediaUrl === 'string' ? (
-															<a
-																href={meta.wikipediaUrl}
-																target="_blank"
-																rel="noreferrer"
-																className="text-[11px] font-semibold text-[#F97316] underline"
-															>
-																Wikipedia ↗
-															</a>
-														) : null}
+														<div className="flex flex-wrap items-center gap-2.5">
+															{detail.profile.profileType === 'person' && meta.finraCrd ? (
+																<>
+																	<a
+																		href={`https://brokercheck.finra.org/individual/summary/${encodeURIComponent(String(meta.finraCrd))}`}
+																		target="_blank"
+																		rel="noreferrer"
+																		className="text-[11px] font-semibold text-sky-600 underline dark:text-sky-300"
+																	>
+																		FINRA Summary ↗
+																	</a>
+																	<a
+																		href={`https://files.brokercheck.finra.org/individual/individual_${encodeURIComponent(String(meta.finraCrd))}.pdf`}
+																		target="_blank"
+																		rel="noreferrer"
+																		className="text-[11px] font-semibold text-sky-600 underline dark:text-sky-300"
+																	>
+																		FINRA PDF ↗
+																	</a>
+																	<a
+																		href={`https://adviserinfo.sec.gov/individual/summary/${encodeURIComponent(String(meta.finraCrd))}`}
+																		target="_blank"
+																		rel="noreferrer"
+																		className="text-[11px] font-semibold text-emerald-600 underline dark:text-emerald-300"
+																	>
+																		SEC AdvisorInfo ↗
+																	</a>
+																</>
+															) : null}
+															{typeof meta.finraVisualizerUrl === 'string' ? (
+																<a
+																	href={meta.finraVisualizerUrl}
+																	target="_blank"
+																	rel="noreferrer"
+																	className="text-[11px] font-semibold text-[#F97316] underline"
+																>
+																	FINRA Visualizer ↗
+																</a>
+															) : null}
+															{typeof meta.wikipediaUrl === 'string' ? (
+																<a
+																	href={meta.wikipediaUrl}
+																	target="_blank"
+																	rel="noreferrer"
+																	className="text-[11px] font-semibold text-[#F97316] underline"
+																>
+																	Wikipedia ↗
+																</a>
+															) : null}
+														</div>
 													</div>
 													{detailRows.length > 0 ? (
 														<div className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
@@ -1945,6 +1956,102 @@ export default function ProfilesClient({
 														(e) => !(e.orgCategory === 'education' && !isFacultyRole(e.role)),
 													);
 
+													const currentWork = workEntries.filter((e) => e.isCurrent === true);
+													const previousWork = workEntries.filter((e) => e.isCurrent !== true);
+
+													const renderWorkRow = (emp: (typeof workEntries)[number]) => {
+														const span = formatEmploymentDateSpan(emp.startDate, emp.endDate, emp.isCurrent);
+														const cleanRole =
+															emp.role &&
+															!/^(?:current|previous)\s+registration$/i.test(emp.role.trim())
+																? emp.role.trim()
+																: null;
+														const showFinraScope =
+															emp.firmFinraScope && !/^active$/i.test(emp.firmFinraScope.trim())
+																? emp.firmFinraScope.charAt(0).toUpperCase() +
+																	emp.firmFinraScope.slice(1).toLowerCase()
+																: null;
+														return (
+															<div
+																key={emp.id}
+																className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+															>
+																<div className="flex flex-wrap items-center justify-between gap-2">
+																	<div className="flex flex-wrap items-center gap-1.5">
+																		{span ? (
+																			<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+																				{span}
+																			</span>
+																		) : null}
+																		{emp.orgProfileId ? (
+																			<button
+																				type="button"
+																				onClick={() => jumpToProfile(emp.orgProfileId!)}
+																				className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																			>
+																				{emp.orgName}
+																			</button>
+																		) : (
+																			<span className="font-semibold">{emp.orgName}</span>
+																		)}
+																		<CountryFlags codes={emp.orgCountryCodes} size="sm" />
+																		{emp.firmCrd ? (
+																			<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] opacity-85">
+																				CRD# <strong>{emp.firmCrd}</strong>
+																			</span>
+																		) : null}
+																		{emp.secNumber ? (
+																			<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] opacity-85">
+																				SEC# <strong>{emp.secNumber}</strong>
+																			</span>
+																		) : null}
+																		{!emp.firmCrd ? (
+																			<span
+																				className={`rounded border px-1.5 py-0.2 text-[10px] font-semibold ${TYPE_META[emp.orgCategory].badge}`}
+																			>
+																				{TYPE_META[emp.orgCategory].label}
+																			</span>
+																		) : null}
+																		{cleanRole ? (
+																			<span className="text-[11px] opacity-85">— {cleanRole}</span>
+																		) : null}
+																	</div>
+																	<div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+																		{emp.isCurrent === true ? (
+																			<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-semibold text-emerald-800 dark:text-emerald-200">
+																				Current
+																			</span>
+																		) : emp.isCurrent === false ? (
+																			<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 font-semibold opacity-75">
+																				Old
+																			</span>
+																		) : null}
+																		{emp.sourceCorpus && !HIDDEN_SOURCE_TAGS.has(emp.sourceCorpus) ? (
+																			<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 opacity-75">
+																				{emp.sourceCorpus}
+																			</span>
+																		) : null}
+																	</div>
+																</div>
+																{emp.location || emp.iaOnly || showFinraScope ? (
+																	<div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] opacity-75">
+																		{emp.location ? <span>📍 {emp.location}</span> : null}
+																		{emp.iaOnly ? (
+																			<span className="rounded bg-emerald-500/12 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+																				IA only
+																			</span>
+																		) : null}
+																		{showFinraScope ? (
+																			<span className="text-[10px] opacity-85">
+																				Firm FINRA: {showFinraScope}
+																			</span>
+																		) : null}
+																	</div>
+																) : null}
+															</div>
+														);
+													};
+
 													return (
 														<>
 															{/* Employment History */}
@@ -1957,64 +2064,25 @@ export default function ProfilesClient({
 																		No employment history recorded yet. Add one below.
 																	</p>
 																) : (
-																	<div className="mb-3 space-y-1.5">
-																		{workEntries.map((emp) => {
-																			const span = formatDateSpan(
-																				emp.startDate,
-																				emp.endDate,
-																				emp.isCurrent,
-																				false,
-																			);
-																			return (
-																				<div
-																					key={emp.id}
-																					className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
-																				>
-																					<div className="flex flex-wrap items-center gap-1.5">
-																						{span ? (
-																							<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
-																								{span}
-																							</span>
-																						) : null}
-																						{emp.orgProfileId ? (
-																							<button
-																								type="button"
-																								onClick={() => jumpToProfile(emp.orgProfileId!)}
-																								className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																							>
-																								{emp.orgName}
-																							</button>
-																						) : (
-																							<span className="font-semibold">{emp.orgName}</span>
-																						)}
-																						<CountryFlags codes={emp.orgCountryCodes} size="sm" />
-																						<span
-																							className={`rounded border px-1.5 py-0.2 text-[10px] font-semibold ${TYPE_META[emp.orgCategory].badge}`}
-																						>
-																							{TYPE_META[emp.orgCategory].label}
-																						</span>
-																						{emp.role ? (
-																							<span className="text-[11px] opacity-85">— {emp.role}</span>
-																						) : null}
-																						{emp.isCurrent === true ? (
-																							<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
-																								Current
-																							</span>
-																						) : emp.isCurrent === false ? (
-																							<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] opacity-75">
-																								Previous
-																							</span>
-																						) : null}
-																					</div>
-																					<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
-																						{emp.location ? <span>📍 {emp.location}</span> : null}
-																						<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
-																							{emp.sourceCorpus}
-																						</span>
-																					</div>
+																	<div className="mb-3 space-y-3">
+																		{currentWork.length > 0 ? (
+																			<div>
+																				<div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+																					Current Employment ({currentWork.length})
 																				</div>
-																			);
-																		})}
+																				<div className="space-y-1.5">{currentWork.map(renderWorkRow)}</div>
+																			</div>
+																		) : null}
+																		{previousWork.length > 0 ? (
+																			<div>
+																				<div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide opacity-70">
+																					Previous Employment ({previousWork.length})
+																				</div>
+																				<div className="max-h-[460px] space-y-1.5 overflow-y-auto pr-1">
+																					{previousWork.map(renderWorkRow)}
+																				</div>
+																			</div>
+																		) : null}
 																	</div>
 																)}
 
@@ -2126,9 +2194,11 @@ export default function ProfilesClient({
 																					</div>
 																					<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
 																						{edu.location ? <span>📍 {edu.location}</span> : null}
-																						<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
-																							{edu.sourceCorpus}
-																						</span>
+																						{edu.sourceCorpus && !HIDDEN_SOURCE_TAGS.has(edu.sourceCorpus) ? (
+																							<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px]">
+																								{edu.sourceCorpus}
+																							</span>
+																						) : null}
 																					</div>
 																				</div>
 																			);
@@ -2150,26 +2220,132 @@ export default function ProfilesClient({
 															.filter((x): x is string => Boolean(x))
 													: [],
 											);
-											const connectedLinks = detail.links.filter((l) => {
-												const peerId =
-													l.fromProfileId === detail.profile.id ? l.toProfileId : l.fromProfileId;
-												return !empPeerIds.has(peerId);
-											});
+											const getConnStatus = (
+												l: ProfileDetail['links'][number],
+											): 'current' | 'old' | null => {
+												const role = (l.roleLabel || '').toLowerCase();
+												const note = (l.evidenceNote || '').toLowerCase();
+												if (/\bcurrent\b/.test(role) || note.includes('status=current')) return 'current';
+												if (
+													/\b(?:previous|former|past|old)\b/.test(role) ||
+													note.includes('status=previous') ||
+													Boolean(l.endDate)
+												) {
+													return 'old';
+												}
+												if (
+													(l.relationType === 'employed_by' || l.relationType === 'registered_at') &&
+													l.startDate &&
+													!l.endDate
+												) {
+													return 'current';
+												}
+												return null;
+											};
+											const connectedLinks = detail.links
+												.filter((l) => {
+													const peerId =
+														l.fromProfileId === detail.profile.id ? l.toProfileId : l.fromProfileId;
+													return !empPeerIds.has(peerId);
+												})
+												.map((l) => ({ link: l, connStatus: getConnStatus(l) }))
+												.sort((a, b) => {
+													const da = a.link.startDate || a.link.endDate || '';
+													const dbDate = b.link.startDate || b.link.endDate || '';
+													if (da && !dbDate) return -1;
+													if (!da && dbDate) return 1;
+													if (da !== dbDate) return dbDate.localeCompare(da);
+													const rank = (s: 'current' | 'old' | null) =>
+														s === 'current' ? 0 : s === 'old' ? 2 : 1;
+													const ra = rank(a.connStatus);
+													const rb = rank(b.connStatus);
+													if (ra !== rb) return ra - rb;
+													const na =
+														(a.link.fromProfileId === detail.profile.id
+															? a.link.toName
+															: a.link.fromName) || '';
+													const nb =
+														(b.link.fromProfileId === detail.profile.id
+															? b.link.toName
+															: b.link.fromName) || '';
+													return na.localeCompare(nb);
+												});
+
+											const currentCount = connectedLinks.filter((x) => x.connStatus === 'current').length;
+											const oldCount = connectedLinks.filter((x) => x.connStatus === 'old').length;
+											const undatedFinraCount =
+												detail.profile.profileType === 'firm'
+													? connectedLinks.filter(
+															(x) => x.link.relationType === 'registered_at' && !x.link.startDate,
+														).length
+													: 0;
+											const filteredLinks =
+												connStatusFilter === 'all'
+													? connectedLinks
+													: connectedLinks.filter((x) => x.connStatus === connStatusFilter);
+
 											return (
 												<div>
-													<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-														Connected Profiles ({connectedLinks.length})
-													</h3>
-													{connectedLinks.length === 0 ? (
+													<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+														<h3 className="m-0 text-xs font-semibold uppercase opacity-75">
+															Connected Profiles (
+															{detail.counts.links > detail.links.length
+																? `showing ${connectedLinks.length.toLocaleString()} of ${detail.counts.links.toLocaleString()}`
+																: connectedLinks.length.toLocaleString()}
+															)
+														</h3>
+														<div className="flex flex-wrap items-center gap-1.5">
+															{currentCount > 0 || oldCount > 0 ? (
+																<div className="flex items-center gap-1">
+																	{(
+																		[
+																			{ id: 'all', label: `All (${connectedLinks.length.toLocaleString()})` },
+																			{ id: 'current', label: `Current (${currentCount.toLocaleString()})` },
+																			{ id: 'old', label: `Old (${oldCount.toLocaleString()})` },
+																		] as const
+																	).map((tab) => (
+																		<button
+																			key={tab.id}
+																			type="button"
+																			onClick={() => setConnStatusFilter(tab.id)}
+																			className={`cursor-pointer rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+																				connStatusFilter === tab.id
+																					? 'border-[#F97316] bg-[#F97316] text-white'
+																					: 'border-[var(--app-border)] bg-[var(--app-bg)] hover:bg-[var(--app-surface-hover)]'
+																			}`}
+																		>
+																			{tab.label}
+																		</button>
+																	))}
+																</div>
+															) : null}
+															{undatedFinraCount > 0 ? (
+																<button
+																	type="button"
+																	disabled={hydratingDates}
+																	onClick={() => void handleHydrateFirmDates()}
+																	className="cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/12 px-2 py-0.5 text-[10px] font-semibold text-[#F97316] hover:bg-[#F97316]/20 disabled:opacity-50"
+																	title="Fetch FINRA BrokerCheck & SEC IAPD employment start/end dates for connected people"
+																>
+																	{hydratingDates
+																		? 'Fetching Hire Dates…'
+																		: `Fetch Hire Dates (${undatedFinraCount.toLocaleString()})`}
+																</button>
+															) : null}
+														</div>
+													</div>
+													{filteredLinks.length === 0 ? (
 														<p className="text-xs opacity-70">
-															{detail.profile.profileType === 'person' &&
-															detail.employmentHistory.length > 0
-																? 'All connected organizations and schools are listed in Employment History & Education above.'
-																: 'No typed links recorded yet.'}
+															{connectedLinks.length > 0
+																? `No ${connStatusFilter} connections recorded.`
+																: detail.profile.profileType === 'person' &&
+																	  detail.employmentHistory.length > 0
+																	? 'All connected organizations and schools are listed in Employment History & Education above.'
+																	: 'No typed links recorded yet.'}
 														</p>
 													) : (
 														<div className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
-															{connectedLinks.map((l) => {
+															{filteredLinks.map(({ link: l, connStatus }) => {
 																const isOut = l.fromProfileId === detail.profile.id;
 																const peerId = isOut ? l.toProfileId : l.fromProfileId;
 																const peerName = isOut ? l.toName : l.fromName;
@@ -2177,13 +2353,18 @@ export default function ProfilesClient({
 																const dateSpan = formatDateSpan(
 																	l.startDate,
 																	l.endDate,
-																	null,
+																	connStatus === 'current' ? true : connStatus === 'old' ? false : null,
 																	peerType === 'education',
 																);
-																const sourceLabel =
-																	l.sources && l.sources.length > 1
-																		? l.sources.join(', ')
-																		: l.sourceCorpus;
+																const visibleSources = (
+																	l.sources && l.sources.length > 0 ? l.sources : [l.sourceCorpus]
+																).filter((s) => s && !HIDDEN_SOURCE_TAGS.has(s));
+																const sourceLabel = visibleSources.join(', ');
+																const roleClean =
+																	l.roleLabel &&
+																	!/^(?:current|previous)\s+registration$/i.test(l.roleLabel.trim())
+																		? l.roleLabel.trim()
+																		: null;
 																return (
 																	<div
 																		key={l.id}
@@ -2193,6 +2374,15 @@ export default function ProfilesClient({
 																			{dateSpan ? (
 																				<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
 																					{dateSpan}
+																				</span>
+																			) : null}
+																			{connStatus === 'current' ? (
+																				<span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+																					Current
+																				</span>
+																			) : connStatus === 'old' ? (
+																				<span className="shrink-0 rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] font-semibold opacity-75">
+																					Old
 																				</span>
 																			) : null}
 																			<span className="text-[10px] opacity-60">
@@ -2211,13 +2401,15 @@ export default function ProfilesClient({
 																			>
 																				{TYPE_META[peerType].label}
 																			</span>
-																			{l.roleLabel ? (
-																				<span className="text-[11px] opacity-75">({l.roleLabel})</span>
+																			{roleClean ? (
+																				<span className="text-[11px] opacity-75">({roleClean})</span>
 																			) : null}
 																		</div>
-																		<div className="flex items-center gap-1.5 text-[10px] opacity-75">
-																			<span>{sourceLabel}</span>
-																		</div>
+																		{sourceLabel ? (
+																			<div className="flex items-center gap-1.5 text-[10px] opacity-75">
+																				<span>{sourceLabel}</span>
+																			</div>
+																		) : null}
 																	</div>
 																);
 															})}
@@ -2389,9 +2581,11 @@ export default function ProfilesClient({
 																			>
 																				{entry.angle.replace(/_/g, ' ')}
 																			</span>
-																			<span className="rounded bg-[var(--app-surface-hover)] px-1.5 py-0.5 text-[10px]">
-																				{entry.sourceCorpus}
-																			</span>
+																			{entry.sourceCorpus && !HIDDEN_SOURCE_TAGS.has(entry.sourceCorpus) ? (
+																				<span className="rounded bg-[var(--app-surface-hover)] px-1.5 py-0.5 text-[10px]">
+																					{entry.sourceCorpus}
+																				</span>
+																			) : null}
 																			{entry.geoLabel ? (
 																				<span className="text-[10px] opacity-70">
 																					📍 {entry.geoLabel}

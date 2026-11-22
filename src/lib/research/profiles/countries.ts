@@ -86,7 +86,7 @@ const COUNTRY_PATTERNS: Array<{ code: string; re: RegExp }> = [
 	},
 	{
 		code: 'es',
-		re: /\b(?:Spain|Spanish|Madrid|Barcelona|Bilbao|Llodio|Basque Country|Álava|Alava|Seville|Valencia|Tubacex)\b/i,
+		re: /\b(?:Spain|Spanish|Madrid|Barcelona|Bilbao|Llodio|Basque Country|Álava|Alava|Seville|Valencia)\b/i,
 	},
 	{
 		code: 'fr',
