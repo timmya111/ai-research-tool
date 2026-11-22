@@ -408,8 +408,10 @@ function getExactNameToCode(): Map<string, string> {
 function scanTextForCountries(text: string, add: (code: string, weight: number) => void, weight: number): void {
 	const raw = String(text || '').trim();
 	if (!raw) return;
-	// Clean out "New England" / "New Mexico" / "New South Wales" / "British Columbia" false triggers before regex scan
+	// Clean out "New England" / "New Mexico" / "New South Wales" / "British Columbia" and pronunciation tags like "Canadian French:"
 	const sanitized = raw
+		.replace(/\b(?:Canadian|Quebec|Swiss|Belgian|Louisiana|Cajun)\s+French\b/gi, 'Lang_Fr')
+		.replace(/\b(?:French|German|Spanish|Italian|Russian|Chinese|Japanese|Arabic|Dutch|Polish|Portuguese|Greek|Turkish)\s*:/gi, 'Lang_Pron:')
 		.replace(/\bNew England\b/gi, 'New_Eng_US')
 		.replace(/\bNew Mexico\b/gi, 'New_Mex_US')
 		.replace(/\bNew South Wales\b/gi, 'NSW_AU')

@@ -417,11 +417,14 @@ export function jaroWinkler(s1: string, s2: string): number {
 /**
  * Normalize a person name, supporting both "First Middle Last" and "LAST, FIRST M." forms.
  */
+const GEN_SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'v']);
+
 export function parsePersonNameParts(raw: string): {
 	normalized: string;
 	first: string;
 	middles: string[];
 	last: string;
+	genSuffix: string | null;
 	tokens: string[];
 } {
 	const cleaned = String(raw || '').trim();
@@ -440,14 +443,16 @@ export function parsePersonNameParts(raw: string): {
 		}
 	}
 
-	const rawTokens = normalizeText(reordered)
-		.split(' ')
-		.filter(Boolean)
-		.filter((t, idx, arr) => {
-			if (idx === 0 && NAME_PREFIXES.has(t) && arr.length > 1) return false;
-			if (idx === arr.length - 1 && NAME_SUFFIXES.has(t) && arr.length > 1) return false;
-			return true;
-		});
+	const normAll = normalizeText(reordered).split(' ').filter(Boolean);
+	let genSuffix: string | null = null;
+	const rawTokens = normAll.filter((t, idx, arr) => {
+		if (idx === 0 && NAME_PREFIXES.has(t) && arr.length > 1) return false;
+		if (idx === arr.length - 1 && NAME_SUFFIXES.has(t) && arr.length > 1) {
+			if (GEN_SUFFIXES.has(t)) genSuffix = t;
+			return false;
+		}
+		return true;
+	});
 
 	const first = rawTokens[0] || '';
 	const last = rawTokens.length >= 2 ? rawTokens[rawTokens.length - 1] : '';
@@ -458,6 +463,7 @@ export function parsePersonNameParts(raw: string): {
 		first,
 		middles,
 		last,
+		genSuffix,
 		tokens: rawTokens,
 	};
 }
@@ -494,6 +500,16 @@ export function compareSingleNamePair(
 		const pa = parsePersonNameParts(aRaw);
 		const pb = parsePersonNameParts(bRaw);
 		if (!pa.tokens.length || !pb.tokens.length) return { kind: 'none', similarity: 0 };
+
+		// Reject explicit generational suffix mismatches (e.g. Jr. vs Sr., III vs IV, V vs I/none)
+		if (pa.genSuffix !== pb.genSuffix) {
+			const hasDistinctNumeral =
+				(pa.genSuffix && ['ii', 'iii', 'iv', 'v', 'jr'].includes(pa.genSuffix)) ||
+				(pb.genSuffix && ['ii', 'iii', 'iv', 'v', 'jr'].includes(pb.genSuffix));
+			if (hasDistinctNumeral) {
+				return { kind: 'none', similarity: 0 };
+			}
+		}
 
 		if (pa.normalized === pb.normalized) {
 			return { kind: 'exact_name', similarity: 0.99 };
@@ -1048,6 +1064,32 @@ export function evaluateIdentityMatch(
 	const profileNames = [profile.name, ...profile.aliases];
 	const candidateNames = [candidate.candidateName, ...(candidate.candidateAliases || [])];
 	const nameRes = evaluateNameMatch(profileNames, candidateNames, profile.profileType);
+
+	// 2b. Distinct stage-name / birth-name / alternate-name corroboration:
+	// If the profile's primary name AND a completely distinct multi-word alias (zero shared words,
+	// e.g. "Grimes" + "Claire Elise Boucher") BOTH match the candidate, that strongly identifies the same entity!
+	if (nameRes.kind !== 'none' && profile.aliases.length > 0) {
+		const primaryTokens = new Set(normalizeText(profile.name).split(' ').filter((t) => t.length >= 2));
+		const candNameListNorm = candidateNames.map((n) => normalizeText(n)).filter(Boolean);
+		const candLeadNorm = normalizeText(candidate.candidateText || '').slice(0, 1500);
+		for (const al of profile.aliases) {
+			const alNorm = normalizeText(al);
+			const alTokens = alNorm.split(' ').filter((t) => t.length >= 2);
+			if (alTokens.length < 2) continue;
+			const overlapsPrimary = alTokens.some((t) => primaryTokens.has(t));
+			if (overlapsPrimary) continue;
+			if (
+				candNameListNorm.some((cn) => cn === alNorm || hasPhrase(cn, alNorm)) ||
+				hasPhrase(candLeadNorm, alNorm)
+			) {
+				addCorrob({
+					kind: 'description_keyword_match',
+					value: al,
+					detail: `Matched distinct known full/alternate name "${al}" alongside "${profile.name}"`,
+				});
+			}
+		}
+	}
 
 	const candTextAll = [
 		candidate.candidateName,

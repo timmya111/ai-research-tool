@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ThemeToggle from '@/components/ThemeToggle';
 import type {
 	AlignmentCandidate,
@@ -122,6 +122,11 @@ const EMPLOYER_CATEGORY_TYPES: ProfileType[] = [
 const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
 	{ key: 'occupation', label: 'Occupation' },
 	{ key: 'title', label: 'Title' },
+	{ key: 'yearsActive', label: 'Years Active' },
+	{ key: 'genres', label: 'Genres' },
+	{ key: 'instruments', label: 'Instruments' },
+	{ key: 'labels', label: 'Record Labels' },
+	{ key: 'formerlyOf', label: 'Formerly Of' },
 	{ key: 'knownFor', label: 'Known For' },
 	{ key: 'notableWorks', label: 'Notable Works' },
 	{ key: 'officesHeld', label: 'Offices Held' },
@@ -260,7 +265,44 @@ const ALIGNMENT_KINDS: Array<{ value: AlignmentKind | ''; label: string }> = [
 	{ value: 'shared_identifier', label: 'Shared ID (CRD/CIK)' },
 ];
 
-export default function ProfilesClient() {
+function slugToProfilePath(slug?: string | null): string {
+	const raw = String(slug || '').trim();
+	if (!raw) return '/profiles';
+	const colonIdx = raw.indexOf(':');
+	if (colonIdx > 0) {
+		const typePart = raw.slice(0, colonIdx);
+		const namePart = raw.slice(colonIdx + 1);
+		return `/profiles/${encodeURIComponent(typePart)}/${encodeURIComponent(namePart)}`;
+	}
+	return `/profiles/${encodeURIComponent(raw)}`;
+}
+
+function parseProfilesPathname(pathname: string): {
+	view: 'profile' | 'alignments';
+	profileSlug: string | null;
+} {
+	const clean = String(pathname || '').replace(/^\/+|\/+$/g, '');
+	const segments = clean.split('/').filter(Boolean);
+	if (segments[0] !== 'profiles' || segments.length <= 1) {
+		return { view: 'profile', profileSlug: null };
+	}
+	const rest = segments.slice(1).map((s) => decodeURIComponent(s));
+	if (rest[0] === 'alignments') {
+		return { view: 'alignments', profileSlug: null };
+	}
+	if (rest.length >= 2) {
+		return { view: 'profile', profileSlug: `${rest[0]}:${rest.slice(1).join('-')}` };
+	}
+	return { view: 'profile', profileSlug: rest[0] || null };
+}
+
+export default function ProfilesClient({
+	initialProfileSlug,
+	initialView,
+}: {
+	initialProfileSlug?: string;
+	initialView?: 'profile' | 'alignments';
+} = {}) {
 	const [stats, setStats] = useState<ProfileStats | null>(null);
 	const [profiles, setProfiles] = useState<Profile[]>([]);
 	const [totalProfiles, setTotalProfiles] = useState(0);
@@ -273,12 +315,16 @@ export default function ProfilesClient() {
 	const [corpusFilter, setCorpusFilter] = useState<string>('');
 	const [offset, setOffset] = useState(0);
 
-	// Workspace mode
-	const [mainView, setMainView] = useState<'profile' | 'alignments'>('profile');
-	const [selectedId, setSelectedId] = useState<string | null>(null);
+	// Workspace mode & URL/scroll sync
+	const [mainView, setMainView] = useState<'profile' | 'alignments'>(initialView || 'profile');
+	const [selectedId, setSelectedId] = useState<string | null>(initialProfileSlug || null);
 	const [detail, setDetail] = useState<ProfileDetail | null>(null);
 	const [loadingDetail, setLoadingDetail] = useState(false);
 	const [profileTab, setProfileTab] = useState<'overview' | 'timeline' | 'alignments'>('overview');
+	const [pendingCategorySync, setPendingCategorySync] = useState(Boolean(initialProfileSlug));
+	const skipNextPushRef = useRef(Boolean(initialProfileSlug));
+	const urlInitializedRef = useRef(false);
+	const selectedRowRef = useRef<HTMLButtonElement | null>(null);
 
 	// Timeline state
 	const [timeline, setTimeline] = useState<ProfileTimelineResult | null>(null);
@@ -332,6 +378,48 @@ export default function ProfilesClient() {
 	const [empLocation, setEmpLocation] = useState('');
 	const [savingEmp, setSavingEmp] = useState(false);
 
+	const syncUrl = useCallback(
+		(next: { profile?: string | null; view?: 'profile' | 'alignments' }, mode: 'push' | 'replace' = 'push') => {
+			if (typeof window === 'undefined') return;
+			const nextHref =
+				next.view === 'alignments'
+					? '/profiles/alignments'
+					: next.profile
+						? slugToProfilePath(next.profile)
+						: '/profiles';
+			const curHref = `${window.location.pathname}${window.location.search}`;
+			if (nextHref === curHref) return;
+			if (mode === 'replace') window.history.replaceState(null, '', nextHref);
+			else window.history.pushState(null, '', nextHref);
+		},
+		[],
+	);
+
+	// Initialize from path (/profiles/<type>/<slug> or /profiles/alignments) & support browser Back/Forward
+	useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const applyFromLocation = () => {
+			const parsed = parseProfilesPathname(window.location.pathname);
+			skipNextPushRef.current = true;
+			if (parsed.view === 'alignments') {
+				setMainView('alignments');
+			} else {
+				setMainView('profile');
+				if (parsed.profileSlug) {
+					setPendingCategorySync(true);
+					setSelectedId(parsed.profileSlug);
+				}
+			}
+		};
+		if (!urlInitializedRef.current) {
+			urlInitializedRef.current = true;
+			applyFromLocation();
+		}
+		const onPop = () => applyFromLocation();
+		window.addEventListener('popstate', onPop);
+		return () => window.removeEventListener('popstate', onPop);
+	}, []);
+
 	const loadList = useCallback(async () => {
 		setLoadingList(true);
 		setError(null);
@@ -351,8 +439,11 @@ export default function ProfilesClient() {
 			setProfiles(Array.isArray(data.profiles) ? data.profiles : []);
 			setTotalProfiles(Number(data.total || 0));
 			if (data.stats) setStats(data.stats as ProfileStats);
-			if (!selectedId && Array.isArray(data.profiles) && data.profiles.length > 0) {
-				setSelectedId(String(data.profiles[0].id));
+			const pathProfile =
+				typeof window !== 'undefined' ? parseProfilesPathname(window.location.pathname).profileSlug : null;
+			if (!selectedId && !pathProfile && Array.isArray(data.profiles) && data.profiles.length > 0) {
+				skipNextPushRef.current = true;
+				setSelectedId(String(data.profiles[0].slug || data.profiles[0].id));
 			}
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -361,19 +452,27 @@ export default function ProfilesClient() {
 		}
 	}, [query, typeFilter, tagFilter, corpusFilter, offset, selectedId]);
 
-	const loadDetail = useCallback(async (id: string) => {
-		setLoadingDetail(true);
-		try {
-			const res = await fetch(`/api/profiles/${encodeURIComponent(id)}`, { cache: 'no-store' });
-			const data = await res.json();
-			if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
-			setDetail(data as ProfileDetail);
-		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : String(e));
-		} finally {
-			setLoadingDetail(false);
-		}
-	}, []);
+	const loadDetail = useCallback(
+		async (id: string) => {
+			setLoadingDetail(true);
+			try {
+				const res = await fetch(`/api/profiles/${encodeURIComponent(id)}`, { cache: 'no-store' });
+				const data = await res.json();
+				if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
+				const loaded = data as ProfileDetail;
+				setDetail(loaded);
+				// Keep URL canonicalized to the readable slug (e.g. /profiles?profile=person:alex-karp)
+				const mode = skipNextPushRef.current ? 'replace' : 'push';
+				skipNextPushRef.current = false;
+				syncUrl({ profile: loaded.profile.slug, view: 'profile' }, mode);
+			} catch (e: unknown) {
+				setError(e instanceof Error ? e.message : String(e));
+			} finally {
+				setLoadingDetail(false);
+			}
+		},
+		[syncUrl],
+	);
 
 	const loadTimeline = useCallback(
 		async (id: string) => {
@@ -750,12 +849,36 @@ export default function ProfilesClient() {
 		}
 	}
 
-	function jumpToProfile(id: string) {
+	useEffect(() => {
+		if (!pendingCategorySync || !detail?.profile) return;
+		if (detail.profile.id !== selectedId && detail.profile.slug !== selectedId) return;
+		const timer = setTimeout(() => {
+			setTypeFilter(detail.profile.profileType);
+			setOffset(0);
+			setPendingCategorySync(false);
+		}, 0);
+		return () => clearTimeout(timer);
+	}, [pendingCategorySync, detail, selectedId]);
+
+	useEffect(() => {
+		if (!detail?.profile?.id || mainView !== 'profile') return;
+		const timer = setTimeout(() => {
+			selectedRowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+		}, 60);
+		return () => clearTimeout(timer);
+	}, [detail?.profile?.id, profiles, mainView]);
+
+	const jumpToProfile = useCallback((id: string) => {
+		setPendingCategorySync(true);
+		setQuery('');
+		setTagFilter('');
+		setCorpusFilter('');
+		setOffset(0);
 		setSelectedId(id);
 		setLastEnrichReport(null);
 		setMainView('profile');
 		setProfileTab('overview');
-	}
+	}, []);
 
 	return (
 		<main className="mx-auto max-w-[1380px] px-4 py-5 text-[var(--app-fg)]">
@@ -785,7 +908,14 @@ export default function ProfilesClient() {
 				<div className="flex flex-wrap items-center gap-2">
 					<button
 						type="button"
-						onClick={() => setMainView(mainView === 'alignments' ? 'profile' : 'alignments')}
+						onClick={() => {
+							const nextView = mainView === 'alignments' ? 'profile' : 'alignments';
+							setMainView(nextView);
+							syncUrl({
+								view: nextView,
+								profile: nextView === 'profile' ? detail?.profile.slug || selectedId : null,
+							});
+						}}
 						className={`cursor-pointer rounded-md border px-2.5 py-1.5 text-xs font-semibold ${
 							mainView === 'alignments'
 								? 'border-[#F97316] bg-[#F97316] text-white'
@@ -853,25 +983,32 @@ export default function ProfilesClient() {
 						<div className="text-[11px] opacity-70">All Profiles</div>
 						<div className="text-base font-semibold">{stats.totalProfiles.toLocaleString()}</div>
 					</button>
-					{ALL_TYPES.map((t) => (
-						<button
-							key={t}
-							type="button"
-							onClick={() => {
-								setTypeFilter(t);
-								setOffset(0);
-								setMainView('profile');
-							}}
-							className={`cursor-pointer rounded-lg border px-2.5 py-2 text-left transition ${
-								typeFilter === t && mainView === 'profile'
-									? 'border-[#F97316] bg-[#F97316]/10'
-									: 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
-							}`}
-						>
-							<div className="text-[11px] opacity-70">{TYPE_META[t].plural}</div>
-							<div className="text-base font-semibold">{(stats.byType[t] || 0).toLocaleString()}</div>
-						</button>
-					))}
+					{ALL_TYPES.map((t) => {
+						const isFiltered = typeFilter === t && mainView === 'profile';
+						const isCurrentProfileType =
+							typeFilter === 'all' && mainView === 'profile' && detail?.profile.profileType === t;
+						return (
+							<button
+								key={t}
+								type="button"
+								onClick={() => {
+									setTypeFilter(t);
+									setOffset(0);
+									setMainView('profile');
+								}}
+								className={`cursor-pointer rounded-lg border px-2.5 py-2 text-left transition ${
+									isFiltered
+										? 'border-[#F97316] bg-[#F97316]/12 ring-1 ring-[#F97316]/40'
+										: isCurrentProfileType
+											? 'border-[#F97316]/70 bg-[#F97316]/8'
+											: 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
+								}`}
+							>
+								<div className="text-[11px] opacity-70">{TYPE_META[t].plural}</div>
+								<div className="text-base font-semibold">{(stats.byType[t] || 0).toLocaleString()}</div>
+							</button>
+						);
+					})}
 				</section>
 			) : null}
 
@@ -1205,7 +1342,7 @@ export default function ProfilesClient() {
 			) : (
 				<div className="grid gap-4 lg:grid-cols-[360px_1fr]">
 					{/* Left Sidebar: Search & Profile List */}
-					<aside className="flex flex-col rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]">
+					<aside className="flex min-w-0 flex-col rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]">
 						<div className="space-y-2 border-b border-[var(--app-border)] p-3">
 							<input
 								value={query}
@@ -1216,40 +1353,38 @@ export default function ProfilesClient() {
 								placeholder="Search name, alias, CRD, ticker, topic…"
 								className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs"
 							/>
-							<div className="flex gap-1.5">
-								<select
-									value={typeFilter}
-									onChange={(e) => {
-										setTypeFilter(e.target.value);
-										setOffset(0);
-									}}
-									className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
-								>
-									<option value="all">All types</option>
-									<option value="actors">All Actors (People/Orgs)</option>
-									<option value="narratives">Historic Events</option>
-									{ALL_TYPES.map((t) => (
-										<option key={t} value={t}>
-											{TYPE_META[t].plural}
-										</option>
-									))}
-								</select>
-								<select
-									value={corpusFilter}
-									onChange={(e) => {
-										setCorpusFilter(e.target.value);
-										setOffset(0);
-									}}
-									className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
-								>
-									<option value="">All corpora</option>
-									{(stats?.corpora || []).map((c) => (
-										<option key={c.corpus} value={c.corpus}>
-											{c.corpus}
-										</option>
-									))}
-								</select>
-							</div>
+							<select
+								value={typeFilter}
+								onChange={(e) => {
+									setTypeFilter(e.target.value);
+									setOffset(0);
+								}}
+								className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
+							>
+								<option value="all">All types</option>
+								<option value="actors">All Actors (People/Orgs)</option>
+								<option value="narratives">Historic Events</option>
+								{ALL_TYPES.map((t) => (
+									<option key={t} value={t}>
+										{TYPE_META[t].plural}
+									</option>
+								))}
+							</select>
+							<select
+								value={corpusFilter}
+								onChange={(e) => {
+									setCorpusFilter(e.target.value);
+									setOffset(0);
+								}}
+								className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
+							>
+								<option value="">All corpora</option>
+								{(stats?.corpora || []).map((c) => (
+									<option key={c.corpus} value={c.corpus}>
+										{c.corpus}
+									</option>
+								))}
+							</select>
 							<select
 								value={tagFilter}
 								onChange={(e) => {
@@ -1291,23 +1426,60 @@ export default function ProfilesClient() {
 						</div>
 
 						<div className="max-h-[72vh] divide-y divide-[var(--app-border)] overflow-y-auto">
-							{profiles.length === 0 && !loadingList ? (
-								<div className="p-4 text-xs opacity-70">
-									No profiles yet. Click <strong>Sync &amp; Align All Data</strong> above to populate
-									from all local corpora.
-								</div>
-							) : (
-								profiles.map((p) => {
-									const active = p.id === selectedId;
+							{(() => {
+								// Ensure the currently selected entity is always visible & selectable in the left column
+								const detailMatchesFilter =
+									detail?.profile &&
+									(detail.profile.id === selectedId || detail.profile.slug === selectedId) &&
+									(typeFilter === 'all' ||
+										typeFilter === detail.profile.profileType ||
+										(typeFilter === 'actors' && detail.profile.profileType !== 'historic_event') ||
+										(typeFilter === 'narratives' && detail.profile.profileType === 'historic_event'));
+								const alreadyInList =
+									detail?.profile && profiles.some((p) => p.id === detail.profile.id);
+								const pinnedDetailItem: Profile | null =
+									detailMatchesFilter && !alreadyInList && detail
+										? {
+												...detail.profile,
+												aliasCount: detail.counts.aliases,
+												linkCount: detail.counts.links,
+												timelineCount: detail.counts.timelineEntries,
+												alignmentCount: detail.counts.alignments,
+												categoryTags: detail.categoryTags,
+												corpora: Array.isArray(detail.profile.metadata?.corpora)
+													? (detail.profile.metadata.corpora as unknown[]).map(String)
+													: [],
+											}
+										: null;
+								const visibleProfiles = pinnedDetailItem ? [pinnedDetailItem, ...profiles] : profiles;
+
+								if (visibleProfiles.length === 0 && !loadingList) {
+									return (
+										<div className="p-4 text-xs opacity-70">
+											No profiles yet. Click <strong>Sync &amp; Align All Data</strong> above to populate
+											from all local corpora.
+										</div>
+									);
+								}
+
+								return visibleProfiles.map((p) => {
+									const active =
+										p.id === selectedId ||
+										p.slug === selectedId ||
+										(detail?.profile?.id != null && p.id === detail.profile.id);
 									const tm = TYPE_META[p.profileType];
 									return (
 										<button
 											key={p.id}
+											ref={active ? selectedRowRef : undefined}
 											type="button"
-											onClick={() => setSelectedId(p.id)}
+											onClick={() => {
+												setSelectedId(p.slug || p.id);
+												setLastEnrichReport(null);
+											}}
 											className={`w-full cursor-pointer border-0 px-3 py-2.5 text-left transition ${
 												active
-													? 'bg-[#F97316]/12'
+													? 'border-l-2 border-l-[#F97316] bg-[#F97316]/14'
 													: 'bg-transparent hover:bg-[var(--app-surface-hover)]'
 											}`}
 										>
@@ -1330,34 +1502,10 @@ export default function ProfilesClient() {
 											{p.primaryLocation ? (
 												<div className="mt-0.5 text-[10px] opacity-75">📍 {p.primaryLocation}</div>
 											) : null}
-											{p.categoryTags && p.categoryTags.length > 0 ? (
-												<div className="mt-1 flex flex-wrap gap-1">
-													{p.categoryTags.slice(0, 4).map((tag) => (
-														<span
-															key={tag}
-															className={`rounded border px-1.5 py-0.2 text-[9px] font-semibold ${TYPE_META[tag].badge}`}
-														>
-															{TYPE_META[tag].label}
-														</span>
-													))}
-												</div>
-											) : null}
-											{p.corpora && p.corpora.length > 0 ? (
-												<div className="mt-1 flex flex-wrap gap-1">
-													{p.corpora.slice(0, 3).map((c) => (
-														<span
-															key={c}
-															className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] opacity-70"
-														>
-															{c}
-														</span>
-													))}
-												</div>
-											) : null}
 										</button>
 									);
-								})
-							)}
+								});
+							})()}
 						</div>
 					</aside>
 
@@ -1388,10 +1536,92 @@ export default function ProfilesClient() {
 												</span>
 											) : null}
 										</div>
-										<h2 className="my-1.5 flex flex-wrap items-center gap-2 text-lg font-semibold">
-											<span>{detail.profile.name}</span>
-											<CountryFlags codes={detail.profile.countryCodes} size="md" />
-										</h2>
+										{(() => {
+											const isPerson = detail.profile.profileType === 'person';
+											const meta = detail.profile.metadata || {};
+
+											// Current employment / active organization affiliation(s) to display right of person's name
+											const isFaculty = (r?: string | null) =>
+												/\b(?:professor|faculty|dean|chancellor|lecturer|instructor|researcher|provost|teacher)\b/i.test(
+													r || '',
+												);
+											const nonAlumniWork = isPerson
+												? detail.employmentHistory.filter(
+														(e) => !(e.orgCategory === 'education' && !isFaculty(e.role)),
+													)
+												: [];
+											const explicitCurrent = nonAlumniWork.filter((e) => e.isCurrent === true);
+											const activeOrgs =
+												explicitCurrent.length > 0
+													? explicitCurrent.slice(0, 2)
+													: nonAlumniWork.filter((e) => e.isCurrent !== false && !e.endDate).slice(0, 2);
+
+											const fallbackTitle =
+												isPerson && activeOrgs.length === 0
+													? typeof meta.title === 'string' && meta.title.trim()
+														? meta.title.trim()
+														: Array.isArray(meta.officesHeld) && meta.officesHeld[0]
+															? String(meta.officesHeld[0]).trim()
+															: null
+													: null;
+
+											// Alternate / full name variation(s) underneath the name
+											const canonicalLow = detail.profile.name.trim().toLowerCase().replace(/\s+/g, ' ');
+											const seenAlt = new Set<string>([canonicalLow]);
+											const altNames = detail.aliases
+												.filter((a) => a.aliasKind === 'name' || a.aliasKind === 'former_name')
+												.map((a) => a.alias.replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim())
+												.filter((raw) => {
+													const low = raw.toLowerCase().replace(/\s+/g, ' ');
+													if (!low || seenAlt.has(low)) return false;
+													seenAlt.add(low);
+													return true;
+												})
+												.sort((a, b) => b.length - a.length)
+												.slice(0, 2);
+
+											return (
+												<>
+													<h2 className="mt-1.5 mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-lg font-semibold">
+														<span className="inline-flex items-center gap-2">
+															<span>{detail.profile.name}</span>
+															<CountryFlags codes={detail.profile.countryCodes} size="md" />
+														</span>
+														{activeOrgs.length > 0 ? (
+															<span className="text-xs font-normal opacity-80">
+																—{' '}
+																{activeOrgs.map((org, idx) => (
+																	<span key={org.id}>
+																		{idx > 0 ? ' · ' : ''}
+																		{org.role ? <span>{org.role}, </span> : null}
+																		{org.orgProfileId ? (
+																			<button
+																				type="button"
+																				onClick={() => jumpToProfile(org.orgProfileId!)}
+																				className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																			>
+																				{org.orgName}
+																			</button>
+																		) : (
+																			<span className="font-semibold">{org.orgName}</span>
+																		)}
+																	</span>
+																))}
+															</span>
+														) : fallbackTitle ? (
+															<span className="text-xs font-normal opacity-80">— {fallbackTitle}</span>
+														) : null}
+													</h2>
+													{altNames.length > 0 ? (
+														<div className="mb-1.5 text-xs italic opacity-75">
+															{altNames.join(' · ')}
+														</div>
+													) : (
+														<div className="mb-1" />
+													)}
+												</>
+											);
+										})()}
 										{detail.profile.primaryLocation ? (
 											<div className="mb-1.5 text-xs opacity-80">
 												📍 <strong>{detail.profile.primaryLocation}</strong>

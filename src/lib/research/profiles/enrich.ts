@@ -325,7 +325,7 @@ async function fetchAndParseKiwixArticle(
 	if (ibMatch) {
 		const ibHtml = ibMatch[1];
 		const nickM = ibHtml.match(/class="[^"]*\bnickname\b[^"]*"[^>]*>([\s\S]*?)<\/(?:div|span)>/i);
-		if (nickM) birthName = stripHtmlTags(nickM[1]).replace(/\s+/g, ' ').trim() || null;
+		if (nickM) birthName = stripHtmlTags(nickM[1]).replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim() || null;
 
 		const bdayM = ibHtml.match(/class="[^"]*\bbday\b[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
 		if (bdayM) birthDate = normalizeIsoDate(stripHtmlTags(bdayM[1])).date;
@@ -376,19 +376,19 @@ async function fetchAndParseKiwixArticle(
 	}
 
 	// Extract lead + body paragraphs (limit slice for speed on massive articles)
-	const bodySlice = html.slice(0, 140_000);
+	const bodySlice = html.slice(0, 220_000);
 	const paragraphs: string[] = [];
 	const pRe = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
 	for (const pm of bodySlice.matchAll(pRe)) {
 		const txt = stripHtmlTags(pm[1]).replace(/\s+/g, ' ').trim();
 		if (txt.length >= 40) {
 			paragraphs.push(txt);
-			if (paragraphs.length >= 28) break;
+			if (paragraphs.length >= 45) break;
 		}
 	}
 
 	const leadSummary = paragraphs.slice(0, 3).join(' ').slice(0, 950).trim();
-	const bodyText = paragraphs.join('\n').slice(0, 24_000);
+	const bodyText = paragraphs.join('\n').slice(0, 32_000);
 
 	// Extract up to 6 dated career/historical milestones from body paragraphs
 	const datedMilestones: Array<{ date: string; title: string; summary: string }> = [];
@@ -503,7 +503,7 @@ function buildWikiCandidateInput(article: ParsedWikiArticle): CandidateIdentityI
 		Object.entries(article.infobox)
 			.map(([k, v]) => `${k}: ${v.text}`)
 			.join('\n'),
-		article.bodyText.slice(0, 8000),
+		article.bodyText.slice(0, 28_000),
 	].join('\n');
 
 	return {
@@ -812,9 +812,14 @@ function applyValidatedWikipediaEnrichment(
 		fieldsUpdated.push(fieldLabel || metaKey);
 	};
 
-	// Rich Person, Firm/Org, Military, and Historic Event infobox details
-	setDetailField('occupation', article.infobox.occupation?.text);
+	// Rich Person, Artist/Musician, Firm/Org, Military, and Historic Event infobox details
+	setDetailField('occupation', article.infobox.occupation?.text || article.infobox.occupations?.text);
 	setDetailField('title', article.infobox.title?.text);
+	setDetailField('yearsActive', article.infobox['years active']?.text, 'yearsActive', 120);
+	setDetailField('genres', article.infobox.genres?.text || article.infobox.genre?.text, 'genres', 220);
+	setDetailField('instruments', article.infobox.instruments?.text, 'instruments', 220);
+	setDetailField('labels', article.infobox.labels?.text || article.infobox.label?.text, 'labels', 220);
+	setDetailField('formerlyOf', article.infobox['formerly of']?.text, 'formerlyOf', 180);
 	setDetailField('knownFor', article.infobox['known for']?.text);
 	setDetailField('notableWorks', article.infobox['notable work']?.text || article.infobox['notable works']?.text);
 	setDetailField('citizenship', article.infobox.citizenship?.text || article.infobox.nationality?.text);
@@ -827,6 +832,8 @@ function applyValidatedWikipediaEnrichment(
 	setDetailField('netWorth', article.infobox['net worth']?.text, 'netWorth', 120);
 	const familyParts = [
 		article.infobox.spouse?.text || article.infobox.spouses?.text ? `Spouse: ${article.infobox.spouse?.text || article.infobox.spouses?.text}` : '',
+		article.infobox.partner?.text || article.infobox.partners?.text ? `Partner: ${article.infobox.partner?.text || article.infobox.partners?.text}` : '',
+		article.infobox.children?.text ? `Children: ${article.infobox.children.text}` : '',
 		article.infobox.parents?.text ? `Parents: ${article.infobox.parents.text}` : '',
 		article.infobox.relatives?.text ? `Relatives: ${article.infobox.relatives.text}` : '',
 	].filter(Boolean);
@@ -955,6 +962,10 @@ function applyValidatedWikipediaEnrichment(
 		const locEntries: Array<{ raw: string; role: 'hq' | 'residence' | 'branch' | 'event_site' | 'associated' }> = [];
 		if (article.birthPlace) {
 			locEntries.push({ raw: article.birthPlace, role: 'residence' });
+		}
+		if (article.infobox.origin?.text) {
+			const clean = extractLocationFromInfoboxText(article.infobox.origin.text);
+			if (clean) locEntries.push({ raw: clean, role: 'residence' });
 		}
 		if (article.infobox.residence?.text) {
 			const clean = extractLocationFromInfoboxText(article.infobox.residence.text);
