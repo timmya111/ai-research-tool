@@ -168,14 +168,25 @@ withProfilesTransaction((tx) => {
 			...extraTags,
 		];
 
+		// People: life dates only (birthDate/deathDate). Office terms stay on cabinetRoles.
+		// Historic events still use startDate/endDate as the administration span.
+		const lifeStart =
+			profileType === 'person'
+				? o.birthDate || o.born || null
+				: o.startDate || null;
+		const lifeEnd =
+			profileType === 'person'
+				? o.deathDate || o.died || (o.deceased ? o.endDate || null : null)
+				: o.endDate || null;
+
 		const prof = upsertProfile(
 			{
 				profileType,
 				name: existing?.name || name,
 				slug,
 				status: 'pinned',
-				startDate: o.startDate || null,
-				endDate: o.deceased ? o.endDate || undefined : o.endDate || null,
+				startDate: lifeStart,
+				endDate: lifeEnd,
 				summary,
 				metadata: {
 					categoryTags,
@@ -185,6 +196,13 @@ withProfilesTransaction((tx) => {
 					administrationNumber: o.number || undefined,
 					disclaimer: DISCLAIMER,
 					sourceRecordId: srId,
+					...(profileType === 'person' && (o.birthDate || o.deathDate || o.deceased)
+						? {
+								birthDate: o.birthDate || o.born || undefined,
+								deathDate: o.deathDate || o.died || undefined,
+								deceased: Boolean(o.deceased || o.deathDate || o.died),
+							}
+						: {}),
 				},
 				sourceCorpus: CORPUS,
 			},

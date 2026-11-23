@@ -2065,7 +2065,7 @@ export default function ProfilesClient({
 	}, []);
 
 	return (
-		<main className="mx-auto max-w-[1380px] px-4 py-5 text-[var(--app-fg)]">
+		<main className="mx-auto flex min-h-dvh max-w-[1380px] flex-col px-4 py-5 text-[var(--app-fg)]">
 			{/* Top Header */}
 			<header className="mb-4 flex flex-wrap items-start justify-between gap-3">
 				<div>
@@ -2346,9 +2346,9 @@ export default function ProfilesClient({
 				</form>
 			) : null}
 
-			{/* Main Content Area */}
+			{/* Main Content Area — flex-1 fills remaining viewport under the header/stats */}
 			{mainView === 'alignments' ? (
-				<section className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+				<section className="min-h-0 flex-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
 					<div className="mb-3 flex flex-wrap items-center justify-between gap-2">
 						<div>
 							<h2 className="m-0 text-base font-semibold">
@@ -2553,10 +2553,10 @@ export default function ProfilesClient({
 					)}
 				</section>
 			) : (
-				<div className="grid gap-4 lg:grid-cols-[360px_1fr]">
-					{/* Left Sidebar: Search & Profile List */}
-					<aside className="flex min-w-0 flex-col rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]">
-						<div className="space-y-2 border-b border-[var(--app-border)] p-3">
+				<div className="grid min-h-0 flex-1 items-stretch gap-4 lg:grid-cols-[360px_1fr]">
+					{/* Left Sidebar: tracks detail column; lg:h-0 lg:min-h-full keeps list from inflating the row; scrolls inside */}
+					<aside className="flex min-h-0 min-w-0 flex-col self-stretch overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] lg:h-0 lg:min-h-full">
+						<div className="shrink-0 space-y-2 border-b border-[var(--app-border)] p-3">
 							<div className="flex items-start gap-2">
 								<input
 									value={query}
@@ -2689,7 +2689,7 @@ export default function ProfilesClient({
 							</div>
 						</div>
 
-						<div className="max-h-[72vh] divide-y divide-[var(--app-border)] overflow-y-auto">
+						<div className="min-h-0 flex-1 divide-y divide-[var(--app-border)] overflow-y-auto">
 							{(() => {
 								// Ensure the currently selected entity is always visible & selectable in the left column
 								const detailMatchesFilter =
@@ -2799,9 +2799,9 @@ export default function ProfilesClient({
 						</div>
 					</aside>
 
-					{/* Right Workspace: Selected Profile Detail */}
+					{/* Right Workspace: fills the flex-1 grid cell (min-h-full) so short dossiers still reach the viewport bottom */}
 					<section
-						className={`rounded-lg border bg-[var(--app-surface)] p-4 ${
+						className={`min-h-full min-w-0 rounded-lg border bg-[var(--app-surface)] p-4 ${
 							detail && isCurrentPersonOrFirm(detail.profile)
 								? CURRENT_ACTOR_DETAIL_OUTLINE
 								: 'border-[var(--app-border)]'

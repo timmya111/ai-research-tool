@@ -926,37 +926,16 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		.get(...params) as { c?: number } | undefined;
 	const total = Number(totalRow?.c || 0);
 
-	// Historic Events tab: chronological newest→oldest by event start (fallback end); undated last.
-	// Firms tab: by founding/start date newest→oldest; undated last; then newest-created.
-	// Text search: rank name/alias matches above FTS summary hits, then type-appropriate date/created.
-	// Other browse (no query): newest-created cards at the top.
-	const orderByHistoricEvent =
-		filter.profileType === 'historic_event' || filter.profileType === 'narratives';
-	const orderByFirmStart = filter.profileType === 'firm';
+	// Left-list browse (all types, no query): newly changed profiles first (`updated_at` DESC).
+	// Text search: rank name/alias matches above FTS summary hits, then newest-changed.
 	const orderParams: Array<string | number> = [];
 	let orderSql: string;
-	if (orderByHistoricEvent) {
-		orderSql = `CASE
-             WHEN nullif(trim(COALESCE(p.start_date, '')), '') IS NULL
-              AND nullif(trim(COALESCE(p.end_date, '')), '') IS NULL THEN 1
-             ELSE 0
-           END ASC,
-           COALESCE(
-             nullif(trim(p.start_date), ''),
-             nullif(trim(p.end_date), '')
-           ) DESC,
+	const updatedThenName = `datetime(p.updated_at) DESC,
            p.name ASC`;
-	} else if (q) {
+	if (q) {
 		const normQ = normalizeText(q);
 		const like = `%${normQ}%`;
 		const prefix = `${normQ}%`;
-		const firmDateOrder = orderByFirmStart
-			? `CASE WHEN nullif(trim(COALESCE(p.start_date, '')), '') IS NULL THEN 1 ELSE 0 END ASC,
-           nullif(trim(p.start_date), '') DESC,
-           datetime(p.created_at) DESC,
-           p.name ASC`
-			: `datetime(p.created_at) DESC,
-           p.name ASC`;
 		orderSql = `CASE
              WHEN p.normalized_name = ? THEN 0
              WHEN EXISTS (
@@ -976,16 +955,10 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
              WHEN lower(p.slug) LIKE ? THEN 6
              ELSE 7
            END ASC,
-           ${firmDateOrder}`;
+           ${updatedThenName}`;
 		orderParams.push(normQ, normQ, prefix, prefix, like, like, like);
-	} else if (orderByFirmStart) {
-		orderSql = `CASE WHEN nullif(trim(COALESCE(p.start_date, '')), '') IS NULL THEN 1 ELSE 0 END ASC,
-           nullif(trim(p.start_date), '') DESC,
-           datetime(p.created_at) DESC,
-           p.name ASC`;
 	} else {
-		orderSql = `datetime(p.created_at) DESC,
-           p.name ASC`;
+		orderSql = updatedThenName;
 	}
 
 	const rows = db
