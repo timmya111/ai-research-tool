@@ -17,6 +17,7 @@ import {
 	normalizeIsoDate,
 	normalizeLocationRecord,
 	normalizeText,
+	pickBestFullAddress,
 	sha256Key,
 } from '@/lib/research/profiles/normalize';
 import { getProfilesDir } from '@/lib/research/profiles/paths';
@@ -415,24 +416,65 @@ export function addLocation(
 		country: input.country,
 	});
 	if (isTooGenericLocation(norm)) return norm.geoKey;
-	const id = crypto.randomUUID();
+	const role = input.role || 'associated';
+	const raw = norm.raw || norm.geoKey;
+	const lat = typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null;
+	const lon = typeof input.lon === 'number' && Number.isFinite(input.lon) ? input.lon : null;
+	const sourceCorpus = input.sourceCorpus || null;
+	// UNIQUE(profile_id, geo_key, role) is city-grain — a street address shares the city geo_key
+	// with a prior "Dallas, TX" row. Upgrade city-only raws to the more specific street string.
+	const existing = db
+		.prepare(
+			`SELECT id, raw FROM profile_locations
+       WHERE profile_id = ? AND geo_key = ? AND role = ?
+       LIMIT 1`,
+		)
+		.get(input.profileId, norm.geoKey, role) as { id?: string; raw?: string } | undefined;
+	if (existing?.id) {
+		const oldRaw = String(existing.raw || '');
+		const oldHasStreet = /\d/.test(oldRaw);
+		const newHasStreet = /\d/.test(raw);
+		const shouldUpgrade =
+			(newHasStreet && !oldHasStreet) || (!oldHasStreet && !newHasStreet && raw.length > oldRaw.length);
+		if (shouldUpgrade) {
+			db.prepare(
+				`UPDATE profile_locations
+         SET raw = ?, city = COALESCE(?, city), county = COALESCE(?, county),
+             state = COALESCE(?, state), country = COALESCE(?, country),
+             lat = COALESCE(?, lat), lon = COALESCE(?, lon),
+             source_corpus = COALESCE(?, source_corpus)
+         WHERE id = ?`,
+			).run(
+				raw,
+				norm.city,
+				norm.county,
+				norm.state,
+				norm.country,
+				lat,
+				lon,
+				sourceCorpus,
+				existing.id,
+			);
+		}
+		return norm.geoKey;
+	}
 	db.prepare(
-		`INSERT OR IGNORE INTO profile_locations(
+		`INSERT INTO profile_locations(
        id, profile_id, raw, city, county, state, country, geo_key, lat, lon, role, source_corpus
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
-		id,
+		crypto.randomUUID(),
 		input.profileId,
-		norm.raw || norm.geoKey,
+		raw,
 		norm.city,
 		norm.county,
 		norm.state,
 		norm.country,
 		norm.geoKey,
-		typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null,
-		typeof input.lon === 'number' && Number.isFinite(input.lon) ? input.lon : null,
-		input.role || 'associated',
-		input.sourceCorpus || null,
+		lat,
+		lon,
+		role,
+		sourceCorpus,
 	);
 	return norm.geoKey;
 }
@@ -650,6 +692,8 @@ export function upsertAlignmentCandidate(
 		cautionTier: CautionTier;
 		rationale: string;
 		evidence: AlignmentEvidenceItem[];
+		/** Initial triage status on insert only; existing confirmed/dismissed rows are preserved. */
+		status?: AlignmentStatus;
 	},
 	dbOverride?: DatabaseSync,
 ): string {
@@ -676,12 +720,14 @@ export function upsertAlignmentCandidate(
 		return String(existing.id);
 	}
 
+	const insertStatus: AlignmentStatus =
+		input.status === 'confirmed' || input.status === 'dismissed' ? input.status : 'proposed';
 	const id = crypto.randomUUID();
 	db.prepare(
 		`INSERT INTO alignment_candidates(
        id, dedupe_key, alignment_kind, left_profile_id, right_profile_id,
        score, caution_tier, status, rationale, evidence_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
 		id,
 		input.dedupeKey,
@@ -690,6 +736,7 @@ export function upsertAlignmentCandidate(
 		input.rightProfileId || null,
 		Math.max(0, Math.min(1, Number(input.score.toFixed(3)))),
 		input.cautionTier,
+		insertStatus,
 		input.rationale.slice(0, 1000),
 		JSON.stringify(input.evidence.slice(0, 16)),
 		now,
@@ -879,6 +926,68 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		.get(...params) as { c?: number } | undefined;
 	const total = Number(totalRow?.c || 0);
 
+	// Historic Events tab: chronological newest→oldest by event start (fallback end); undated last.
+	// Firms tab: by founding/start date newest→oldest; undated last; then newest-created.
+	// Text search: rank name/alias matches above FTS summary hits, then type-appropriate date/created.
+	// Other browse (no query): newest-created cards at the top.
+	const orderByHistoricEvent =
+		filter.profileType === 'historic_event' || filter.profileType === 'narratives';
+	const orderByFirmStart = filter.profileType === 'firm';
+	const orderParams: Array<string | number> = [];
+	let orderSql: string;
+	if (orderByHistoricEvent) {
+		orderSql = `CASE
+             WHEN nullif(trim(COALESCE(p.start_date, '')), '') IS NULL
+              AND nullif(trim(COALESCE(p.end_date, '')), '') IS NULL THEN 1
+             ELSE 0
+           END ASC,
+           COALESCE(
+             nullif(trim(p.start_date), ''),
+             nullif(trim(p.end_date), '')
+           ) DESC,
+           p.name ASC`;
+	} else if (q) {
+		const normQ = normalizeText(q);
+		const like = `%${normQ}%`;
+		const prefix = `${normQ}%`;
+		const firmDateOrder = orderByFirmStart
+			? `CASE WHEN nullif(trim(COALESCE(p.start_date, '')), '') IS NULL THEN 1 ELSE 0 END ASC,
+           nullif(trim(p.start_date), '') DESC,
+           datetime(p.created_at) DESC,
+           p.name ASC`
+			: `datetime(p.created_at) DESC,
+           p.name ASC`;
+		orderSql = `CASE
+             WHEN p.normalized_name = ? THEN 0
+             WHEN EXISTS (
+               SELECT 1 FROM profile_aliases pa
+               WHERE pa.profile_id = p.id AND pa.normalized_alias = ?
+             ) THEN 1
+             WHEN p.normalized_name LIKE ? THEN 2
+             WHEN EXISTS (
+               SELECT 1 FROM profile_aliases pa
+               WHERE pa.profile_id = p.id AND pa.normalized_alias LIKE ?
+             ) THEN 3
+             WHEN p.normalized_name LIKE ? THEN 4
+             WHEN EXISTS (
+               SELECT 1 FROM profile_aliases pa
+               WHERE pa.profile_id = p.id AND pa.normalized_alias LIKE ?
+             ) THEN 5
+             WHEN lower(p.slug) LIKE ? THEN 6
+             ELSE 7
+           END ASC,
+           ${firmDateOrder}`;
+		orderParams.push(normQ, normQ, prefix, prefix, like, like, like);
+	} else if (orderByFirmStart) {
+		orderSql = `CASE WHEN nullif(trim(COALESCE(p.start_date, '')), '') IS NULL THEN 1 ELSE 0 END ASC,
+           nullif(trim(p.start_date), '') DESC,
+           datetime(p.created_at) DESC,
+           p.name ASC`;
+	} else {
+		orderSql = `datetime(p.created_at) DESC,
+           p.name ASC`;
+	}
+
 	const rows = db
 		.prepare(
 			`SELECT p.*,
@@ -886,7 +995,11 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
               (SELECT COUNT(*) FROM profile_links pl WHERE pl.from_profile_id = p.id OR pl.to_profile_id = p.id) AS link_count,
               (SELECT COUNT(*) FROM timeline_entries te WHERE te.profile_id = p.id) AS timeline_count,
               (SELECT COUNT(*) FROM alignment_candidates ac WHERE ac.left_profile_id = p.id OR ac.right_profile_id = p.id) AS alignment_count,
-              (SELECT ploc.raw FROM profile_locations ploc WHERE ploc.profile_id = p.id ORDER BY CASE ploc.role WHEN 'residence' THEN 0 WHEN 'branch' THEN 1 WHEN 'hq' THEN 2 ELSE 3 END, ploc.raw ASC LIMIT 1) AS primary_location,
+              (SELECT ploc.raw FROM profile_locations ploc WHERE ploc.profile_id = p.id
+               ORDER BY CASE WHEN ploc.raw GLOB '*[0-9]*' THEN 0 ELSE 1 END,
+                        CASE ploc.role WHEN 'residence' THEN 0 WHEN 'hq' THEN 1 WHEN 'branch' THEN 2 ELSE 3 END,
+                        length(ploc.raw) DESC, ploc.raw ASC
+               LIMIT 1) AS primary_location,
               (SELECT GROUP_CONCAT(DISTINCT peer.profile_type)
                FROM profile_links pl
                JOIN profiles peer ON peer.id = CASE WHEN pl.from_profile_id = p.id THEN pl.to_profile_id ELSE pl.from_profile_id END
@@ -895,13 +1008,10 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
        FROM profiles p
        ${whereSql}
        ORDER BY
-         CASE p.status WHEN 'pinned' THEN 0 WHEN 'active' THEN 1 WHEN 'candidate' THEN 2 ELSE 3 END,
-         CASE p.profile_type WHEN 'historic_event' THEN 0 ELSE 1 END,
-         (link_count + timeline_count * 2 + alignment_count * 3) DESC,
-         p.name ASC
+         ${orderSql}
        LIMIT ? OFFSET ?`,
 		)
-		.all(...params, limit, offset) as Array<Record<string, unknown>>;
+		.all(...params, ...orderParams, limit, offset) as Array<Record<string, unknown>>;
 
 	const profiles = rows.map((r) => {
 		const prof = rowToProfile(r);
@@ -1419,6 +1529,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			Array<{
 				raw: string;
 				city: string | null;
+				county: string | null;
 				state: string | null;
 				country: string | null;
 				geoKey: string;
@@ -1449,7 +1560,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 
 			const peerLocRows = db
 				.prepare(
-					`SELECT profile_id, raw, city, state, country, geo_key, role FROM profile_locations WHERE profile_id IN (${placeholders})`,
+					`SELECT profile_id, raw, city, county, state, country, geo_key, role FROM profile_locations WHERE profile_id IN (${placeholders})`,
 				)
 				.all(...chunkIds) as Array<Record<string, unknown>>;
 			for (const lr of peerLocRows) {
@@ -1458,6 +1569,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				list.push({
 					raw: String(lr.raw || ''),
 					city: lr.city != null ? String(lr.city) : null,
+					county: lr.county != null ? String(lr.county) : null,
 					state: lr.state != null ? String(lr.state) : null,
 					country: lr.country != null ? String(lr.country) : null,
 					geoKey: String(lr.geo_key || ''),
@@ -1497,12 +1609,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		for (const emp of employmentHistory) {
 			if (emp.orgProfileId) {
 				if (!emp.location) {
-					const peerLocs = peerLocsById.get(emp.orgProfileId) || [];
-					const hq = peerLocs.find((loc) => loc.role === 'hq' && loc.raw.trim());
-					const byAddressy = [...peerLocs]
-						.filter((loc) => loc.raw && loc.raw.trim())
-						.sort((a, b) => b.raw.length - a.raw.length);
-					emp.location = hq?.raw || byAddressy[0]?.raw || null;
+					emp.location = pickBestFullAddress(peerLocsById.get(emp.orgProfileId) || []);
 				}
 				emp.orgCountryCodes = getPeerFlags(emp.orgProfileId, emp.location);
 				const peerMeta = peerInfoById.get(emp.orgProfileId)?.metadata || {};
@@ -1528,8 +1635,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				l.peerEndDate = peerInfo.endDate;
 				l.peerSummary = peerInfo.summary || null;
 			}
-			const peerLocs = peerLocsById.get(peerId) || [];
-			l.peerPrimaryLocation = peerLocs[0]?.raw || null;
+			l.peerPrimaryLocation = pickBestFullAddress(peerLocsById.get(peerId) || []);
 		}
 	}
 
@@ -1698,11 +1804,21 @@ export function addPersonEmployment(input: {
 			},
 			db,
 		);
+		// Prefer HQ on the org card when it has no HQ yet (full street addresses help employment + geo weighting)
+		const orgHasHq = Boolean(
+			db
+				.prepare(
+					`SELECT 1 AS ok FROM profile_locations
+           WHERE profile_id = ? AND role = 'hq' AND trim(raw) != ''
+           LIMIT 1`,
+				)
+				.get(orgProfile.id) as { ok?: number } | undefined,
+		);
 		addLocation(
 			{
 				profileId: orgProfile.id,
 				raw: locClean,
-				role: 'associated',
+				role: orgHasHq ? 'associated' : 'hq',
 				sourceCorpus: corpus,
 			},
 			db,

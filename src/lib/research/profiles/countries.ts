@@ -493,7 +493,13 @@ export function detectProfileCountryCodes(input: DetectCountryInput): string[] {
 
 	// 2. Structured identifiers (US regulatory IDs & ISIN prefix)
 	for (const id of input.identifiers || []) {
-		if (id.scheme === 'finra_crd' || id.scheme === 'irs_ein' || id.scheme === 'okcr_instrument' || id.scheme === 'spc_om') {
+		if (
+			id.scheme === 'finra_crd' ||
+			id.scheme === 'irs_ein' ||
+			id.scheme === 'cusip' ||
+			id.scheme === 'okcr_instrument' ||
+			id.scheme === 'spc_om'
+		) {
 			add('us', 3);
 		} else if (id.scheme === 'sec_cik') {
 			add('us', 2);

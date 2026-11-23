@@ -175,6 +175,7 @@ function compactFirm(row: Record<string, unknown>, registry: 'finra' | 'sec'): F
 		basic.firm_source_id,
 		row.firm_id,
 		row.firmId,
+		row.firm_source_id,
 		row._id,
 	);
 	if (!crd) return null;
@@ -188,14 +189,20 @@ function compactFirm(row: Record<string, unknown>, registry: 'finra' | 'sec'): F
 	const connectionCount = Number(
 		basic.firm_connection_count ?? row.firm_connection_count ?? row.knownConnectionCount,
 	);
+	const bcScope = pickString(basic.bcScope, basic.firmBCScope, basic.firm_bc_scope, basic.bc_scope) || undefined;
+	const iaScope = pickString(basic.iaScope, basic.firmIAScope, basic.firm_ia_scope) || undefined;
 	return {
 		registry,
 		entity: 'firm',
 		crd,
 		name,
 		otherNames,
-		scope: pickString(basic.firm_bc_scope, basic.bc_scope, basic.firm_ia_scope) || undefined,
-		disclosureFlag: pickString(basic.disclosureFlag, basic.iaDisclosureFlag) || undefined,
+		scope: bcScope || iaScope || undefined,
+		bcScope,
+		iaScope,
+		disclosureFlag:
+			pickString(row.disclosureFlag, basic.disclosureFlag, row.iaDisclosureFlag, basic.iaDisclosureFlag) ||
+			undefined,
 		connectionCount: Number.isFinite(connectionCount) ? connectionCount : undefined,
 	};
 }
@@ -258,6 +265,11 @@ function normalizeCrdQuery(query: string): string | null {
 	return /^\d{4,10}$/.test(digits) ? digits : null;
 }
 
+function formatCrdDisplay(hit: Pick<FinraSidecarHit, 'name' | 'entity' | 'crd'>): string {
+	const kind = hit.entity === 'firm' ? 'Firm CRD#' : 'Individual CRD#';
+	return `${hit.name} :: ${kind} ${hit.crd}`;
+}
+
 /**
  * Full employment detail for a person CRD from the visualizer merged individual API
  * (same payload as /api/finra/merged/individual/{crd}).
@@ -285,6 +297,45 @@ async function fetchMergedIndividualHit(
 	}
 	const hit = compactIndividual(node, registry);
 	return { ok: Boolean(hit), hit, url };
+}
+
+/**
+ * Firm dossier for a firm CRD from the visualizer merged firm API
+ * (same payload as /api/finra/merged/firm/{crd} / dashboard/firm/{crd}).
+ * Firm and individual CRD namespaces overlap numerically — never treat a firm
+ * hit as a person (or the reverse) without checking this endpoint.
+ */
+async function fetchMergedFirmHit(
+	crd: string,
+	registry: 'finra' | 'sec' = 'finra',
+): Promise<{ ok: boolean; hit: FinraSidecarHit | null; url: string; error?: string }> {
+	const url = finraApiUrl(`/api/finra/merged/firm/${crd}`);
+	const res = await fetchJson(url);
+	if (!res.ok) {
+		return { ok: false, hit: null, url, error: res.error };
+	}
+	const root = asRecord(res.payload) || {};
+	if (root.found === false) {
+		return { ok: false, hit: null, url, error: 'merged firm not found' };
+	}
+	const node =
+		asRecord(root.merged) ||
+		asRecord(root.finraNode) ||
+		(root.basicInformation ? root : null);
+	if (!node) {
+		return { ok: false, hit: null, url, error: 'merged firm payload missing' };
+	}
+	const hit = compactFirm(node, registry);
+	if (!hit) return { ok: false, hit: null, url, error: 'merged firm compact failed' };
+	const basic = asRecord(node.basicInformation) || node;
+	hit.bcScope = hit.bcScope || pickString(basic.bcScope, basic.firmBCScope) || undefined;
+	hit.iaScope = hit.iaScope || pickString(basic.iaScope, basic.firmIAScope) || undefined;
+	hit.scope = hit.scope || hit.bcScope || hit.iaScope;
+	hit.disclosureFlag =
+		hit.disclosureFlag ||
+		pickString(node.disclosureFlag, node.iaDisclosureFlag, basic.disclosureFlag, basic.iaDisclosureFlag) ||
+		undefined;
+	return { ok: true, hit, url };
 }
 
 async function queryOne(options: {
@@ -371,35 +422,71 @@ export async function searchFinraSidecar(args: {
 	const errors: string[] = [];
 	const sources: Array<Record<string, unknown>> = [];
 
-	// Numeric CRD → merged individual API first (same employment detail as
-	// /api/finra/merged/individual/{crd}: current + IA + previous + branches/dates).
-	if (crdQuery && (entity === 'both' || entity === 'individual')) {
-		const merged = await fetchMergedIndividualHit(crdQuery, 'finra');
-		sources.push({
-			url: merged.url,
-			ok: merged.ok,
-			total: merged.hit ? 1 : 0,
-			error: merged.error,
-			returned: merged.hit ? 1 : 0,
-			kind: 'merged-individual',
-		});
-		if (merged.ok && merged.hit) {
-			const key = `${merged.hit.registry}:${merged.hit.entity}:${merged.hit.crd}`;
-			seen.add(key);
-			hits.push(merged.hit);
-		} else if (merged.error) {
-			errors.push(merged.error);
+	// Numeric CRD → probe firm and individual merged APIs separately.
+	// The same digits can be a Firm CRD (dashboard/firm/{crd}) or an Individual CRD
+	// (dashboard/individual/{crd}); never assume one without checking.
+	if (crdQuery) {
+		const mergedCalls: Array<Promise<{
+			kind: 'merged-individual' | 'merged-firm';
+			res: { ok: boolean; hit: FinraSidecarHit | null; url: string; error?: string };
+		}>> = [];
+		if (entity === 'both' || entity === 'individual') {
+			mergedCalls.push(
+				fetchMergedIndividualHit(crdQuery, 'finra').then((res) => ({
+					kind: 'merged-individual' as const,
+					res,
+				})),
+			);
+		}
+		if (entity === 'both' || entity === 'firm') {
+			mergedCalls.push(
+				fetchMergedFirmHit(crdQuery, 'finra').then((res) => ({
+					kind: 'merged-firm' as const,
+					res,
+				})),
+			);
+		}
+		const mergedSettled = await Promise.all(mergedCalls);
+		for (const part of mergedSettled) {
+			sources.push({
+				url: part.res.url,
+				ok: part.res.ok,
+				total: part.res.hit ? 1 : 0,
+				error: part.res.error,
+				returned: part.res.hit ? 1 : 0,
+				kind: part.kind,
+				entity: part.kind === 'merged-firm' ? 'firm' : 'individual',
+				crd: crdQuery,
+			});
+			if (part.res.ok && part.res.hit) {
+				const key = `${part.res.hit.registry}:${part.res.hit.entity}:${part.res.hit.crd}`;
+				if (!seen.has(key)) {
+					seen.add(key);
+					hits.push(part.res.hit);
+				}
+			} else if (part.res.error && part.res.error !== 'merged individual not found' && part.res.error !== 'merged firm not found') {
+				errors.push(part.res.error);
+			}
 		}
 	}
 
 	const registries: Array<'finra' | 'sec'> =
 		registry === 'both' ? ['finra', 'sec'] : [registry];
-	// When merged/individual already resolved a numeric CRD, skip redundant individual
-	// search (flat-file search treats digits as a loose text query and returns unrelated hits).
-	const mergedResolvedIndividual = Boolean(crdQuery && hits.some((h) => h.entity === 'individual' && h.crd === crdQuery));
+	// When merged firm/individual already resolved this exact CRD, skip redundant
+	// digit text-search for that entity (loose digit queries return unrelated hits).
+	const mergedResolvedIndividual = Boolean(
+		crdQuery && hits.some((h) => h.entity === 'individual' && h.crd === crdQuery),
+	);
+	const mergedResolvedFirm = Boolean(
+		crdQuery && hits.some((h) => h.entity === 'firm' && h.crd === crdQuery),
+	);
 	const entities: Array<'individual' | 'firm'> = (
 		entity === 'both' ? (['individual', 'firm'] as const) : ([entity] as const)
-	).filter((ent) => !(mergedResolvedIndividual && ent === 'individual')) as Array<'individual' | 'firm'>;
+	).filter(
+		(ent) =>
+			!(mergedResolvedIndividual && ent === 'individual') &&
+			!(mergedResolvedFirm && ent === 'firm'),
+	) as Array<'individual' | 'firm'>;
 
 	const perCallLimit = Math.max(3, Math.ceil(limit / Math.max(1, entities.length || 1)));
 	const calls =
@@ -486,6 +573,10 @@ export async function searchFinraSidecar(args: {
 			const bExact = b.crd === crdQuery ? 1 : 0;
 			if (bExact !== aExact) return bExact - aExact;
 		}
+		// Prefer labeling firm vs individual clearly when both match the same digits
+		if (crdQuery && a.crd === crdQuery && b.crd === crdQuery && a.entity !== b.entity) {
+			return a.entity === 'firm' ? -1 : 1;
+		}
 		const aEmp = a.employments?.length ?? 0;
 		const bEmp = b.employments?.length ?? 0;
 		if (bEmp !== aEmp) return bEmp - aEmp;
@@ -497,6 +588,9 @@ export async function searchFinraSidecar(args: {
 
 	const trimmed = hits.slice(0, limit);
 	const anyOk = settled.some((s) => s.ok) || trimmed.length > 0;
+	const resolvedKinds = [
+		...new Set(trimmed.filter((h) => !crdQuery || h.crd === crdQuery).map((h) => h.entity)),
+	];
 
 	return {
 		ok: anyOk,
@@ -507,16 +601,28 @@ export async function searchFinraSidecar(args: {
 			entity,
 			origin: getFinraAppOrigin(),
 			source:
-				'prod search-index sidecar via /api/finra/search (+ sec-search); numeric CRD / thin hits enriched from /api/finra/merged/individual/{crd}',
+				'prod search-index sidecar via /api/finra/search (+ sec-search); numeric CRDs resolved via /api/finra/merged/firm/{crd} and /api/finra/merged/individual/{crd} separately',
 			note:
-				'Identity from the shipped FINRA/SEC flat-file index; employment detail matches the visualizer merged individual API (current + IA + previous firms, dates, branches).',
+				'Firm CRDs and Individual CRDs are distinct namespaces that share the same numeric format. Hits are labeled entity=firm|individual. Firm detail matches dashboard/firm/{crd}; individual employment detail matches merged/individual (current + IA + previous, dates, branches).',
+			crdEntityResolved: crdQuery
+				? {
+						crd: crdQuery,
+						firm: resolvedKinds.includes('firm'),
+						individual: resolvedKinds.includes('individual'),
+					}
+				: undefined,
 			returned: trimmed.length,
 			hits: trimmed.map((h) => ({
 				registry: h.registry,
 				entity: h.entity,
 				crd: h.crd,
+				crdKind: h.entity === 'firm' ? 'firm' : 'individual',
 				name: h.name,
-				display: `${h.name} :: CRD# ${h.crd}`,
+				display: formatCrdDisplay(h),
+				dashboardPath:
+					h.entity === 'firm'
+						? `/dashboard/firm/${h.crd}`
+						: `/dashboard/individual/${h.crd}`,
 				otherNames: h.otherNames,
 				scope: h.scope,
 				bcScope: h.bcScope,

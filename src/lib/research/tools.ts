@@ -201,7 +201,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					kind: {
 						type: 'string',
 						description:
-							'Optional: same_entity_alias | shared_identifier | cross_source_mention | timeline_gap_bridge | co_occurrence_time_geo | building_colocation | block_colocation | city_colocation | shared_affiliation | county_filing_match | angle_comparison | possible_match_name_only',
+							'Optional: same_entity_alias | shared_identifier | cross_source_mention | timeline_gap_bridge | co_occurrence_time_geo | building_colocation | block_colocation | city_colocation | shared_affiliation | county_filing_match | knowledge_store_match | angle_comparison | possible_match_name_only',
 					},
 					status: { type: 'string', description: 'Optional: proposed | confirmed | dismissed' },
 					cautionTier: { type: 'string', description: 'Optional: observation | closer_look | stronger_indicator' },
@@ -323,7 +323,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'search_finra_sidecar',
 			description:
-				'Search the production FINRA/SEC visualizer flat-file search index (gzip sidecars via /api/finra/search and /api/finra/sec-search). Use for CRD / person / firm name lookup across the full shipped corpus — not only nodes on the current canvas. Returns identity plus employment detail (current, IA, previous firms with dates/branches) enriched from /api/finra/merged/individual/{crd} when the query is a numeric CRD or a hit has empty employers. For BrokerCheck-only deep history / exams still use lookup_brokercheck. Prefer this for FINRA identity; use inspect_canvas_graph only for what is on-screen.',
+				'Search the production FINRA/SEC visualizer flat-file search index (gzip sidecars via /api/finra/search and /api/finra/sec-search). Use for CRD / person / firm name lookup across the full shipped corpus — not only nodes on the current canvas. Numeric CRDs are resolved against BOTH /api/finra/merged/firm/{crd} and /api/finra/merged/individual/{crd} — Firm CRDs and Individual CRDs are different (same digits can be a firm like 288811 Florida Financial Advisors). Hits are labeled entity/crdKind=firm|individual with display “Firm CRD#” or “Individual CRD#”. Person employment detail comes from merged/individual; firm identity from merged/firm (dashboard/firm/{crd}). For BrokerCheck-only deep individual history / exams use lookup_brokercheck; for firm rosters use lookup_firm_connections. Prefer this for FINRA identity; use inspect_canvas_graph only for what is on-screen.',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -337,7 +337,8 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					},
 					entity: {
 						type: 'string',
-						description: 'individual | firm | both (default both)',
+						description:
+							'individual | firm | both (default both). Prefer firm when the CRD is known to be a firm (dashboard/firm/{crd}); individual for a person CRD.',
 					},
 					limit: {
 						type: 'number',
@@ -353,13 +354,13 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'lookup_brokercheck',
 			description:
-				'Fetch full BrokerCheck individual detail by numeric CRD: previous + current employment history, exams, disclosure flags, and scopes. Also pulls AdviserInfo when available. Use whenever the user asks for employment history, registration history, firms worked at, exams, or BrokerCheck detail for a CRD. Does NOT require the node-graph checkbox or a canvas snapshot.',
+				'Fetch full BrokerCheck INDIVIDUAL detail by numeric person CRD: previous + current employment history, exams, disclosure flags, and scopes. Also pulls AdviserInfo when available. Do NOT pass a firm CRD here (e.g. 288811 is a Firm CRD — use search_finra_sidecar entity=firm or lookup_firm_connections). Use for person employment history / registration history / exams. Does NOT require the node-graph checkbox or a canvas snapshot.',
 			parameters: {
 				type: 'object',
 				properties: {
 					crd: {
 						type: 'string',
-						description: 'Numeric CRD, e.g. 1085996',
+						description: 'Numeric INDIVIDUAL (person) CRD, e.g. 1085996 — not a firm CRD',
 					},
 					includeAdviserInfo: {
 						type: 'boolean',
@@ -375,13 +376,13 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'lookup_firm_connections',
 			description:
-				'List all broker/person CRDs connected to a firm from the live FINRA SEC visualizer API (/api/finra/firm/{id}/connections). Use for firm roster / connections / “who works at” / “all CRD connections for firm X” questions. Does NOT require opening the live graph or checking “Question about node graph”. Returns totals plus a page of Name :: CRD# rows; full roster is also saved under .data/finra-rosters/.',
+				'List all broker/person CRDs connected to a firm from the live FINRA SEC visualizer API (/api/finra/firm/{id}/connections). firmCrd must be a Firm CRD (dashboard/firm/{id}), not an individual person CRD. Use for firm roster / connections / “who works at” / “all CRD connections for firm X” questions. Does NOT require opening the live graph or checking “Question about node graph”. Returns totals plus a page of Name :: Individual CRD# rows; full roster is also saved under .data/finra-rosters/.',
 			parameters: {
 				type: 'object',
 				properties: {
 					firmCrd: {
 						type: 'string',
-						description: 'Numeric firm CRD, e.g. 291361',
+						description: 'Numeric FIRM CRD, e.g. 291361 or 288811 (not an individual person CRD)',
 					},
 					bucket: {
 						type: 'string',

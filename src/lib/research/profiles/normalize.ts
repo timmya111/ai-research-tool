@@ -186,7 +186,30 @@ function toTitleCaseSegment(seg: string): string {
 	const isAllUpper = s === s.toUpperCase() && /[A-Z]/.test(s) && s.length > 2;
 	const isAllLower = s === s.toLowerCase() && /[a-z]/.test(s);
 	if (!isAllUpper && !isAllLower) return s;
-	const keepUpper = new Set(['NW', 'NE', 'SW', 'SE', 'PO', 'WTC', 'AFB', 'NAS', 'JRB', 'US', 'UK', 'DC', 'NYC']);
+	const keepUpper = new Set([
+		'NW',
+		'NE',
+		'SW',
+		'SE',
+		'PO',
+		'WTC',
+		'AFB',
+		'NAS',
+		'JRB',
+		'US',
+		'UK',
+		'DC',
+		'NYC',
+		// Australian states / territories
+		'NSW',
+		'VIC',
+		'QLD',
+		'SA',
+		'WA',
+		'ACT',
+		'NT',
+		'TAS',
+	]);
 	const keepLower = new Set(['of', 'the', 'and', 'de', 'la', 'del', 'in', 'on', 'at']);
 	return s
 		.toLowerCase()
@@ -351,6 +374,130 @@ export function normalizeLocationRecord(input: {
 
 const GENERIC_COUNTRY_ONLY_RE =
 	/^(?:u\.?s\.?a?\.?|united states(?: of america)?|america|unknown|n\/a|none)$/i;
+
+const BARE_COUNTRY_NAME_RE =
+	/^(?:netherlands|australia|germany|france|canada|united kingdom|uk|england|japan|china|india|israel|switzerland|sweden|norway|denmark|finland|belgium|spain|italy|brazil|mexico|singapore|south korea|korea|ireland|austria|new zealand)$/i;
+
+/**
+ * Build the richest display address possible from structured location fields.
+ * Prefers a street-bearing `raw` when present; otherwise composes city / county /
+ * state / country (omitting redundant "US" when a US state is already shown).
+ */
+export function formatFullAddress(loc: {
+	raw?: string | null;
+	city?: string | null;
+	county?: string | null;
+	state?: string | null;
+	country?: string | null;
+}): string | null {
+	const norm = normalizeLocationRecord({
+		raw: loc.raw,
+		city: loc.city,
+		county: loc.county,
+		state: loc.state,
+		country: loc.country,
+	});
+	const raw = String(norm.raw || '').trim();
+	const city = norm.city;
+	const county = norm.county;
+	const state = norm.state;
+	let country = norm.country;
+	if (country && /^(?:u\.?s\.?a?\.?|united states(?: of america)?)$/i.test(country)) {
+		country = 'US';
+	}
+
+	const rawParts = raw
+		? raw
+				.split(',')
+				.map((p) => p.trim())
+				.filter(Boolean)
+		: [];
+	const hasStreet = rawParts.some((p) => /^\d/.test(p) || /\d{5}(?:-\d{4})?/.test(p));
+	const rawIsBareCountry =
+		rawParts.length === 1 &&
+		(BARE_COUNTRY_NAME_RE.test(rawParts[0]) || GENERIC_COUNTRY_ONLY_RE.test(rawParts[0]));
+	const rawLooksComplete =
+		Boolean(raw) &&
+		!rawIsBareCountry &&
+		(hasStreet || rawParts.length >= 2 || (Boolean(city) && Boolean(state)));
+
+	if (rawLooksComplete && !rawIsBareCountry) {
+		// Ensure country is present for non-US addresses when we know it
+		if (
+			country &&
+			country !== 'US' &&
+			!raw.toLowerCase().includes(country.toLowerCase()) &&
+			!BARE_COUNTRY_NAME_RE.test(raw)
+		) {
+			return `${raw}, ${country}`;
+		}
+		return raw;
+	}
+
+	const parts: string[] = [];
+	if (hasStreet && rawParts[0] && /^\d/.test(rawParts[0])) {
+		parts.push(rawParts[0]);
+	}
+	if (city && !parts.some((p) => p.toLowerCase() === city.toLowerCase())) {
+		parts.push(city);
+	} else if (county) {
+		const countyLabel = /county$/i.test(county) ? county : `${county} County`;
+		if (!parts.some((p) => p.toLowerCase() === countyLabel.toLowerCase())) {
+			parts.push(countyLabel);
+		}
+	}
+	if (state && !parts.some((p) => p.toUpperCase() === state.toUpperCase())) {
+		parts.push(state);
+	}
+	if (country && country !== 'US') {
+		if (!parts.some((p) => p.toLowerCase() === country!.toLowerCase())) {
+			parts.push(country);
+		}
+	} else if (country === 'US' && !state && parts.length > 0) {
+		parts.push('US');
+	}
+
+	const built = parts.join(', ').trim();
+	return built || (raw && !GENERIC_COUNTRY_ONLY_RE.test(raw) ? raw : null);
+}
+
+/** Score a location for "best display address" (street + HQ preferred). */
+export function scoreLocationCompleteness(loc: {
+	raw?: string | null;
+	city?: string | null;
+	county?: string | null;
+	state?: string | null;
+	country?: string | null;
+	role?: string | null;
+}): number {
+	const label = formatFullAddress(loc) || '';
+	if (!label) return -1;
+	const streety = /\d/.test(label) ? 1000 : 0;
+	const commaParts = label.split(',').length;
+	const roleBoost =
+		loc.role === 'hq' ? 500 : loc.role === 'residence' ? 400 : loc.role === 'branch' ? 100 : 0;
+	const structured =
+		(loc.city ? 40 : 0) + (loc.state ? 40 : 0) + (loc.county ? 20 : 0) + (loc.country ? 10 : 0);
+	return streety + roleBoost + commaParts * 25 + structured + label.length;
+}
+
+/** Pick the best location row and return a full display address string. */
+export function pickBestFullAddress(
+	locs: Array<{
+		raw?: string | null;
+		city?: string | null;
+		county?: string | null;
+		state?: string | null;
+		country?: string | null;
+		role?: string | null;
+	}>,
+): string | null {
+	if (!locs.length) return null;
+	const ranked = [...locs].sort(
+		(a, b) => scoreLocationCompleteness(b) - scoreLocationCompleteness(a),
+	);
+	return formatFullAddress(ranked[0]);
+}
 
 /**
  * Return true when a location string is too generic to be useful as a location row

@@ -122,9 +122,10 @@ withProfilesTransaction((tx) => {
 		const role = String(p.role || '').trim();
 		const baseSummary = String(p.summary || '').trim();
 		const hasStructured = /^(Labels|Role):/m.test(baseSummary) || /\*\*\d{4}/.test(baseSummary);
+		// Disclaimer stays on source_record / profile metadata only — not appended to overview summary text.
 		const summary = hasStructured
-			? [baseSummary, DISCLAIMER].filter(Boolean).join('\n\n')
-			: [baseSummary || null, role ? `Role: ${role}` : null, DISCLAIMER].filter(Boolean).join('\n\n');
+			? baseSummary
+			: [baseSummary || null, role ? `Role: ${role}` : null].filter(Boolean).join('\n\n');
 
 		const birthYear = p.birthYear != null ? Number(p.birthYear) : null;
 		const startDate =

@@ -26,6 +26,12 @@ export type ProfileIdentityContext = {
 	firmsAndAssociates: string[];
 	/** Linked universities, schools, hospitals, government agencies, nonprofits */
 	institutions: string[];
+	/**
+	 * 1-hop graph peers used for Wikipedia/candidate corroboration that are not already
+	 * covered by firmsAndAssociates/institutions — especially `historic_event` titles and
+	 * distinctive multi-word org/event phrases (e.g. "Starck Club Young Republicans fundraiser").
+	 */
+	graphNeighbors: string[];
 	/** Military bases, installations, plants, commands, or branches associated with this profile */
 	militarySignals: string[];
 	summary: string;
@@ -791,6 +797,7 @@ export function buildProfileIdentityContext(detail: ProfileDetail): ProfileIdent
 
 	const firmsSet = new Set<string>();
 	const instSet = new Set<string>();
+	const neighborSet = new Set<string>();
 	const milTextParts: string[] = [detail.profile.summary];
 
 	for (const emp of detail.employmentHistory) {
@@ -816,6 +823,11 @@ export function buildProfileIdentityContext(detail: ProfileDetail): ProfileIdent
 				peerType === 'nonprofit'
 			) {
 				instSet.add(peerName);
+			} else if (peerType === 'historic_event') {
+				neighborSet.add(peerName);
+				// Also keep a shortened distinctive head when the event title is long
+				const head = peerName.split(/[,:(–—-]/)[0]?.trim();
+				if (head && head.length >= 6 && head !== peerName) neighborSet.add(head);
 			}
 		}
 		if (link.evidenceNote) milTextParts.push(link.evidenceNote);
@@ -882,6 +894,7 @@ export function buildProfileIdentityContext(detail: ProfileDetail): ProfileIdent
 		locations,
 		firmsAndAssociates: [...firmsSet],
 		institutions: [...instSet],
+		graphNeighbors: [...neighborSet],
 		militarySignals: extractMilitarySignals(milTextParts.join(' \n ')),
 		summary: detail.profile.summary || '',
 		descriptionText: descParts.join(' \n ').slice(0, 12_000),
@@ -1272,6 +1285,36 @@ export function evaluateIdentityMatch(
 		}
 	}
 
+	// 7b. 1-hop graph neighbors (historic_event titles and distinctive peer phrases) vs candidate text.
+	// Catches Wikipedia exact-name hits where the curated node lacks flat address/CRD but shares an event/org
+	// already linked in the graph (e.g. "Starck Club … fundraiser" ↔ article mentioning Starck Club).
+	for (const neighbor of profile.graphNeighbors || []) {
+		if (!isDistinctOrgToken(neighbor) && normalizeText(neighbor).split(/\s+/).length < 2) continue;
+		const nNorm = normalizeText(neighbor);
+		if (nNorm.length < 6) continue;
+		if (nNorm === normalizeText(profile.name)) continue;
+		if (hasPhrase(candNorm, nNorm)) {
+			addCorrob({
+				kind: 'graph_neighbor',
+				value: neighbor,
+				detail: `Matched 1-hop graph neighbor "${neighbor}" in candidate text`,
+			});
+			continue;
+		}
+		// Multi-word neighbors: also try a distinctive 2+ token head (drop trailing generic words)
+		const tokens = nNorm.split(/\s+/).filter((t) => t.length >= 3 && !GENERIC_ORG_STOPWORDS.has(t));
+		if (tokens.length >= 2) {
+			const head = tokens.slice(0, Math.min(4, tokens.length)).join(' ');
+			if (head.length >= 8 && hasPhrase(candNorm, head)) {
+				addCorrob({
+					kind: 'graph_neighbor',
+					value: neighbor,
+					detail: `Matched 1-hop graph neighbor head "${head}" from "${neighbor}"`,
+				});
+			}
+		}
+	}
+
 	// 8. Strong description-keyword identity match (works for ALL entity types when description/timeline/notes
 	// contain strongly identifying keywords, proper phrases, or domain/role anchors that match the candidate).
 	// Strictly requires exact_name or strong fuzzy_name (>= 0.90) and non-conflicting dates, plus a high weighted
@@ -1442,4 +1485,82 @@ export function buildSearchPhrasesForProfile(
 	}
 
 	return [...phrases].slice(0, 8);
+}
+
+/** Suffix glued to the matched person name that marks an entity party (not a counterparty bank). */
+const PERSON_NAME_ENTITY_SUFFIX_RE =
+	/\s+(?:llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|ltd\.?|l\.?p\.?|lp|llp|plc|company|co\.?|holdings?|partners?|associates?|trust)\b/i;
+
+/** Oklahoma (and similar) county deed / land-records project names. */
+const COUNTY_DEEDS_PROJECT_RE =
+	/\b(?:Adair|Bryan|Cherokee|Sequoyah|Washington|Dallas|Oklahoma|Tulsa|Creek|Muskogee|McIntosh|Haskell|Le\s*Flore|Latimer|Pittsburg|Atoka|Coal|Johnston|Marshall|Love|Carter|Murray|Pontotoc|Seminole|Hughes|Okfuskee|Okmulgee|Wagoner|Mayes|Delaware|Ottawa)\b[\s\w-]*County|\bCounty\b[\s\w-]*(?:Deeds|Records|Clerk)/i;
+
+/**
+ * True when a knowledge hit is a bare person-name collision against a county deed index.
+ * Counterparty banks/trusts on the same instrument do NOT block demotion — only when the
+ * matched person name itself carries an LLC/INC/Trust-style suffix.
+ */
+export function isBareCountyPersonNameOnlyHit(input: {
+	profileType: ProfileType;
+	profileName?: string;
+	projectName: string;
+	title?: string;
+	snippet?: string;
+	matchedPhrase?: string;
+}): boolean {
+	if (input.profileType !== 'person') return false;
+	if (!COUNTY_DEEDS_PROJECT_RE.test(input.projectName || '')) return false;
+	const blob = `${input.title || ''} ${input.snippet || ''} ${input.matchedPhrase || ''}`;
+	const name = String(input.profileName || input.matchedPhrase || '').trim();
+	if (name.length >= 4) {
+		const namePattern = name
+			.split(/\s+/)
+			.filter(Boolean)
+			.map(escapeRegExp)
+			.join('\\s+');
+		const nameEntityRe = new RegExp(
+			`\\b${namePattern}${PERSON_NAME_ENTITY_SUFFIX_RE.source}`,
+			'i',
+		);
+		if (nameEntityRe.test(blob)) return false;
+	}
+	return true;
+}
+
+/** Cap for demoted bare county person name-only notes (sorts below building_colocation ~0.32–0.45). */
+export const BARE_COUNTY_NAME_ONLY_SCORE_CAP = 0.28;
+
+/**
+ * Demote a name-only score when hits are predominantly bare county person collisions.
+ * Mixed Research Drive + county keeps the higher score; pure county person blocks demote.
+ */
+export function demoteBareCountyNameOnlyScore(
+	profileType: ProfileType,
+	hits: Array<{
+		projectName: string;
+		title?: string;
+		snippet?: string;
+		matchedPhrase?: string;
+		profileName?: string;
+	}>,
+	score: number,
+	profileName?: string,
+): number {
+	if (!hits.length || profileType !== 'person') return score;
+	const countyHits = hits.filter((h) => COUNTY_DEEDS_PROJECT_RE.test(h.projectName || ''));
+	if (!countyHits.length) return score;
+	// Only demote when every hit is a county deed (no Research Drive / Wikipedia mixed in)
+	if (countyHits.length !== hits.length) return score;
+	const allBare = countyHits.every((h) =>
+		isBareCountyPersonNameOnlyHit({
+			profileType,
+			profileName: profileName || h.profileName,
+			projectName: h.projectName,
+			title: h.title,
+			snippet: h.snippet,
+			matchedPhrase: h.matchedPhrase,
+		}),
+	);
+	if (!allBare) return score;
+	return Math.min(BARE_COUNTY_NAME_ONLY_SCORE_CAP, Number(score) || 0);
 }

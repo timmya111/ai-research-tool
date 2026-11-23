@@ -41,6 +41,8 @@ export type IdentifierScheme =
 	| 'parent_sec_cik'
 	| 'ticker'
 	| 'irs_ein'
+	/** CUSIP security identifier (entity / security matching). */
+	| 'cusip'
 	| 'ror'
 	| 'orcid'
 	| 'wikidata'
@@ -120,6 +122,8 @@ export type AlignmentKind =
 	| 'building_colocation'
 	| 'shared_affiliation'
 	| 'county_filing_match'
+	/** Local knowledge hits that are not OKCountyRecords filings (e.g. Research Drive / WEF lists). */
+	| 'knowledge_store_match'
 	| 'angle_comparison'
 	| 'possible_match_name_only';
 
@@ -132,7 +136,9 @@ export type CorroborationKind =
 	| 'military_base_or_unit'
 	| 'education_or_institution'
 	| 'description_keyword_match'
-	| 'summary_or_topic_context';
+	| 'summary_or_topic_context'
+	/** 1-hop graph peer (historic_event / distinctive org) found in candidate text */
+	| 'graph_neighbor';
 
 export type CorroborationHit = {
 	kind: CorroborationKind;

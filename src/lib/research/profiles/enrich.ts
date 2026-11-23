@@ -18,6 +18,7 @@ import { getProfilesDb, withProfilesTransaction } from '@/lib/research/profiles/
 import {
 	buildProfileIdentityContext,
 	buildSearchPhrasesForProfile,
+	demoteBareCountyNameOnlyScore,
 	evaluateIdentityMatch,
 	extractIdentifyingKeywords,
 	extractMilitarySignals,
@@ -721,10 +722,12 @@ function extractOrgDatesFromWiki(
 
 function cleanRoleEntityPair(rawItem: string): { role: string | null; org: string | null } {
 	const cleaned = rawItem.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
-	// Pattern: "Co-founder and CEO, Palantir Technologies" or "CEO of Palantir"
+	// Pattern: "Co-founder and CEO, Palantir Technologies" or "CEO of Palantir" / "Partner in Founders Fund"
 	const commaM = cleaned.match(/^(.{2,60}?),\s+([A-Z][A-Za-z0-9&.'\-\s]{2,70})$/);
 	if (commaM) return { role: commaM[1].trim(), org: commaM[2].trim() };
-	const ofM = cleaned.match(/^(.{2,55}?)\s+(?:of|at)\s+([A-Z][A-Za-z0-9&.'\-\s]{2,70})$/);
+	const ofM = cleaned.match(
+		/^(.{2,55}?)\s+(?:of|at|in|for)\s+([A-Z][A-Za-z0-9&.'\-\s]{2,70})$/,
+	);
 	if (ofM) return { role: ofM[1].trim(), org: ofM[2].trim() };
 	return { role: null, org: cleaned.length >= 3 ? cleaned : null };
 }
@@ -737,7 +740,8 @@ function extractLocationFromInfoboxText(raw: string): string | null {
 		.replace(/\s+/g, ' ')
 		.replace(/^[,;\s-]+|[,;\s-]+$/g, '')
 		.trim();
-	if (clean.length < 3 || clean.length > 110) return null;
+	// Allow full street addresses (suite/floor + city/state/ZIP), not only city-level HQ strings
+	if (clean.length < 3 || clean.length > 200) return null;
 	return clean;
 }
 
@@ -1858,12 +1862,23 @@ async function enrichFirmFromFinraConnections(ctx: ProfileIdentityContext): Prom
 					iaScope ? `iaScope=${iaScope}` : '',
 					address ? `branch=${address}` : '',
 				].filter(Boolean);
+				const startDate =
+					typeof r.startDate === 'string' && r.startDate.trim()
+						? normalizeIsoDate(String(r.startDate).trim()).date
+						: null;
+				const endDate = isCurrent
+					? null
+					: typeof r.endDate === 'string' && r.endDate.trim()
+						? normalizeIsoDate(String(r.endDate).trim()).date
+						: null;
 				upsertProfileLink(
 					{
 						fromProfileId: personProf.id,
 						toProfileId: ctx.profileId,
 						relationType: 'registered_at',
 						roleLabel: isCurrent ? 'Current registration' : 'Previous registration',
+						startDate,
+						endDate,
 						status: 'verified',
 						confidence: 0.96,
 						angle: 'regulatory_finra',
@@ -2112,15 +2127,31 @@ function enrichFromKnowledgeSqlite(ctx: ProfileIdentityContext): EnrichSourceOut
 			// STRICT RULE: Name-only hits in county deeds / Research Drive are NEVER added to timeline — note only!
 			const projects = [...new Set(nameOnlyHits.map((n) => n.hit.projectName))];
 			const sample = nameOnlyHits[0].evalRes;
+			const demotedScore = demoteBareCountyNameOnlyScore(
+				ctx.profileType,
+				nameOnlyHits.map((n) => ({
+					projectName: n.hit.projectName,
+					title: n.hit.title,
+					snippet: n.hit.snippet,
+					matchedPhrase: n.hit.matchedPhrase,
+					profileName: ctx.name,
+				})),
+				sample.score,
+				ctx.name,
+			);
 			upsertAlignmentCandidate(
 				{
 					dedupeKey: sha256Key(['possible_match_name_only', ctx.profileId, 'knowledge-sqlite']),
 					alignmentKind: 'possible_match_name_only',
 					leftProfileId: ctx.profileId,
 					rightProfileId: null,
-					score: sample.score,
+					score: demotedScore,
 					cautionTier: 'observation',
-					rationale: `Name-only hit in local records (${projects.join(', ')}): ${nameOnlyHits.length} doc(s) matched name/initials without corroborating address, firm, military base, or institution. NOT merged onto profile/timeline — verify party/address first.`,
+					rationale: `Name-only hit in local records (${projects.join(', ')}): ${nameOnlyHits.length} doc(s) matched name/initials without corroborating address, firm, military base, or institution. NOT merged onto profile/timeline — verify party/address first.${
+						demotedScore < sample.score
+							? ' Score demoted (bare county person-name collision; no LLC/INC/Trust party).'
+							: ''
+					}`,
 					evidence: nameOnlyHits.slice(0, 6).map((n) => ({
 						corpus: `knowledge:${n.hit.projectName}`,
 						label: n.hit.title.slice(0, 120),

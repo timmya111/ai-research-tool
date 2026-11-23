@@ -34,6 +34,7 @@
     "entities:link": "node scripts/entity-dossiers-link-authority.mjs",
     "entities:digest": "node scripts/entity-dossiers-digest.mjs",
     "entities:ingest": "node scripts/entity-dossiers-ingest-knowledge.mjs",
+    "sec:ciks-since-2016": "node scripts/sec-ciks-since-2016.mjs",
     "profiles:backfill": "node scripts/profiles-backfill.mjs",
     "profiles:align": "node scripts/profiles-backfill.mjs --align-only",
     "profiles:enrich": "node scripts/profiles-enrich.mjs",
@@ -95,7 +96,8 @@
     "physics-congress:assets": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --assets-only",
     "physics-congress:all": ".venv-monitors/bin/python scripts/physics-congress-corpus.py",
     "physics-congress:ingest": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --ingest-only",
-    "profiles:import-lippe-biesterfeld": "node scripts/import-lippe-biesterfeld-dutch-royals.mjs"
+    "profiles:import-lippe-biesterfeld": "node scripts/import-lippe-biesterfeld-dutch-royals.mjs",
+    "profiles:import-dallas-elite": "node scripts/import-dallas-elite.mjs"
   },
   "dependencies": {
     "next": "16.4.6",

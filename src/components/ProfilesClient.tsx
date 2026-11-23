@@ -88,17 +88,33 @@ function profileHasEnded(p: Pick<Profile, 'endDate'>): boolean {
 	return Boolean(p.endDate && String(p.endDate).trim());
 }
 
-/** Living people and still-active firms get a soft green “current” tint on the left list. */
-function isCurrentPersonOrFirm(p: Pick<Profile, 'profileType' | 'endDate'>): boolean {
-	return (p.profileType === 'person' || p.profileType === 'firm') && !profileHasEnded(p);
+function profileHasStartDate(p: Pick<Profile, 'startDate'>): boolean {
+	return Boolean(p.startDate && String(p.startDate).trim());
+}
+
+/**
+ * Soft green “current” tint:
+ * - people: living (no endDate)
+ * - firms: inactive by default until a startDate is confirmed, and not ended
+ */
+function isCurrentPersonOrFirm(
+	p: Pick<Profile, 'profileType' | 'startDate' | 'endDate'>,
+): boolean {
+	if (profileHasEnded(p)) return false;
+	if (p.profileType === 'person') return true;
+	if (p.profileType === 'firm') return profileHasStartDate(p);
+	return false;
 }
 
 const CURRENT_ACTOR_BADGE =
 	'bg-emerald-500/20 text-emerald-900 dark:text-emerald-100 border-emerald-500/45';
 const CURRENT_ACTOR_ROW =
 	'bg-emerald-500/10 hover:bg-emerald-500/18 dark:bg-emerald-500/12 dark:hover:bg-emerald-500/20';
+/** Selected current actors keep the orange left rail (same as other selected rows) on the green tint. */
 const CURRENT_ACTOR_ROW_ACTIVE =
-	'border-l-2 border-l-emerald-500 bg-emerald-500/20 dark:bg-emerald-500/25';
+	'border-l-2 border-l-[#F97316] bg-emerald-500/20 dark:bg-emerald-500/25';
+const CURRENT_ACTOR_DETAIL_OUTLINE =
+	'border-emerald-500/55 ring-1 ring-emerald-500/35 dark:border-emerald-400/50 dark:ring-emerald-400/30';
 
 const ALL_TYPES: ProfileType[] = [
 	'historic_event',
@@ -109,6 +125,96 @@ const ALL_TYPES: ProfileType[] = [
 	'medical_hospital',
 	'government',
 ];
+
+const HISTORY_FILTER = 'history';
+const HISTORY_STORAGE_KEY = 'profiles.viewHistory.v1';
+const HISTORY_LIMIT = 10_000;
+
+type ViewHistoryEntry = {
+	id: string;
+	slug: string;
+	name: string;
+	profileType: ProfileType;
+	primaryLocation?: string | null;
+	countryCodes?: string[];
+	alternateNames?: string[];
+	endDate?: string | null;
+	viewedAt: string;
+};
+
+function readViewHistory(): ViewHistoryEntry[] {
+	if (typeof window === 'undefined') return [];
+	try {
+		const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw) as unknown;
+		if (!Array.isArray(parsed)) return [];
+		const out: ViewHistoryEntry[] = [];
+		for (const item of parsed) {
+			if (!item || typeof item !== 'object') continue;
+			const row = item as Record<string, unknown>;
+			const id = String(row.id || '').trim();
+			const slug = String(row.slug || '').trim();
+			const name = String(row.name || '').trim();
+			const profileType = String(row.profileType || '') as ProfileType;
+			if (!id || !slug || !name || !ALL_TYPES.includes(profileType)) continue;
+			out.push({
+				id,
+				slug,
+				name,
+				profileType,
+				primaryLocation: row.primaryLocation != null ? String(row.primaryLocation) : null,
+				countryCodes: Array.isArray(row.countryCodes)
+					? row.countryCodes.map(String).filter(Boolean)
+					: [],
+				alternateNames: Array.isArray(row.alternateNames)
+					? row.alternateNames.map(String).filter(Boolean)
+					: [],
+				endDate: row.endDate != null ? String(row.endDate) : null,
+				viewedAt: String(row.viewedAt || new Date().toISOString()),
+			});
+			if (out.length >= HISTORY_LIMIT) break;
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+function writeViewHistory(entries: ViewHistoryEntry[]) {
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
+	} catch {
+		/* quota / private mode */
+	}
+}
+
+function historyEntryToProfile(entry: ViewHistoryEntry): Profile {
+	return {
+		id: entry.id,
+		slug: entry.slug,
+		profileType: entry.profileType,
+		name: entry.name,
+		normalizedName: entry.name.toLowerCase(),
+		status: 'active',
+		summary: '',
+		startDate: null,
+		endDate: entry.endDate ?? null,
+		metadata: {},
+		createdAt: entry.viewedAt,
+		updatedAt: entry.viewedAt,
+		aliasCount: entry.alternateNames?.length || 0,
+		linkCount: 0,
+		timelineCount: 0,
+		alignmentCount: 0,
+		corpora: [],
+		primaryLocation: entry.primaryLocation ?? null,
+		categoryTags: [],
+		countryCodes: entry.countryCodes || [],
+		alternateNames: entry.alternateNames || [],
+	};
+}
 
 const EMPLOYER_CATEGORY_TYPES: ProfileType[] = [
 	'firm',
@@ -262,6 +368,85 @@ function isHiddenEpsteinSourceIdentifier(scheme: string, value: string): boolean
 	return false;
 }
 
+/** Public registry / market identifiers shown in External Identifiers. */
+const PUBLIC_IDENTIFIER_SCHEMES = new Set([
+	'finra_crd',
+	'sec_cik',
+	'parent_sec_cik',
+	'ticker',
+	'irs_ein',
+	'cusip',
+	'ror',
+	'orcid',
+	'usgs_event',
+	'spc_om',
+	'okcr_instrument',
+]);
+
+const IDENTIFIER_SCHEME_LABELS: Record<string, string> = {
+	finra_crd: 'CRD',
+	sec_cik: 'CIK',
+	parent_sec_cik: 'Parent CIK',
+	ticker: 'Ticker',
+	irs_ein: 'EIN',
+	cusip: 'CUSIP',
+	ror: 'ROR',
+	orcid: 'ORCID',
+	usgs_event: 'USGS',
+	spc_om: 'SPC',
+	okcr_instrument: 'OKCR',
+};
+
+function sourceLabelFromUrl(raw: string): string | null {
+	const text = String(raw || '').trim();
+	if (!text) return null;
+	let host = '';
+	try {
+		const withProto = /^https?:\/\//i.test(text) ? text : `https://${text}`;
+		host = new URL(withProto).hostname.replace(/^www\./i, '').toLowerCase();
+	} catch {
+		const m = text.match(/([a-z0-9.-]+\.[a-z]{2,})/i);
+		host = m ? m[1].replace(/^www\./i, '').toLowerCase() : '';
+	}
+	if (!host) return null;
+	if (host.includes('wikipedia.org')) return 'wikipedia';
+	if (host.includes('wikidata.org')) return 'wikidata';
+	if (host.includes('youtube.com') || host === 'youtu.be') return 'youtube';
+	if (host.includes('brokercheck.finra.org') || host.includes('finra.org')) return 'finra';
+	if (host.includes('adviserinfo.sec.gov') || host.includes('sec.gov')) return 'sec';
+	if (host.includes('linkedin.com')) return 'linkedin';
+	if (host.includes('bloomberg.com')) return 'bloomberg';
+	if (host.includes('reuters.com')) return 'reuters';
+	if (host.includes('nytimes.com')) return 'nytimes';
+	if (host.includes('wsj.com')) return 'wsj';
+	if (host.includes('github.com')) return 'github';
+	if (host.includes('twitter.com') || host === 'x.com') return 'x';
+	const base = host.split('.').slice(0, -1).join('.') || host;
+	const first = base.split('.')[0] || host;
+	return first.replace(/[^a-z0-9-]+/gi, '') || null;
+}
+
+function sourceLabelFromSchemeValue(scheme: string, value: string): string | null {
+	const s = String(scheme || '').toLowerCase();
+	const v = String(value || '').trim();
+	// Only URL locators become Sources text (wikipedia, youtube, …).
+	// wikidata / source_id / dossier_slug stay out of both Identifiers and Sources.
+	if (s === 'url') return sourceLabelFromUrl(v);
+	return null;
+}
+
+function collectProfileSourceLabels(
+	identifiers: Array<{ scheme: string; value: string; sourceCorpus?: string | null }>,
+): string[] {
+	const labels = new Set<string>();
+	for (const id of identifiers) {
+		if (isHiddenEpsteinSourceIdentifier(id.scheme, id.value)) continue;
+		const fromScheme = sourceLabelFromSchemeValue(id.scheme, id.value);
+		if (fromScheme) labels.add(fromScheme);
+	}
+	return [...labels].sort((a, b) => a.localeCompare(b));
+}
+
 function formatSourceCorpusLabel(corpus: string | null | undefined): string {
 	const raw = String(corpus || '').trim();
 	if (!raw) return '';
@@ -285,6 +470,48 @@ function scrubEpsteinSourceLabels(text: string | null | undefined): string {
 		.replace(/\bsource_id:\s*epstein-[^\s,;)]+/gi, '')
 		.replace(/\s{2,}/g, ' ')
 		.trim();
+}
+
+/** Corpus / import source tags that should never appear in Connected Profiles notes. */
+const EVIDENCE_SOURCE_TAG_RE =
+	/^(?:dallas-elite(?:-curated)?|wikipedia(?:-local)?|finra(?:-visualizer|-rosters)?|dynasties?(?:-power-network)?(?:-curated)?|entity-dossiers?|regional-history(?:-corpus)?|manual|curated|seed|[a-z][a-z0-9]*(?:-[a-z0-9]+)+)$/i;
+
+/**
+ * Strip trailing/inline source corpus tags from link evidence notes for display
+ * (e.g. "; dallas-elite", "; wikipedia-local"). Only splits on `;` so addresses
+ * like "BOSTON, MA" stay intact.
+ */
+function scrubEvidenceNoteSourceTags(note: string | null | undefined): string {
+	let out = scrubEpsteinSourceLabels(note);
+	if (!out) return '';
+	out = out
+		.split(';')
+		.map((piece) => piece.trim())
+		.filter((piece) => piece && !EVIDENCE_SOURCE_TAG_RE.test(piece))
+		.join('; ')
+		.replace(/\s{2,}/g, ' ')
+		.trim();
+	return out;
+}
+
+/** True when note is only "A → B (Role)" style and adds nothing beyond the row UI. */
+function isRedundantConnectedEvidenceNote(
+	note: string,
+	roleClean: string | null,
+): boolean {
+	const n = note.trim();
+	if (!n) return true;
+	if (/^(?:status|crd#|bcScope|iaScope|branch)=/i.test(n) || /\bCRD#\b/i.test(n)) {
+		return false;
+	}
+	const arrow = /^(.+?)\s*[→←]\s*(.+?)(?:\s*\(([^)]*)\))?\s*$/u.exec(n);
+	if (!arrow) return false;
+	const parenRole = (arrow[3] || '').trim();
+	// Bare "A → B" with no extra detail is redundant with the row chrome.
+	if (!parenRole) return true;
+	// "A → B (Role)" is redundant when that role is already shown beside the peer name.
+	if (roleClean && parenRole.toLowerCase() === roleClean.toLowerCase()) return true;
+	return false;
 }
 
 /** Resolve a FINRA CRD from metadata or identifiers (person or firm). */
@@ -989,11 +1216,9 @@ function ProfileSummaryText({ text }: { text: string }) {
 						);
 					}
 					if (block.kind === 'disclaimer') {
-						return (
-							<p key={`d-${idx}`} className="m-0 text-[10px] leading-snug text-white/55">
-								{block.text}
-							</p>
-						);
+						// Curated network disclaimers stay in source metadata / stored text for integrity,
+						// but are not shown in the overview (perspective flexibility).
+						return null;
 					}
 					return (
 						<p key={`p-${idx}`} className="m-0 text-[12px] text-white">
@@ -1036,7 +1261,8 @@ const ALIGNMENT_KINDS: Array<{ value: AlignmentKind | ''; label: string }> = [
 	{ value: '', label: 'All kinds' },
 	{ value: 'possible_match_name_only', label: 'Name-only match (needs validation)' },
 	{ value: 'cross_source_mention', label: 'Cross-source mention' },
-	{ value: 'county_filing_match', label: 'County / Knowledge match' },
+	{ value: 'county_filing_match', label: 'County filing match' },
+	{ value: 'knowledge_store_match', label: 'Knowledge store match' },
 	{ value: 'angle_comparison', label: 'Multi-angle overlap' },
 	{ value: 'same_entity_alias', label: 'Alias / name overlap' },
 	{ value: 'co_occurrence_time_geo', label: 'Geo-temporal overlap' },
@@ -1089,6 +1315,8 @@ export default function ProfilesClient({
 	const [profiles, setProfiles] = useState<Profile[]>([]);
 	const [totalProfiles, setTotalProfiles] = useState(0);
 	const [loadingList, setLoadingList] = useState(false);
+	const [viewHistory, setViewHistory] = useState<ViewHistoryEntry[]>([]);
+	const viewHistoryRef = useRef<ViewHistoryEntry[]>([]);
 
 	// Filters
 	const [query, setQuery] = useState('');
@@ -1122,7 +1350,9 @@ export default function ProfilesClient({
 	const [globalAlignTotal, setGlobalAlignTotal] = useState(0);
 	const [alignKindFilter, setAlignKindFilter] = useState<string>('');
 	const [alignStatusFilter, setAlignStatusFilter] = useState<string>('proposed');
+	const [alignOffset, setAlignOffset] = useState(0);
 	const [loadingGlobalAlign, setLoadingGlobalAlign] = useState(false);
+	const ALIGN_PAGE_SIZE = 80;
 
 	// Sync, Enrich & Create states
 	const [syncing, setSyncing] = useState(false);
@@ -1210,6 +1440,38 @@ export default function ProfilesClient({
 		setLoadingList(true);
 		setError(null);
 		try {
+			if (typeFilter === HISTORY_FILTER) {
+				const q = query.trim().toLowerCase();
+				let entries = viewHistoryRef.current;
+				if (q) {
+					entries = entries.filter(
+						(e) =>
+							e.name.toLowerCase().includes(q) ||
+							e.slug.toLowerCase().includes(q) ||
+							(e.alternateNames || []).some((a) => a.toLowerCase().includes(q)) ||
+							(e.primaryLocation || '').toLowerCase().includes(q),
+					);
+				}
+				if (countryCode) {
+					const cc = countryCode.toLowerCase();
+					entries = entries.filter((e) => (e.countryCodes || []).some((c) => c.toLowerCase() === cc));
+				}
+				const page = entries.slice(offset, offset + 60).map(historyEntryToProfile);
+				setProfiles(page);
+				setTotalProfiles(entries.length);
+				// Keep global stats fresh without changing the history list source
+				try {
+					const statsRes = await fetch('/api/profiles?limit=1&stats=1', { cache: 'no-store' });
+					const statsData = await statsRes.json();
+					if (statsRes.ok && statsData?.ok && statsData.stats) {
+						setStats(statsData.stats as ProfileStats);
+					}
+				} catch {
+					/* non-fatal */
+				}
+				return;
+			}
+
 			const params = new URLSearchParams();
 			if (query.trim()) params.set('q', query.trim());
 			if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
@@ -1289,7 +1551,8 @@ export default function ProfilesClient({
 			const params = new URLSearchParams();
 			if (alignKindFilter) params.set('kind', alignKindFilter);
 			if (alignStatusFilter) params.set('status', alignStatusFilter);
-			params.set('limit', '80');
+			params.set('limit', String(ALIGN_PAGE_SIZE));
+			params.set('offset', String(alignOffset));
 			const res = await fetch(`/api/profiles/alignments?${params.toString()}`, { cache: 'no-store' });
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
@@ -1300,7 +1563,17 @@ export default function ProfilesClient({
 		} finally {
 			setLoadingGlobalAlign(false);
 		}
-	}, [alignKindFilter, alignStatusFilter]);
+	}, [alignKindFilter, alignStatusFilter, alignOffset]);
+
+	useEffect(() => {
+		const initial = readViewHistory();
+		viewHistoryRef.current = initial;
+		setViewHistory(initial);
+	}, []);
+
+	useEffect(() => {
+		viewHistoryRef.current = viewHistory;
+	}, [viewHistory]);
 
 	useEffect(() => {
 		const timer = setTimeout(() => {
@@ -1308,6 +1581,56 @@ export default function ProfilesClient({
 		}, 120);
 		return () => clearTimeout(timer);
 	}, [loadList]);
+
+	// When history entries change while History tab is active, refresh the left list.
+	useEffect(() => {
+		if (typeFilter !== HISTORY_FILTER) return;
+		const timer = setTimeout(() => {
+			void loadList();
+		}, 60);
+		return () => clearTimeout(timer);
+	}, [viewHistory, typeFilter, loadList]);
+
+	// Persist viewed profiles into History (newest first, max HISTORY_LIMIT).
+	useEffect(() => {
+		if (!detail?.profile?.id || mainView !== 'profile') return;
+		const p = detail.profile;
+		const locFromDetail =
+			detail.locations?.find((l) => l.role === 'hq' || l.role === 'residence')?.raw ||
+			detail.locations?.[0]?.raw ||
+			null;
+		const entry: ViewHistoryEntry = {
+			id: p.id,
+			slug: p.slug,
+			name: p.name,
+			profileType: p.profileType,
+			primaryLocation: p.primaryLocation || locFromDetail,
+			countryCodes: p.countryCodes || [],
+			alternateNames: p.alternateNames || [],
+			endDate: p.endDate ?? null,
+			viewedAt: new Date().toISOString(),
+		};
+		setViewHistory((prev) => {
+			const alreadyTop = prev[0]?.id === entry.id || prev[0]?.slug === entry.slug;
+			if (alreadyTop) {
+				const merged: ViewHistoryEntry = { ...prev[0], ...entry };
+				const next = [merged, ...prev.slice(1)];
+				writeViewHistory(next);
+				viewHistoryRef.current = next;
+				const sameDisplay =
+					prev[0].name === merged.name &&
+					prev[0].primaryLocation === merged.primaryLocation &&
+					(prev[0].countryCodes || []).join() === (merged.countryCodes || []).join();
+				return sameDisplay ? prev : next;
+			}
+			const next = [entry, ...prev.filter((e) => e.id !== entry.id && e.slug !== entry.slug)].slice(
+				0,
+				HISTORY_LIMIT,
+			);
+			writeViewHistory(next);
+			return next;
+		});
+	}, [detail, mainView]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -1412,19 +1735,38 @@ export default function ProfilesClient({
 		setHydratingDates(true);
 		setError(null);
 		setBanner(null);
+		const firmId = detail.profile.id;
+		let totalPeopleWithDates = 0;
+		let totalPeopleChecked = 0;
+		let totalLinksUpdated = 0;
+		let remaining = 0;
+		let rateLimited = false;
 		try {
-			const res = await fetch(`/api/profiles/${encodeURIComponent(detail.profile.id)}/finra-dates`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ maxPeople: 150, concurrency: 4 }),
-			});
-			const data = await res.json();
-			if (!res.ok || !data?.ok) throw new Error(data?.error || `Date lookup failed (${res.status})`);
-			if (data.detail) setDetail(data.detail);
-			else await loadDetail(detail.profile.id);
-			const r = data.result;
+			// Loop batches until undated FINRA links are gone or FINRA rate-limits us.
+			for (let round = 0; round < 40; round += 1) {
+				const res = await fetch(`/api/profiles/${encodeURIComponent(firmId)}/finra-dates`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ maxPeople: 200, concurrency: 4 }),
+				});
+				const data = await res.json();
+				if (!res.ok || !data?.ok) throw new Error(data?.error || `Date lookup failed (${res.status})`);
+				if (data.detail) setDetail(data.detail);
+				const r = data.result;
+				totalPeopleWithDates += Number(r?.peopleWithDates || 0);
+				totalPeopleChecked += Number(r?.peopleChecked || 0);
+				totalLinksUpdated += Number(r?.linksUpdated || 0);
+				remaining = Number(r?.remainingUndated || 0);
+				rateLimited = Boolean(r?.rateLimited);
+				setBanner(
+					`Fetched employment dates… ${totalPeopleWithDates}/${totalPeopleChecked} people (${totalLinksUpdated} links)${remaining > 0 ? `, ${remaining} remaining` : ''}${rateLimited ? ' — paused on FINRA rate limit' : ''}.`,
+				);
+				if (remaining <= 0 || Number(r?.peopleChecked || 0) === 0) break;
+				if (rateLimited) break;
+			}
+			if (!detail || detail.profile.id !== firmId) await loadDetail(firmId);
 			setBanner(
-				`Fetched employment dates for ${r.peopleWithDates}/${r.peopleChecked} connected people (${r.linksUpdated} links updated${r.remainingUndated > 0 ? `, ${r.remainingUndated} remaining` : ''}${r.rateLimited ? ' — paused on FINRA rate limit, retry in ~1 min' : ''}).`,
+				`Fetched employment dates for ${totalPeopleWithDates}/${totalPeopleChecked} connected people (${totalLinksUpdated} links updated${remaining > 0 ? `, ${remaining} remaining` : ''}${rateLimited ? ' — paused on FINRA rate limit, retry in ~1 min' : ''}).`,
 			);
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -1691,6 +2033,16 @@ export default function ProfilesClient({
 		return () => clearTimeout(timer);
 	}, [pendingCategorySync, detail, selectedId]);
 
+	// Drop Timeline / Alignments tabs when their counts are zero.
+	useEffect(() => {
+		if (!detail) return;
+		if (profileTab === 'timeline' && detail.counts.timelineEntries <= 0) {
+			setProfileTab('overview');
+		} else if (profileTab === 'alignments' && detail.counts.alignments <= 0) {
+			setProfileTab('overview');
+		}
+	}, [detail, profileTab]);
+
 	useEffect(() => {
 		if (!detail?.profile?.id || mainView !== 'profile') return;
 		const timer = setTimeout(() => {
@@ -1797,7 +2149,7 @@ export default function ProfilesClient({
 
 			{/* Stats Bar / Quick Type Filters */}
 			{stats ? (
-				<section className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
+				<section className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-10">
 					<button
 						type="button"
 						onClick={() => {
@@ -1840,6 +2192,24 @@ export default function ProfilesClient({
 							</button>
 						);
 					})}
+					<button
+						type="button"
+						onClick={() => {
+							setPendingCategorySync(false);
+							setTypeFilter(HISTORY_FILTER);
+							setOffset(0);
+							setMainView('profile');
+						}}
+						title="Recently viewed profiles (stored in this browser, up to 100)"
+						className={`cursor-pointer rounded-lg border px-2.5 py-2 text-left transition ${
+							typeFilter === HISTORY_FILTER && mainView === 'profile'
+								? 'border-[#F97316] bg-[#F97316]/12 ring-1 ring-[#F97316]/40'
+								: 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
+						}`}
+					>
+						<div className="text-[11px] opacity-70">History</div>
+						<div className="text-base font-semibold">{viewHistory.length.toLocaleString()}</div>
+					</button>
 				</section>
 			) : null}
 
@@ -1992,7 +2362,10 @@ export default function ProfilesClient({
 						<div className="flex flex-wrap items-center gap-2">
 							<select
 								value={alignKindFilter}
-								onChange={(e) => setAlignKindFilter(e.target.value)}
+								onChange={(e) => {
+									setAlignKindFilter(e.target.value);
+									setAlignOffset(0);
+								}}
 								className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
 							>
 								{ALIGNMENT_KINDS.map((k) => (
@@ -2003,7 +2376,10 @@ export default function ProfilesClient({
 							</select>
 							<select
 								value={alignStatusFilter}
-								onChange={(e) => setAlignStatusFilter(e.target.value)}
+								onChange={(e) => {
+									setAlignStatusFilter(e.target.value);
+									setAlignOffset(0);
+								}}
 								className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs"
 							>
 								<option value="">All statuses</option>
@@ -2021,6 +2397,37 @@ export default function ProfilesClient({
 							</button>
 						</div>
 					</div>
+
+					{globalAlignTotal > 0 ? (
+						<div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs opacity-80">
+							<span>
+								Showing {Math.min(alignOffset + 1, globalAlignTotal)}–
+								{Math.min(alignOffset + globalAlignments.length, globalAlignTotal)} of{' '}
+								{globalAlignTotal.toLocaleString()}
+								{alignStatusFilter ? ` (${alignStatusFilter})` : ''}
+							</span>
+							<div className="flex items-center gap-1.5">
+								<button
+									type="button"
+									disabled={alignOffset <= 0 || loadingGlobalAlign}
+									onClick={() => setAlignOffset((o) => Math.max(0, o - ALIGN_PAGE_SIZE))}
+									className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[11px] font-semibold disabled:opacity-40"
+								>
+									Prev
+								</button>
+								<button
+									type="button"
+									disabled={
+										alignOffset + ALIGN_PAGE_SIZE >= globalAlignTotal || loadingGlobalAlign
+									}
+									onClick={() => setAlignOffset((o) => o + ALIGN_PAGE_SIZE)}
+									className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[11px] font-semibold disabled:opacity-40"
+								>
+									Next
+								</button>
+							</div>
+						</div>
+					) : null}
 
 					{loadingGlobalAlign ? (
 						<p className="text-xs opacity-70">Loading alignments…</p>
@@ -2289,6 +2696,7 @@ export default function ProfilesClient({
 									detail?.profile &&
 									(detail.profile.id === selectedId || detail.profile.slug === selectedId) &&
 									(typeFilter === 'all' ||
+										typeFilter === HISTORY_FILTER ||
 										typeFilter === detail.profile.profileType ||
 										(typeFilter === 'actors' && detail.profile.profileType !== 'historic_event') ||
 										(typeFilter === 'narratives' && detail.profile.profileType === 'historic_event'));
@@ -2313,8 +2721,17 @@ export default function ProfilesClient({
 								if (visibleProfiles.length === 0 && !loadingList) {
 									return (
 										<div className="p-4 text-xs opacity-70">
-											No profiles yet. Click <strong>Sync &amp; Align All Data</strong> above to populate
-											from all local corpora.
+											{typeFilter === HISTORY_FILTER ? (
+												<>
+													No viewing history yet. Open any profile and it will show up here (kept in this
+													browser, up to {HISTORY_LIMIT}).
+												</>
+											) : (
+												<>
+													No profiles yet. Click <strong>Sync &amp; Align All Data</strong> above to
+													populate from all local corpora.
+												</>
+											)}
 										</div>
 									);
 								}
@@ -2345,7 +2762,9 @@ export default function ProfilesClient({
 											}}
 											className={`w-full cursor-pointer border-0 border-b border-b-[var(--app-border)] px-3 py-2.5 text-left transition last:border-b-0 ${rowTone}`}
 										>
-											{typeFilter === 'all' || typeFilter === 'actors' ? (
+											{typeFilter === 'all' ||
+											typeFilter === 'actors' ||
+											typeFilter === HISTORY_FILTER ? (
 												<>
 													<div className="flex items-center gap-2">
 														<span
@@ -2381,7 +2800,13 @@ export default function ProfilesClient({
 					</aside>
 
 					{/* Right Workspace: Selected Profile Detail */}
-					<section className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+					<section
+						className={`rounded-lg border bg-[var(--app-surface)] p-4 ${
+							detail && isCurrentPersonOrFirm(detail.profile)
+								? CURRENT_ACTOR_DETAIL_OUTLINE
+								: 'border-[var(--app-border)]'
+						}`}
+					>
 						{loadingDetail && !detail ? (
 							<p className="text-xs opacity-70">Loading profile…</p>
 						) : !detail ? (
@@ -2558,37 +2983,42 @@ export default function ProfilesClient({
 									</div>
 								) : null}
 
-								{/* Tabs */}
+								{/* Tabs — omit zero-count Timeline / Alignments */}
 								<div className="mt-3 mb-4 flex flex-wrap gap-2 border-b border-[var(--app-border)] pb-2">
 									{(
 										[
 											{
-												id: 'overview',
+												id: 'overview' as const,
 												label: `Overview & Links (${detail.counts.links})`,
+												show: true,
 											},
 											{
-												id: 'timeline',
+												id: 'timeline' as const,
 												label: `Timeline & Gap Analysis (${detail.counts.timelineEntries})`,
+												show: detail.counts.timelineEntries > 0,
 											},
 											{
-												id: 'alignments',
+												id: 'alignments' as const,
 												label: `Possible Alignments (${detail.counts.alignments})`,
+												show: detail.counts.alignments > 0,
 											},
 										] as const
-									).map((t) => (
-										<button
-											key={t.id}
-											type="button"
-											onClick={() => setProfileTab(t.id)}
-											className={`cursor-pointer rounded-md border px-3 py-1.5 text-xs font-semibold ${
-												profileTab === t.id
-													? 'border-[#F97316] bg-[#F97316] text-white'
-													: 'border-[var(--app-border)] bg-[var(--app-bg)] hover:bg-[var(--app-surface-hover)]'
-											}`}
-										>
-											{t.label}
-										</button>
-									))}
+									)
+										.filter((t) => t.show)
+										.map((t) => (
+											<button
+												key={t.id}
+												type="button"
+												onClick={() => setProfileTab(t.id)}
+												className={`cursor-pointer rounded-md border px-3 py-1.5 text-xs font-semibold ${
+													profileTab === t.id
+														? 'border-[#F97316] bg-[#F97316] text-white'
+														: 'border-[var(--app-border)] bg-[var(--app-bg)] hover:bg-[var(--app-surface-hover)]'
+												}`}
+											>
+												{t.label}
+											</button>
+										))}
 								</div>
 
 								{/* TAB 1: Overview & Links */}
@@ -2693,83 +3123,19 @@ export default function ProfilesClient({
 													r.key !== 'title' &&
 													r.key !== 'occupation',
 											);
-											const finraCrd = resolveProfileFinraCrd(
-												detail.profile.profileType,
-												meta,
-												detail.identifiers,
-											);
-											const finraLinks =
-												finraCrd &&
-												(detail.profile.profileType === 'person' ||
-													detail.profile.profileType === 'firm')
-													? finraSecSourceLinks({
-															profileType: detail.profile.profileType,
-															crd: finraCrd,
-															iaScope: meta.finraIaScope,
-														})
-													: [];
-											const sourceLinks = (
-												<>
-													{finraLinks.map((link) => (
-														<a
-															key={link.href}
-															href={link.href}
-															target="_blank"
-															rel="noreferrer"
-															className={link.className}
-														>
-															{link.label}
-														</a>
-													))}
-													{typeof meta.finraVisualizerUrl === 'string' ? (
-														<a
-															href={meta.finraVisualizerUrl}
-															target="_blank"
-															rel="noreferrer"
-															className="text-[11px] font-semibold text-[#F97316] underline"
-														>
-															FINRA Visualizer ↗
-														</a>
-													) : null}
-													{typeof meta.wikipediaUrl === 'string' ? (
-														<a
-															href={meta.wikipediaUrl}
-															target="_blank"
-															rel="noreferrer"
-															className="text-[11px] font-semibold text-[#F97316] underline"
-														>
-															Wikipedia ↗
-														</a>
-													) : null}
-												</>
-											);
-											const hasSourceLinks =
-												finraLinks.length > 0 ||
-												typeof meta.finraVisualizerUrl === 'string' ||
-												typeof meta.wikipediaUrl === 'string';
 											// identifyingKeywords / citizenship / netWorth / familyAndRelatives stay in metadata
+											// FINRA/SEC/Wikipedia deep links live in the Sources & Identifiers card below.
 											if (
 												!generalRows.length &&
 												!militaryRows.length &&
 												!highlightRow &&
 												!titleOccupationRow &&
-												!familyPeers.length &&
-												!hasSourceLinks
+												!familyPeers.length
 											) {
 												return null;
 											}
 											return (
 												<div className="space-y-3">
-													{hasSourceLinks ? (
-														<div className="flex flex-wrap items-center gap-2.5">
-															{finraCrd ? (
-																<span className="rounded border border-sky-500/35 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200">
-																	CRD {finraCrd}
-																</span>
-															) : null}
-															{sourceLinks}
-														</div>
-													) : null}
 													{generalRows.length > 0 ||
 													highlightRow ||
 													titleOccupationRow ||
@@ -2915,100 +3281,319 @@ export default function ProfilesClient({
 												</div>
 											);
 										})()}
-										<div className="grid gap-3 md:grid-cols-3">
-											{/* Aliases */}
-											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-												<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-													Aliases ({detail.aliases.length})
-												</h3>
-												<div className="mb-2 flex flex-wrap gap-1">
-													{detail.aliases.slice(0, 16).map((a) => (
-														<span
-															key={a.id}
-															className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 text-[11px]"
-														>
-															{a.alias}
-														</span>
-													))}
-												</div>
-												<div className="flex gap-1">
-													<input
-														value={aliasDraft}
-														onChange={(e) => setAliasDraft(e.target.value)}
-														placeholder="Add alias…"
-														className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
-													/>
-													<button
-														type="button"
-														onClick={() => void handleAddAlias()}
-														className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
-													>
-														Add
-													</button>
-												</div>
-											</div>
+										{(() => {
+											const meta = detail.profile.metadata || {};
+											const finraCrd = resolveProfileFinraCrd(
+												detail.profile.profileType,
+												meta,
+												detail.identifiers,
+											);
+											const finraLinks =
+												finraCrd &&
+												(detail.profile.profileType === 'person' ||
+													detail.profile.profileType === 'firm')
+													? finraSecSourceLinks({
+															profileType: detail.profile.profileType,
+															crd: finraCrd,
+															iaScope: meta.finraIaScope,
+														})
+													: [];
+											const wikiUrl =
+												typeof meta.wikipediaUrl === 'string'
+													? meta.wikipediaUrl.trim().toLowerCase()
+													: '';
+											const normalizeHref = (raw: string) => {
+												const t = String(raw || '').trim();
+												if (!t) return '';
+												const withProto = /^https?:\/\//i.test(t) ? t : `https://${t}`;
+												try {
+													const u = new URL(withProto);
+													u.hash = '';
+													return u.toString().replace(/\/$/, '').toLowerCase();
+												} catch {
+													return t.toLowerCase();
+												}
+											};
+											const wikiNorm = wikiUrl ? normalizeHref(wikiUrl) : '';
+											// Drop finra_crd list rows when the Firm/Individual CRD badge already shows it.
+											const publicIds = detail.identifiers.filter((idItem) => {
+												const scheme = String(idItem.scheme || '').toLowerCase();
+												if (!PUBLIC_IDENTIFIER_SCHEMES.has(scheme)) return false;
+												if (isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value)) {
+													return false;
+												}
+												if (finraCrd && scheme === 'finra_crd') {
+													const v = String(idItem.value || '').trim();
+													if (v === finraCrd) return false;
+												}
+												return true;
+											});
+											const sourceLabels = collectProfileSourceLabels(detail.identifiers);
+											// Drop URL chips already covered by the Wikipedia meta link.
+											const urlIds = detail.identifiers.filter((idItem) => {
+												if (String(idItem.scheme || '').toLowerCase() !== 'url') return false;
+												if (isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value)) {
+													return false;
+												}
+												const href = String(idItem.value || '').trim();
+												if (!href) return false;
+												if (wikiNorm && normalizeHref(href) === wikiNorm) return false;
+												return true;
+											});
+											const hasRegistryLinks =
+												finraLinks.length > 0 ||
+												typeof meta.finraVisualizerUrl === 'string' ||
+												typeof meta.wikipediaUrl === 'string';
+											const showAliases = detail.aliases.length > 0;
+											const hasSicMeta =
+												(meta.sic != null && String(meta.sic).trim() !== '') ||
+												(typeof meta.sicDescription === 'string' &&
+													meta.sicDescription.trim() !== '');
+											const showCombinedSources =
+												publicIds.length > 0 ||
+												sourceLabels.length > 0 ||
+												urlIds.length > 0 ||
+												hasRegistryLinks ||
+												Boolean(finraCrd) ||
+												hasSicMeta;
+											const showLocations = detail.locations.length > 0;
+											if (!showAliases && !showCombinedSources && !showLocations) return null;
+											const cardCount =
+												Number(showAliases) + Number(showCombinedSources) + Number(showLocations);
+											const gridCols =
+												cardCount >= 3
+													? 'md:grid-cols-3'
+													: cardCount === 2
+														? 'md:grid-cols-2'
+														: 'md:grid-cols-1';
+											return (
+												<div className={`grid gap-3 ${gridCols}`}>
+													{showAliases ? (
+														<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+																Aliases ({detail.aliases.length})
+															</h3>
+															<div className="mb-2 flex flex-wrap gap-1">
+																{detail.aliases.slice(0, 16).map((a) => (
+																	<span
+																		key={a.id}
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 text-[11px]"
+																	>
+																		{a.alias}
+																	</span>
+																))}
+															</div>
+															<div className="flex gap-1">
+																<input
+																	value={aliasDraft}
+																	onChange={(e) => setAliasDraft(e.target.value)}
+																	placeholder="Add alias…"
+																	className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
+																/>
+																<button
+																	type="button"
+																	onClick={() => void handleAddAlias()}
+																	className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
+																>
+																	Add
+																</button>
+															</div>
+														</div>
+													) : null}
 
-											{/* Identifiers */}
-											{(() => {
-												const visibleIds = detail.identifiers.filter(
-													(idItem) =>
-														!isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value),
-												);
-												return (
-													<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-														<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-															External Identifiers ({visibleIds.length})
-														</h3>
-														{visibleIds.length === 0 ? (
-															<p className="m-0 text-[11px] opacity-65">None recorded yet.</p>
-														) : (
-															<ul className="m-0 list-none space-y-1 p-0 text-[11px]">
-																{visibleIds.map((idItem) => (
-																	<li key={idItem.id}>
-																		<span className="opacity-70">{idItem.scheme}:</span>{' '}
-																		<strong>{scrubEpsteinSourceLabels(idItem.value)}</strong>
+													{showCombinedSources ? (
+														<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+																Sources &amp; Identifiers
+																{publicIds.length > 0 ? ` (${publicIds.length})` : ''}
+															</h3>
+															{hasRegistryLinks || finraCrd ? (
+																<div className="mb-2 flex flex-wrap items-center gap-2.5">
+																	{finraCrd ? (
+																		<span className="rounded border border-sky-500/35 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200">
+																			{detail.profile.profileType === 'firm'
+																				? 'Firm CRD'
+																				: 'Individual CRD'}{' '}
+																			{finraCrd}
+																		</span>
+																	) : null}
+																	{finraLinks.map((link) => (
+																		<a
+																			key={link.href}
+																			href={link.href}
+																			target="_blank"
+																			rel="noreferrer"
+																			className={link.className}
+																		>
+																			{link.label}
+																		</a>
+																	))}
+																	{typeof meta.finraVisualizerUrl === 'string' ? (
+																		<a
+																			href={meta.finraVisualizerUrl}
+																			target="_blank"
+																			rel="noreferrer"
+																			className="text-[11px] font-semibold text-[#F97316] underline"
+																		>
+																			FINRA Visualizer ↗
+																		</a>
+																	) : null}
+																	{typeof meta.wikipediaUrl === 'string' ? (
+																		<a
+																			href={meta.wikipediaUrl}
+																			target="_blank"
+																			rel="noreferrer"
+																			className="text-[11px] font-semibold text-[#F97316] underline"
+																		>
+																			Wikipedia ↗
+																		</a>
+																	) : null}
+																</div>
+															) : null}
+															{publicIds.length > 0 ||
+															meta.sic != null ||
+															meta.sicDescription != null ? (
+																<ul className="m-0 list-none space-y-1 p-0 text-[11px]">
+																	{publicIds.map((idItem) => {
+																		const scheme = String(idItem.scheme || '').toLowerCase();
+																		const label =
+																			IDENTIFIER_SCHEME_LABELS[scheme] ||
+																			scheme.replace(/_/g, ' ');
+																		let display = scrubEpsteinSourceLabels(idItem.value);
+																		if (
+																			scheme === 'ticker' &&
+																			typeof meta.exchange === 'string' &&
+																			meta.exchange.trim()
+																		) {
+																			display = `${display} (${meta.exchange.trim()})`;
+																		}
+																		return (
+																			<li key={idItem.id}>
+																				<span className="opacity-70">{label}:</span>{' '}
+																				<strong>{display}</strong>
+																			</li>
+																		);
+																	})}
+																	{meta.sic != null && String(meta.sic).trim() ? (
+																		<li key="meta-sic">
+																			<span className="opacity-70">SIC:</span>{' '}
+																			<strong>
+																				{String(meta.sic).trim()}
+																				{typeof meta.sicDescription === 'string' &&
+																				meta.sicDescription.trim()
+																					? ` (${meta.sicDescription.trim()})`
+																					: ''}
+																			</strong>
+																		</li>
+																	) : null}
+																</ul>
+															) : null}
+															{sourceLabels.length > 0 || urlIds.length > 0 ? (
+																(() => {
+																	const coveredLabels = new Set<string>(
+																		urlIds
+																			.map((idItem) =>
+																				sourceLabelFromUrl(String(idItem.value || '')),
+																			)
+																			.filter(Boolean) as string[],
+																	);
+																	// Meta Wikipedia / FINRA chips already cover these labels.
+																	if (wikiNorm) coveredLabels.add('wikipedia');
+																	if (typeof meta.finraVisualizerUrl === 'string') {
+																		coveredLabels.add('finra');
+																	}
+																	if (finraLinks.length > 0) {
+																		coveredLabels.add('finra');
+																		coveredLabels.add('sec');
+																	}
+																	const extraLabels = sourceLabels.filter(
+																		(label) => !coveredLabels.has(label),
+																	);
+																	return (
+																		<div
+																			className={`text-[11px] leading-relaxed ${
+																				publicIds.length > 0 ||
+																				hasRegistryLinks ||
+																				finraCrd
+																					? 'mt-2 border-t border-[var(--app-border)] pt-2'
+																					: ''
+																			}`}
+																		>
+																			{extraLabels.length > 0 ? (
+																				<p className="m-0">
+																					<span className="opacity-70">Sources:</span>{' '}
+																					{extraLabels.join(', ')}
+																				</p>
+																			) : null}
+																			{urlIds.length > 0 ? (
+																				<ul
+																					className={`m-0 list-none space-y-1 p-0 ${
+																						extraLabels.length > 0 ? 'mt-1.5' : ''
+																					}`}
+																				>
+																					{urlIds.slice(0, 8).map((idItem) => {
+																						const href = String(idItem.value || '').trim();
+																						const label =
+																							sourceLabelFromUrl(href) ||
+																							href.slice(0, 48);
+																						const withProto = /^https?:\/\//i.test(href)
+																							? href
+																							: `https://${href}`;
+																						return (
+																							<li key={idItem.id}>
+																								<a
+																									href={withProto}
+																									target="_blank"
+																									rel="noreferrer"
+																									className="font-semibold text-[#F97316] underline"
+																								>
+																									{label} ↗
+																								</a>
+																							</li>
+																						);
+																					})}
+																				</ul>
+																			) : null}
+																		</div>
+																	);
+																})()
+															) : null}
+														</div>
+													) : null}
+
+													{showLocations ? (
+														<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+																Locations ({detail.locations.length})
+															</h3>
+															<ul className="m-0 mb-2 list-none space-y-1 p-0 text-[11px]">
+																{detail.locations.slice(0, 12).map((loc) => (
+																	<li key={loc.id}>
+																		<span>📍 {loc.raw}</span>{' '}
+																		<span className="text-[10px] opacity-60">({loc.role})</span>
 																	</li>
 																))}
 															</ul>
-														)}
-													</div>
-												);
-											})()}
-
-											{/* Locations */}
-											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-												<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-													Locations ({detail.locations.length})
-												</h3>
-												{detail.locations.length === 0 ? (
-													<p className="m-0 mb-2 text-[11px] opacity-65">No locations tagged yet.</p>
-												) : (
-													<ul className="m-0 mb-2 list-none space-y-1 p-0 text-[11px]">
-														{detail.locations.slice(0, 12).map((loc) => (
-															<li key={loc.id}>
-																<span>📍 {loc.raw}</span>{' '}
-																<span className="text-[10px] opacity-60">({loc.role})</span>
-															</li>
-														))}
-													</ul>
-												)}
-												<div className="flex gap-1">
-													<input
-														value={locationDraft}
-														onChange={(e) => setLocationDraft(e.target.value)}
-														placeholder="Add location (e.g. Dallas, TX)…"
-														className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
-													/>
-													<button
-														type="button"
-														onClick={() => void handleAddLocation()}
-														className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
-													>
-														Add
-													</button>
+															<div className="flex gap-1">
+																<input
+																	value={locationDraft}
+																	onChange={(e) => setLocationDraft(e.target.value)}
+																	placeholder="Add location (e.g. Dallas, TX)…"
+																	className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
+																/>
+																<button
+																	type="button"
+																	onClick={() => void handleAddLocation()}
+																	className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
+																>
+																	Add
+																</button>
+															</div>
+														</div>
+													) : null}
 												</div>
-											</div>
-										</div>
+											);
+										})()}
 
 										{/* Employment History & Education (Person profiles) */}
 										{detail.profile.profileType === 'person'
@@ -3118,37 +3703,32 @@ export default function ProfilesClient({
 
 													return (
 														<>
-															{/* Employment History */}
+															{/* Employment History — hidden when empty */}
+															{workEntries.length > 0 ? (
 															<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
 																<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
 																	Employment History ({workEntries.length})
 																</h3>
-																{workEntries.length === 0 ? (
-																	<p className="m-0 mb-3 text-xs opacity-70">
-																		No employment history recorded yet. Add one below.
-																	</p>
-																) : (
-																	<div className="mb-3 space-y-3">
-																		{currentWork.length > 0 ? (
-																			<div>
-																				<div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-																					Current Employment ({currentWork.length})
-																				</div>
-																				<div className="space-y-1.5">{currentWork.map(renderWorkRow)}</div>
+																<div className="mb-3 space-y-3">
+																	{currentWork.length > 0 ? (
+																		<div>
+																			<div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+																				Current Employment ({currentWork.length})
 																			</div>
-																		) : null}
-																		{previousWork.length > 0 ? (
-																			<div>
-																				<div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide opacity-70">
-																					Previous Employment ({previousWork.length})
-																				</div>
-																				<div className="max-h-[460px] space-y-1.5 overflow-y-auto pr-1">
-																					{previousWork.map(renderWorkRow)}
-																				</div>
+																			<div className="space-y-1.5">{currentWork.map(renderWorkRow)}</div>
+																		</div>
+																	) : null}
+																	{previousWork.length > 0 ? (
+																		<div>
+																			<div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide opacity-70">
+																				Previous Employment ({previousWork.length})
 																			</div>
-																		) : null}
-																	</div>
-																)}
+																			<div className="max-h-[460px] space-y-1.5 overflow-y-auto pr-1">
+																				{previousWork.map(renderWorkRow)}
+																			</div>
+																		</div>
+																	) : null}
+																</div>
 
 																<form
 																	onSubmit={(e) => void handleAddEmployment(e)}
@@ -3209,62 +3789,58 @@ export default function ProfilesClient({
 																	</div>
 																</form>
 															</div>
+															) : null}
 
-															{/* Education */}
+															{/* Education — hidden when empty */}
+															{educationEntries.length > 0 ? (
 															<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
 																<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
 																	Education ({educationEntries.length})
 																</h3>
-																{educationEntries.length === 0 ? (
-																	<p className="m-0 text-xs opacity-70">
-																		No education records yet. Select <strong>Education</strong> in the form
-																		above to add a school.
-																	</p>
-																) : (
-																	<div className="space-y-1.5">
-																		{educationEntries.map((edu) => {
-																			const span = formatDateSpan(
-																				edu.startDate,
-																				edu.endDate,
-																				edu.isCurrent,
-																				true,
-																			);
-																			return (
-																				<div
-																					key={edu.id}
-																					className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
-																				>
-																					<div className="flex flex-wrap items-center gap-1.5">
-																						{span ? (
-																							<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
-																								{span}
-																							</span>
-																						) : null}
-																						{edu.orgProfileId ? (
-																							<button
-																								type="button"
-																								onClick={() => jumpToProfile(edu.orgProfileId!)}
-																								className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																							>
-																								{edu.orgName}
-																							</button>
-																						) : (
-																							<span className="font-semibold">{edu.orgName}</span>
-																						)}
-																						<CountryFlags codes={edu.orgCountryCodes} size="sm" />
-																						{edu.role ? (
-																							<span className="text-[11px] opacity-85">— {edu.role}</span>
-																						) : null}
-																					</div>
-																					<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
-																						{edu.location ? <span>📍 {edu.location}</span> : null}
-																					</div>
+																<div className="space-y-1.5">
+																	{educationEntries.map((edu) => {
+																		const span = formatDateSpan(
+																			edu.startDate,
+																			edu.endDate,
+																			edu.isCurrent,
+																			true,
+																		);
+																		return (
+																			<div
+																				key={edu.id}
+																				className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+																			>
+																				<div className="flex flex-wrap items-center gap-1.5">
+																					{span ? (
+																						<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+																							{span}
+																						</span>
+																					) : null}
+																					{edu.orgProfileId ? (
+																						<button
+																							type="button"
+																							onClick={() => jumpToProfile(edu.orgProfileId!)}
+																							className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																						>
+																							{edu.orgName}
+																						</button>
+																					) : (
+																						<span className="font-semibold">{edu.orgName}</span>
+																					)}
+																					<CountryFlags codes={edu.orgCountryCodes} size="sm" />
+																					{edu.role ? (
+																						<span className="text-[11px] opacity-85">— {edu.role}</span>
+																					) : null}
 																				</div>
-																			);
-																		})}
-																	</div>
-																)}
+																				<div className="flex flex-wrap items-center gap-2 text-[11px] opacity-75">
+																					{edu.location ? <span>📍 {edu.location}</span> : null}
+																				</div>
+																			</div>
+																		);
+																	})}
+																</div>
 															</div>
+															) : null}
 														</>
 													);
 												})()
@@ -3369,6 +3945,13 @@ export default function ProfilesClient({
 													? connectedLinks
 													: connectedLinks.filter((x) => x.connStatus === connStatusFilter);
 
+											if (
+												historicEventLinks.length === 0 &&
+												connectedLinks.length === 0
+											) {
+												return null;
+											}
+
 											return (
 												<div className="space-y-4">
 													{historicEventLinks.length > 0 ? (
@@ -3419,6 +4002,7 @@ export default function ProfilesClient({
 														</div>
 													) : null}
 
+													{connectedLinks.length > 0 ? (
 													<div>
 													<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
 														<h3 className="m-0 text-xs font-semibold uppercase opacity-75">
@@ -3433,11 +4017,25 @@ export default function ProfilesClient({
 																<div className="flex items-center gap-1">
 																	{(
 																		[
-																			{ id: 'all', label: `All (${connectedLinks.length.toLocaleString()})` },
-																			{ id: 'current', label: `Current (${currentCount.toLocaleString()})` },
-																			{ id: 'old', label: `Old (${oldCount.toLocaleString()})` },
+																			{
+																				id: 'all' as const,
+																				label: `All (${connectedLinks.length.toLocaleString()})`,
+																				show: true,
+																			},
+																			{
+																				id: 'current' as const,
+																				label: `Current (${currentCount.toLocaleString()})`,
+																				show: currentCount > 0,
+																			},
+																			{
+																				id: 'old' as const,
+																				label: `Old (${oldCount.toLocaleString()})`,
+																				show: oldCount > 0,
+																			},
 																		] as const
-																	).map((tab) => (
+																	)
+																		.filter((tab) => tab.show)
+																		.map((tab) => (
 																		<button
 																			key={tab.id}
 																			type="button"
@@ -3495,13 +4093,14 @@ export default function ProfilesClient({
 																	!/^(?:current|previous)\s+registration$/i.test(l.roleLabel.trim())
 																		? l.roleLabel.trim()
 																		: null;
-																const relNote = (l.evidenceNote || '').trim();
+																const relNote = scrubEvidenceNoteSourceTags(l.evidenceNote);
 																const showRelNote =
 																	Boolean(relNote) &&
 																	(!roleClean ||
 																		relNote.toLowerCase() !== roleClean.toLowerCase()) &&
 																	!/^seed relatedslugs$/i.test(relNote) &&
-																	!/^role:/i.test(relNote);
+																	!/^role:/i.test(relNote) &&
+																	!isRedundantConnectedEvidenceNote(relNote, roleClean);
 																return (
 																	<div
 																		key={l.id}
@@ -3542,6 +4141,11 @@ export default function ProfilesClient({
 																				{roleClean ? (
 																					<span className="text-[11px] opacity-75">({roleClean})</span>
 																				) : null}
+																				{l.peerPrimaryLocation ? (
+																					<span className="text-[11px] opacity-70">
+																						📍 {l.peerPrimaryLocation}
+																					</span>
+																				) : null}
 																			</div>
 																		</div>
 																		{showRelNote ? (
@@ -3555,6 +4159,7 @@ export default function ProfilesClient({
 														</div>
 													)}
 													</div>
+													) : null}
 												</div>
 											);
 										})()}

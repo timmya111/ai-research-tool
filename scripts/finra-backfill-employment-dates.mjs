@@ -79,6 +79,7 @@ if (firmArg) {
 	console.log(`[finra-dates] Hydrating firm ${row.name} (CRD# ${firmCrd}) with rate-limit pacing...`);
 	let totalUpdated = 0;
 	let round = 0;
+	let prevRemaining = null;
 	while (true) {
 		round += 1;
 		const res = await hydrateFirmConnectionDates(String(row.id), {
@@ -88,6 +89,17 @@ if (firmArg) {
 		totalUpdated += res?.linksUpdated || 0;
 		console.log(`[finra-dates] Round ${round}:`, JSON.stringify(res));
 		if (!res || res.remainingUndated === 0 || (limitArg > 0 && round >= 1)) break;
+		// No recoverable dates this round — stop rather than spin forever on the same people
+		if ((res.peopleWithDates || 0) === 0 && (res.peopleChecked || 0) > 0 && !res.rateLimited) {
+			console.log('[finra-dates] No new dates this round; stopping with remainingUndated=' + res.remainingUndated);
+			break;
+		}
+		// Remaining count not dropping (e.g. cross-firm updates only) — stop
+		if (prevRemaining != null && res.remainingUndated >= prevRemaining && !res.rateLimited) {
+			console.log('[finra-dates] remainingUndated not decreasing (' + res.remainingUndated + '); stopping');
+			break;
+		}
+		prevRemaining = res.remainingUndated;
 		if (res.rateLimited) {
 			console.log('[finra-dates] Hit FINRA/SEC rate limit — cooling down 65s...');
 			await new Promise((r) => setTimeout(r, 65_000));

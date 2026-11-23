@@ -139,8 +139,11 @@ withProfilesTransaction((tx) => {
 		const country = o.country ? String(o.country).trim() : null;
 		const city = o.hqCity ? String(o.hqCity).trim() : null;
 		const state = o.hqState ? String(o.hqState).trim() : null;
-		if (!country && !city && !state) return;
-		const locRaw = [city, state, country].filter(Boolean).join(', ');
+		const street = o.hqAddress ? String(o.hqAddress).trim() : null;
+		if (!country && !city && !state && !street) return;
+		const locRaw = street
+			? street
+			: [city, state, country].filter(Boolean).join(', ');
 		const parts = parseAddressParts(locRaw);
 		addLocation(
 			{

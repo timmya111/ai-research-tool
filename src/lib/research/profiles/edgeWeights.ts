@@ -183,6 +183,83 @@ export function cityColocationWeight(opts: {
 
 const SUITE_FLOOR_RE =
 	/\b(?:suite|ste\.?|floor|fl\.?|unit|apt\.?|apartment|room|rm\.?|#)\s*[\w-]+/gi;
+
+/** Capture suite/floor/unit token for same-suite gates (e.g. suite:800, floor:12). */
+export function extractSuiteFloorToken(raw: string): string | null {
+	const s = String(raw || '');
+	// "4th Floor", "22nd, 24th Floor", "45th Floor" (ordinal before Floor)
+	const ordinalFloor = s.match(/\b(\d+(?:st|nd|rd|th))(?:\s*,\s*\d+(?:st|nd|rd|th))*\s+floors?\b/i);
+	if (ordinalFloor) {
+		return `floor:${ordinalFloor[1].toLowerCase()}`;
+	}
+	const m = s.match(/\b(suite|ste\.?|floor|fl\.?|unit|apt\.?|apartment|room|rm\.?|#)\s*([\w-]+)/i);
+	if (!m) return null;
+	const kindRaw = m[1].toLowerCase().replace(/\./g, '');
+	const kind =
+		kindRaw === 'ste' || kindRaw === 'suite'
+			? 'suite'
+			: kindRaw === 'fl' || kindRaw === 'floor'
+				? 'floor'
+				: kindRaw === 'apt' || kindRaw === 'apartment'
+					? 'unit'
+					: kindRaw === 'rm' || kindRaw === 'room'
+						? 'room'
+						: kindRaw === '#'
+							? 'unit'
+							: kindRaw;
+	return `${kind}:${m[2].toLowerCase()}`;
+}
+
+/** Significant brand token shared by two firm names (not generic finance words). */
+const GENERIC_FIRM_NAME_TOKENS = new Set([
+	'securities',
+	'financial',
+	'finance',
+	'advisors',
+	'advisers',
+	'advisory',
+	'wealth',
+	'management',
+	'capital',
+	'investment',
+	'investments',
+	'asset',
+	'partners',
+	'group',
+	'corp',
+	'corporation',
+	'company',
+	'llc',
+	'inc',
+	'ltd',
+	'services',
+	'markets',
+	'brokerage',
+	'holdings',
+	'global',
+	'america',
+	'american',
+	'us',
+	'usa',
+	'the',
+	'and',
+	'of',
+]);
+
+export function sharedSignificantFirmTokens(nameA: string, nameB: string): string[] {
+	const tok = (n: string) =>
+		String(n || '')
+			.toLowerCase()
+			.replace(/[^a-z0-9\s]/g, ' ')
+			.split(/\s+/)
+			.filter((t) => t.length >= 3 && !GENERIC_FIRM_NAME_TOKENS.has(t));
+	const a = new Set(tok(nameA));
+	const out: string[] = [];
+	for (const t of tok(nameB)) {
+		if (a.has(t) && !out.includes(t)) out.push(t);
+	}
+	return out;
+}
 const C_O_RE = /\bc\/o\b[^,]*/gi;
 const ATTN_RE = /\b(?:attn|attention|care of)\b[:\s][^,]*/gi;
 const STREET_TYPE_MAP: Record<string, string> = {

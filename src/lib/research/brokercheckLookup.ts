@@ -199,7 +199,7 @@ function compactDetail(
 		registry: opts.registry,
 		crd: opts.crd,
 		name,
-		display: `${name} :: CRD# ${opts.crd}`,
+		display: `${name} :: Individual CRD# ${opts.crd}`,
 		otherNames,
 		bcScope: pickString(basic.bcScope) || undefined,
 		iaScope: pickString(basic.iaScope) || undefined,
@@ -245,21 +245,48 @@ export async function lookupBrokercheckIndividual(args: {
 			result: {
 				ok: false,
 				crd,
+				crdKind: 'individual',
 				error: bc.error || `BrokerCheck fetch failed`,
 				status: bc.status,
 				url: bcUrl,
-				hint: 'Try again, or open brokercheck.finra.org for this CRD in a browser.',
+				hint: 'Try again, or open brokercheck.finra.org for this CRD in a browser. If this is a Firm CRD, use search_finra_sidecar (entity=firm) or lookup_firm_connections instead.',
 			},
 		};
 	}
 
 	const detail = extractHitSource(bc.payload);
 	if (!detail) {
+		// Same digits may be a Firm CRD (BrokerCheck firm summary), not a person.
+		const firmUrl = `https://api.brokercheck.finra.org/search/firm/${crd}`;
+		const firm = await fetchJson(firmUrl);
+		const firmDetail = firm.ok ? extractHitSource(firm.payload) : null;
+		if (firmDetail) {
+			const firmBasic = asRecord(firmDetail.basicInformation) || firmDetail;
+			const firmName =
+				pickString(firmBasic.firmName, firmBasic.iaFirmName, firmBasic.name) || `Firm ${crd}`;
+			return {
+				ok: false,
+				result: {
+					ok: false,
+					crd,
+					crdKind: 'firm',
+					error: `CRD# ${crd} is a Firm CRD (${firmName}), not an Individual CRD. lookup_brokercheck is individual-only.`,
+					firmName,
+					firmBcScope: pickString(firmBasic.bcScope) || undefined,
+					firmIaScope: pickString(firmBasic.iaScope) || undefined,
+					url: firmUrl,
+					brokercheckFirmUrl: `https://brokercheck.finra.org/firm/summary/${crd}`,
+					dashboardPath: `/dashboard/firm/${crd}`,
+					hint: 'Use search_finra_sidecar with entity=firm, or lookup_firm_connections with firmCrd.',
+				},
+			};
+		}
 		return {
 			ok: false,
 			result: {
 				ok: false,
 				crd,
+				crdKind: 'individual',
 				error: 'No BrokerCheck individual hit for this CRD',
 				url: bcUrl,
 			},
@@ -270,7 +297,8 @@ export async function lookupBrokercheckIndividual(args: {
 	const result: Record<string, unknown> = {
 		ok: true,
 		crd,
-		note: 'Full employment history from BrokerCheck detail API. search_finra_sidecar only has current employers (often empty when Inactive). Node-graph checkbox is not required.',
+		crdKind: 'individual',
+		note: 'Full employment history from BrokerCheck individual detail API (person CRD only — not firm CRDs). search_finra_sidecar only has current employers (often empty when Inactive). Node-graph checkbox is not required.',
 		profile,
 	};
 

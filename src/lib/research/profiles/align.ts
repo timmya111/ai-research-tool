@@ -8,15 +8,18 @@ import {
 	EDGE_WEIGHT_PROFILE_TYPES,
 	EDGE_WEIGHT_TIERS,
 	extractAddressProximityKeys,
+	extractSuiteFloorToken,
 	inferEdgeWeightSector,
 	isCityLevelGeoKey,
 	secondarySignalBoost,
+	sharedSignificantFirmTokens,
 	type GeoProximity,
 } from '@/lib/research/profiles/edgeWeights';
 import { normalizeText } from '@/lib/research/profiles/normalize';
 import {
 	buildProfileIdentityContext,
 	buildSearchPhrasesForProfile,
+	demoteBareCountyNameOnlyScore,
 	evaluateIdentityMatch,
 } from '@/lib/research/profiles/identity';
 import {
@@ -59,6 +62,7 @@ export type AlignmentPassReport = {
 	buildingColocation: number;
 	angleComparison: number;
 	countyFilingMatch: number;
+	knowledgeStoreMatch: number;
 	possibleMatchNameOnly: number;
 	totalUpserted: number;
 	durationMs: number;
@@ -93,6 +97,157 @@ const STOP_ALIAS_WORDS = new Set([
 	'dallas',
 ]);
 
+/** Generic 2+ token alias keys that collide unrelated FINRA/WEF firms / places / dynasties. */
+const GENERIC_FIRM_ALIAS_KEYS = new Set([
+	'wall street',
+	'the times',
+	'j p morgan',
+	'jp morgan',
+	'jpmorgan chase',
+	'morgan stanley',
+	'advanced',
+	'vision',
+	'united',
+	'advantage',
+	'strategy',
+	'hugh martin',
+	'guggenheim',
+	'rockefeller',
+	'rothschild',
+	'endeavor',
+	'national geographic',
+	'lee seung hee',
+]);
+
+/** Skip same_entity_alias across these type pairs (person≠firm, district≠BD, etc.). */
+function isCrossTypeAliasNoise(t1: string, t2: string): boolean {
+	const a = String(t1 || '');
+	const b = String(t2 || '');
+	const pair = new Set([a, b]);
+	if (pair.has('person') && (pair.has('firm') || pair.has('government') || pair.has('historic_event'))) {
+		return true;
+	}
+	if (pair.has('historic_event') && pair.has('firm')) return true;
+	return false;
+}
+
+/** Inbound link count above which a hub is treated as a high-degree employer/BD. */
+const SHARED_AFFIL_HIGH_DEGREE_HUB = 40;
+
+/** Natural-hazard timeline corpora — do not geo-temporal-match against federal press releases. */
+const HAZARD_TIMELINE_CORPORA = new Set(['tornadoes', 'seismic']);
+const AUTHORITY_TIMELINE_CORPORA = new Set(['authority-timelines']);
+
+function isHazardAuthorityCoOccurrence(corpusA: string, corpusB: string): boolean {
+	const a = String(corpusA || '').toLowerCase();
+	const b = String(corpusB || '').toLowerCase();
+	return (
+		(HAZARD_TIMELINE_CORPORA.has(a) && AUTHORITY_TIMELINE_CORPORA.has(b)) ||
+		(HAZARD_TIMELINE_CORPORA.has(b) && AUTHORITY_TIMELINE_CORPORA.has(a))
+	);
+}
+
+/** Alumni / student roles vs professor / visiting scholar — no real shared-affiliation signal. */
+function isAlumniFacultyRoleNoise(role1: string | null | undefined, role2: string | null | undefined): boolean {
+	const alumniRe =
+		/\b(alumni|alumnus|alumna|alumnae|graduate|graduated|student|mba|j\.?d\.?|ph\.?d\.?|class of)\b/i;
+	const facultyRe =
+		/\b(professor|scholar|faculty|lecturer|instructor|visiting|fellow|teacher|adjunct)\b/i;
+	const governanceRe = /\b(trustee|board|regent|overseer|director|governor|fellow of the corporation)\b/i;
+	const r1 = String(role1 || '');
+	const r2 = String(role2 || '');
+	const alum = (r: string) => alumniRe.test(r) && !governanceRe.test(r);
+	const fac = (r: string) => facultyRe.test(r) && !governanceRe.test(r);
+	return (alum(r1) && fac(r2)) || (alum(r2) && fac(r1));
+}
+
+/** Extract tornado/SPC-style event id from a historic_event title (#2411030157-01). */
+function tornadoEventId(name: string): string | null {
+	const m = String(name || '').match(/#([0-9]{6,}(?:-[0-9]+)?)/);
+	return m ? m[1] : null;
+}
+
+/** Tokens of length ≥2 in a normalized alias (no stopword filter). */
+function aliasRawTokens(normKey: string): string[] {
+	return String(normKey || '')
+		.split(/\s+/)
+		.map((t) => t.trim())
+		.filter((t) => t.length >= 2);
+}
+
+/** FINRA person corpora that frequently collide with public-figure cards on common names. */
+const FINRA_PERSON_CORPORA = new Set([
+	'finra-visualizer',
+	'finra-brokercheck',
+	'finra-rosters',
+]);
+
+function isFinraPersonCorpus(corpus: string): boolean {
+	return FINRA_PERSON_CORPORA.has(String(corpus || '').toLowerCase());
+}
+
+/**
+ * Middle name / initial signal: ≥3 name tokens, or a single-letter middle initial
+ * (e.g. "Peter Clark Rockefeller", "R. James Nicholson", "John F Kennedy").
+ */
+function personNameHasMiddleSignal(name: string, aliases: string[]): boolean {
+	for (const raw of [name, ...aliases]) {
+		const tokens = String(raw || '')
+			.trim()
+			.split(/\s+/)
+			.filter(Boolean);
+		if (tokens.length >= 3) return true;
+		if (tokens.some((t) => /^[A-Za-z]\.?$/.test(t))) return true;
+	}
+	return false;
+}
+
+function significantOrgTokens(orgName: string): Set<string> {
+	const stripped = stripLegalSuffixes(normalizeText(orgName));
+	return new Set(
+		stripped
+			.split(/\s+/)
+			.map((t) => t.trim())
+			.filter((t) => t.length >= 3 && !STOP_ALIAS_WORDS.has(t)),
+	);
+}
+
+/** True when a FINRA registration firm shares a significant token (or substring) with a non-FINRA org. */
+function finraEmployerCorroborated(finraOrgs: string[], otherOrgs: string[]): boolean {
+	for (const f of finraOrgs) {
+		const ft = significantOrgTokens(f);
+		const fn = stripLegalSuffixes(normalizeText(f));
+		for (const o of otherOrgs) {
+			const ot = significantOrgTokens(o);
+			const on = stripLegalSuffixes(normalizeText(o));
+			for (const t of ft) {
+				if (ot.has(t)) return true;
+			}
+			if (fn.length >= 6 && on.length >= 6 && (fn.includes(on) || on.includes(fn))) return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * True when a knowledge hit is an OKCountyRecords / county land-records filing
+ * (instrument number I-YYYY-…, okcountyrecords URL, or a *County* project that is not Research Drive).
+ */
+function isCountyFilingHit(projectName: string, title: string, url: string | null): boolean {
+	const project = String(projectName || '');
+	const ttl = String(title || '');
+	const href = String(url || '');
+	// Research Drive / WEF lists / screenshots are knowledge hits, never county filings.
+	if (/research\s*drive/i.test(project)) return false;
+	if (/okcountyrecords\.com/i.test(href)) return true;
+	// OKCR instrument numbers (I-YYYY-…) in title or URL.
+	if (/\bI-\d{4}-\d+\b/i.test(ttl) || /\bI-\d{4}-\d+\b/i.test(href)) return true;
+	// Dallas (and similar) county-deeds projects without OKCR URLs.
+	if (/\bcounty\s+deeds\b/i.test(project)) return true;
+	// *County project folders also hold saved prompts/notes — require filing signal.
+	return false;
+}
+
 function extractDateFromFiling(title: string, text: string): string | null {
 	const hay = `${title}\n${text}`;
 	const recMatch = hay.match(/(?:recorded|filed|date)[:\s]+(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})/i);
@@ -126,6 +281,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		buildingColocation: 0,
 		angleComparison: 0,
 		countyFilingMatch: 0,
+		knowledgeStoreMatch: 0,
 		possibleMatchNameOnly: 0,
 		totalUpserted: 0,
 		durationMs: 0,
@@ -137,16 +293,26 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 	// 1. Shared Identifiers (exact CRD / CIK / Ticker / EIN / URL across different profiles)
 	// parent_sec_cik / url are relational or locators, not same-entity identity keys
+	// finra_crd is a shared numeric namespace for Firm CRDs and Individual CRDs — never treat
+	// person↔firm finra_crd collisions as same-entity (e.g. firm 288811 ≠ individual 288811).
 	const sharedIdentRows = db
 		.prepare(
 			`SELECT a.profile_id AS p1, b.profile_id AS p2, a.scheme, a.value,
-              p1.name AS n1, p2.name AS n2, a.source_corpus AS c1, b.source_corpus AS c2
+              p1.name AS n1, p2.name AS n2, p1.profile_type AS t1, p2.profile_type AS t2,
+              a.source_corpus AS c1, b.source_corpus AS c2
        FROM profile_identifiers a
        JOIN profile_identifiers b
          ON a.scheme = b.scheme AND a.normalized_value = b.normalized_value AND a.profile_id < b.profile_id
        JOIN profiles p1 ON p1.id = a.profile_id
        JOIN profiles p2 ON p2.id = b.profile_id
        WHERE a.scheme NOT IN ('parent_sec_cik', 'url', 'source_id', 'dossier_slug')
+         AND NOT (
+           a.scheme = 'finra_crd'
+           AND (
+             (p1.profile_type = 'person' AND p2.profile_type = 'firm')
+             OR (p1.profile_type = 'firm' AND p2.profile_type = 'person')
+           )
+         )
        LIMIT 300`,
 		)
 		.all() as Array<Record<string, unknown>>;
@@ -191,14 +357,85 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		.prepare('SELECT id, name, slug, profile_type, status, metadata_json FROM profiles')
 		.all() as Array<Record<string, unknown>>;
 
+	// Person alias + org-link maps for FINRA common-name CSM gate
+	const personAliasesById = new Map<string, string[]>();
+	for (const row of db
+		.prepare(
+			`SELECT pa.profile_id AS pid, pa.alias AS alias
+       FROM profile_aliases pa
+       JOIN profiles p ON p.id = pa.profile_id
+       WHERE p.profile_type = 'person'`,
+		)
+		.all() as Array<Record<string, unknown>>) {
+		const pid = String(row.pid);
+		const list = personAliasesById.get(pid) || [];
+		list.push(String(row.alias || ''));
+		personAliasesById.set(pid, list);
+	}
+	const personFinraOrgsById = new Map<string, string[]>();
+	const personOtherOrgsById = new Map<string, string[]>();
+	for (const row of db
+		.prepare(
+			`SELECT l.from_profile_id AS pid, o.name AS org_name, l.source_corpus AS corpus, l.relation_type AS rel
+       FROM profile_links l
+       JOIN profiles o ON o.id = l.to_profile_id
+       JOIN profiles p ON p.id = l.from_profile_id
+       WHERE p.profile_type = 'person'
+         AND l.relation_type IN ('registered_at', 'employed_by', 'affiliated_with', 'alumni_or_faculty')`,
+		)
+		.all() as Array<Record<string, unknown>>) {
+		const pid = String(row.pid);
+		const org = String(row.org_name || '');
+		if (!org) continue;
+		if (isFinraPersonCorpus(String(row.corpus || ''))) {
+			const list = personFinraOrgsById.get(pid) || [];
+			list.push(org);
+			personFinraOrgsById.set(pid, list);
+		} else {
+			const list = personOtherOrgsById.get(pid) || [];
+			list.push(org);
+			personOtherOrgsById.set(pid, list);
+		}
+	}
+	/** Distinct FINRA CRD count per person — used to auto-confirm FINRA↔FINRA CSM. */
+	const personCrdCountById = new Map<string, number>();
+	/** Firm FINRA CRD values (first/primary) — skip alias merges across different CRDs. */
+	const firmCrdById = new Map<string, string>();
+	for (const row of db
+		.prepare(
+			`SELECT profile_id AS pid, COUNT(DISTINCT value) AS n
+       FROM profile_identifiers
+       WHERE scheme = 'finra_crd'
+       GROUP BY profile_id`,
+		)
+		.all() as Array<Record<string, unknown>>) {
+		personCrdCountById.set(String(row.pid), Number(row.n || 0));
+	}
+	for (const row of db
+		.prepare(
+			`SELECT pi.profile_id AS pid, pi.value AS crd
+       FROM profile_identifiers pi
+       JOIN profiles p ON p.id = pi.profile_id
+       WHERE pi.scheme = 'finra_crd' AND p.profile_type = 'firm'`,
+		)
+		.all() as Array<Record<string, unknown>>) {
+		const pid = String(row.pid);
+		if (!firmCrdById.has(pid)) firmCrdById.set(pid, String(row.crd));
+	}
+
 	// 4. Shared Affiliations across DIFFERENT corpora
+	// Keep person↔person (shared board seats) and org↔org only.
+	// Skip firm↔person (MEMBER/PARENT holding ↔ rep fan-out).
+	// Skip high-degree hubs (inbound links ≥ SHARED_AFFIL_HIGH_DEGREE_HUB) so
+	// large BDs like ROCKEFELLER FINANCIAL do not emit O(n) colleague pairs.
 	const sharedAffilRows = db
 		.prepare(
 			`SELECT l1.from_profile_id AS p1, l2.from_profile_id AS p2, l1.to_profile_id AS hub_id,
               hub.name AS hub_name, hub.profile_type AS hub_type,
               l1.source_corpus AS c1, l2.source_corpus AS c2,
               l1.role_label AS r1, l2.role_label AS r2,
-              a1.name AS n1, a2.name AS n2
+              a1.name AS n1, a2.name AS n2,
+              a1.profile_type AS t1, a2.profile_type AS t2
        FROM profile_links l1
        JOIN profile_links l2
          ON l1.to_profile_id = l2.to_profile_id
@@ -208,8 +445,16 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
        JOIN profiles a1 ON a1.id = l1.from_profile_id
        JOIN profiles a2 ON a2.id = l2.from_profile_id
        WHERE hub.profile_type IN ('firm', 'education', 'nonprofit', 'medical_hospital', 'government')
-         AND a1.profile_type IN ('person', 'firm', 'education', 'nonprofit', 'medical_hospital')
-         AND a2.profile_type IN ('person', 'firm', 'education', 'nonprofit', 'medical_hospital')
+         AND (
+           (a1.profile_type = 'person' AND a2.profile_type = 'person')
+           OR (
+             a1.profile_type IN ('firm', 'education', 'nonprofit', 'medical_hospital')
+             AND a2.profile_type IN ('firm', 'education', 'nonprofit', 'medical_hospital')
+           )
+         )
+         AND (
+           SELECT COUNT(*) FROM profile_links pl WHERE pl.to_profile_id = hub.id
+         ) < ${SHARED_AFFIL_HIGH_DEGREE_HUB}
        LIMIT 250`,
 		)
 		.all() as Array<Record<string, unknown>>;
@@ -229,10 +474,13 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		.all() as Array<Record<string, unknown>>;
 
 	// 6. Multi-Angle Overlaps on historic_event / actor profiles
+	// Require ≥2 distinct source corpora (no single-source self-matches like authority-timelines
+	// tagging law_enforcement+policy). Roll up by calendar year so umbrella events
+	// (COVID, Authority Initiatives) produce one proposal per year, not 12 monthly ones.
 	const multiAngleRows = db
 		.prepare(
 			`SELECT p.id, p.name, p.profile_type,
-              substr(te.event_date, 1, 7) AS ym,
+              substr(te.event_date, 1, 4) AS yr,
               COUNT(DISTINCT te.angle) AS angle_count,
               COUNT(DISTINCT te.source_corpus) AS corpus_count,
               GROUP_CONCAT(DISTINCT te.angle) AS angles,
@@ -240,9 +488,9 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
               COUNT(*) AS entry_count
        FROM timeline_entries te
        JOIN profiles p ON p.id = te.profile_id
-       WHERE te.event_date IS NOT NULL AND length(te.event_date) >= 7
-       GROUP BY p.id, ym
-       HAVING angle_count >= 2 OR corpus_count >= 2
+       WHERE te.event_date IS NOT NULL AND length(te.event_date) >= 4
+       GROUP BY p.id, yr
+       HAVING corpus_count >= 2 AND angle_count >= 2
        ORDER BY angle_count DESC, entry_count DESC
        LIMIT 120`,
 		)
@@ -276,16 +524,48 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 		// Commit (2) Same Entity Alias across distinct profiles (with strict person corroboration check)
 		let aliasCount = 0;
+		const aliasPairSeen = new Set<string>();
 		for (const [normKey, group] of byNormKey.entries()) {
 			if (group.length < 2 || group.length > 6) continue;
+			// Block single-token surname/brand collisions (Rockwell, Emerson, Grosvenor).
+			// Shared CRD/CIK still surfaces via shared_identifier.
+			if (aliasRawTokens(normKey).length < 2) continue;
+			if (GENERIC_FIRM_ALIAS_KEYS.has(normKey)) continue;
 			for (let i = 0; i < group.length; i++) {
 				for (let j = i + 1; j < group.length; j++) {
 					if (aliasCount >= 250) break;
 					const a = group[i];
 					const b = group[j];
 					const [left, right] = a.profileId < b.profileId ? [a, b] : [b, a];
+					const pairKey = `${left.profileId}|${right.profileId}`;
+					if (aliasPairSeen.has(pairKey)) continue;
 					const sameType = left.profileType === right.profileType;
 					const crossCorpus = left.corpus !== right.corpus;
+
+					// Distinct tornado / SPC events sharing only rating+date (different #ids)
+					if (
+						left.profileType === 'historic_event' &&
+						right.profileType === 'historic_event'
+					) {
+						const idL = tornadoEventId(left.name);
+						const idR = tornadoEventId(right.name);
+						if (idL && idR && idL !== idR) continue;
+					}
+
+					// Person≠firm / person≠gov / historic_event≠firm alias collisions
+					if (isCrossTypeAliasNoise(left.profileType, right.profileType)) continue;
+
+					// Firm↔firm with different FINRA CRDs are distinct registrants unless
+					// names collapse to the same stripped legal form (Inc vs blank, Ltd vs Co Ltd).
+					if (left.profileType === 'firm' && right.profileType === 'firm') {
+						const crdL = firmCrdById.get(left.profileId);
+						const crdR = firmCrdById.get(right.profileId);
+						if (crdL && crdR && crdL !== crdR) {
+							const strippedL = stripLegalSuffixes(normalizeText(left.name));
+							const strippedR = stripLegalSuffixes(normalizeText(right.name));
+							if (strippedL !== strippedR) continue;
+						}
+					}
 
 					// For two person profiles sharing a name, verify whether any corroborating signal exists
 					if (left.profileType === 'person' && right.profileType === 'person') {
@@ -315,9 +595,10 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 							if (evalRes.decision === 'reject') continue;
 							if (evalRes.decision === 'name_only_note') {
+								aliasPairSeen.add(pairKey);
 								upsertAlignmentCandidate(
 									{
-										dedupeKey: sha256Key(['possible_match_name_only', left.profileId, right.profileId, normKey]),
+										dedupeKey: sha256Key(['possible_match_name_only', left.profileId, right.profileId]),
 										alignmentKind: 'possible_match_name_only',
 										leftProfileId: left.profileId,
 										rightProfileId: right.profileId,
@@ -336,9 +617,10 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 								continue;
 							}
 
+							aliasPairSeen.add(pairKey);
 							upsertAlignmentCandidate(
 								{
-									dedupeKey: sha256Key(['same_entity_alias', left.profileId, right.profileId, normKey]),
+									dedupeKey: sha256Key(['same_entity_alias', left.profileId, right.profileId]),
 									alignmentKind: 'same_entity_alias',
 									leftProfileId: left.profileId,
 									rightProfileId: right.profileId,
@@ -358,10 +640,11 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 						}
 					}
 
+					aliasPairSeen.add(pairKey);
 					const score = (sameType ? 0.78 : 0.62) + (crossCorpus ? 0.1 : 0);
 					upsertAlignmentCandidate(
 						{
-							dedupeKey: sha256Key(['same_entity_alias', left.profileId, right.profileId, normKey]),
+							dedupeKey: sha256Key(['same_entity_alias', left.profileId, right.profileId]),
 							alignmentKind: 'same_entity_alias',
 							leftProfileId: left.profileId,
 							rightProfileId: right.profileId,
@@ -392,8 +675,48 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			}
 			if (corpora.length < 2) continue;
 			const pid = String(p.id);
+			const profileType = String(p.profile_type || '');
+
+			// Person + FINRA corpus + non-FINRA corpus: require middle name/initial OR
+			// corroborated employer/firm so common-name BrokerCheck reps do not flood CSM.
+			// When the non-FINRA side is WEF / cabinets / dialog (public-figure corpora),
+			// middle name alone is not enough — require employer corroboration
+			// (blocks Eun Soo Kim / Sang Yup Lee / Imran Khan style collisions).
+			const PUBLIC_FIGURE_CORPORA = new Set([
+				'wef-amnc',
+				'us-presidential-cabinets-curated',
+				'epstein-dialog-curated',
+				'dialog-curated',
+				'dynasties-power-network-curated',
+			]);
+			const hasFinraCorpus = corpora.some((c) => isFinraPersonCorpus(c));
+			const hasNonFinraCorpus = corpora.some((c) => !isFinraPersonCorpus(c));
+			if (profileType === 'person' && hasFinraCorpus && hasNonFinraCorpus) {
+				const aliases = personAliasesById.get(pid) || [];
+				const middleOk = personNameHasMiddleSignal(String(p.name || ''), aliases);
+				const employerOk = finraEmployerCorroborated(
+					personFinraOrgsById.get(pid) || [],
+					personOtherOrgsById.get(pid) || [],
+				);
+				const hasPublicFigureCorpus = corpora.some((c) =>
+					PUBLIC_FIGURE_CORPORA.has(String(c || '').toLowerCase()),
+				);
+				if (hasPublicFigureCorpus) {
+					if (!employerOk) continue;
+				} else if (!middleOk && !employerOk) {
+					continue;
+				}
+			}
+
 			const score = Math.min(0.95, 0.65 + corpora.length * 0.1);
 			const tier: CautionTier = corpora.length >= 3 ? 'stronger_indicator' : 'closer_look';
+			// Auto-confirm FINRA-corpora-only person CSM with exactly one CRD
+			// (rosters↔visualizer same registrant — no manual queue).
+			const finraOnly =
+				profileType === 'person' &&
+				corpora.length >= 2 &&
+				corpora.every((c) => isFinraPersonCorpus(c));
+			const singleCrd = (personCrdCountById.get(pid) || 0) === 1;
 			upsertAlignmentCandidate(
 				{
 					dedupeKey: sha256Key(['cross_source_mention', pid]),
@@ -402,8 +725,9 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					rightProfileId: null,
 					score,
 					cautionTier: tier,
-					rationale: `"${String(p.name)}" (${String(p.profile_type)}) appears across ${corpora.length} distinct data sources: ${corpora.join(', ')}.`,
+					rationale: `"${String(p.name)}" (${profileType}) appears across ${corpora.length} distinct data sources: ${corpora.join(', ')}.`,
 					evidence: corpora.map((c) => ({ corpus: c, label: `Present in ${c}` })),
+					status: finraOnly && singleCrd ? 'confirmed' : undefined,
 				},
 				tx,
 			);
@@ -415,6 +739,17 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			const p1 = String(r.p1);
 			const p2 = String(r.p2);
 			const hubName = String(r.hub_name);
+			const hubType = String(r.hub_type || '');
+			// Education hubs: skip Alumni/student ↔ Professor/Scholar (keep Trustee/Board pairs).
+			if (
+				hubType === 'education' &&
+				isAlumniFacultyRoleNoise(
+					r.r1 != null ? String(r.r1) : null,
+					r.r2 != null ? String(r.r2) : null,
+				)
+			) {
+				continue;
+			}
 			upsertAlignmentCandidate(
 				{
 					dedupeKey: sha256Key(['shared_affiliation', p1, p2, String(r.hub_id)]),
@@ -423,7 +758,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					rightProfileId: p2,
 					score: 0.72,
 					cautionTier: 'observation',
-					rationale: `"${String(r.n1)}" (${String(r.c1)}) and "${String(r.n2)}" (${String(r.c2)}) both connect to ${hubName} (${String(r.hub_type)}).`,
+					rationale: `"${String(r.n1)}" (${String(r.c1)}) and "${String(r.n2)}" (${String(r.c2)}) both connect to ${hubName} (${hubType}).`,
 					evidence: [
 						{ corpus: String(r.c1), label: `${String(r.n1)} → ${hubName}${r.r1 ? ` (${String(r.r1)})` : ''}` },
 						{ corpus: String(r.c2), label: `${String(r.n2)} → ${hubName}${r.r2 ? ` (${String(r.r2)})` : ''}` },
@@ -461,6 +796,10 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					if (diff > geoWindowDays) break;
 					if (String(a.source_corpus) === String(b.source_corpus)) continue;
 					if (String(a.profile_id) === String(b.profile_id)) continue;
+					// Tornadoes/seismic must not pair with authority-timelines (ICE/HSI) on OK/TX dates.
+					if (isHazardAuthorityCoOccurrence(String(a.source_corpus), String(b.source_corpus))) {
+						continue;
+					}
 
 					const [left, right] =
 						String(a.profile_id) < String(b.profile_id) ? [a, b] : [b, a];
@@ -722,7 +1061,16 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			if (budget.added >= budget.max) return false;
 			const pk = pairKey(a.profileId, b.profileId);
 			if (coveredPairs.has(pk)) return false;
-			coveredPairs.add(pk);
+
+			// Building grain: firm↔firm only (drop HQ coworker person↔person fan-out).
+			// When firms=0, require matching suite/floor so multi-tenant towers do not collide
+			// on generic finance name tokens (Sovran Suite 800 ≠ Pure Suite 1550).
+			if (proximity === 'building') {
+				if (a.profileType !== 'firm' || b.profileType !== 'firm') {
+					coveredPairs.add(pk);
+					return false;
+				}
+			}
 
 			const sectorA = sectorFor(a);
 			const sectorB = sectorFor(b);
@@ -755,6 +1103,34 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					left.name,
 					right.name,
 				);
+				if (proximity === 'building' && secondary.sharedFirmNames.length === 0) {
+					const suiteL = extractSuiteFloorToken(left.raw);
+					const suiteR = extractSuiteFloorToken(right.raw);
+					const suiteOk = Boolean(suiteL && suiteR && suiteL === suiteR);
+					const brandTokens = sharedSignificantFirmTokens(left.name, right.name);
+					// Require same suite/floor OR a non-generic shared brand token
+					// (blocks Sovran↔Pure / Bell Potter↔Samsung; keeps Oppenheimer / Ascendiant).
+					if (!suiteOk && brandTokens.length === 0) {
+						coveredPairs.add(pk);
+						return false;
+					}
+					if (suiteOk) {
+						evidence.push({
+							corpus: 'profiles',
+							label: `Matching suite/floor: ${suiteL}`,
+							snippet: String(suiteL),
+							geoKey: clusterKey,
+						});
+					}
+					if (brandTokens.length) {
+						evidence.push({
+							corpus: 'profiles',
+							label: `Shared brand tokens: ${brandTokens.slice(0, 4).join(', ')}`,
+							snippet: brandTokens.join(', '),
+							geoKey: clusterKey,
+						});
+					}
+				}
 				wGeo = Number(
 					Math.min(
 						proximity === 'building'
@@ -794,6 +1170,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				}
 			}
 
+			coveredPairs.add(pk);
 			const kind = alignmentKindForProximity(proximity);
 			upsertAlignmentCandidate(
 				{
@@ -883,23 +1260,24 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		// Commit (6) Multi-Angle Comparisons
 		for (const r of multiAngleRows) {
 			const pid = String(r.id);
-			const ym = String(r.ym);
+			const yr = String(r.yr);
 			const angles = String(r.angles || '').split(',').filter(Boolean);
-			const corpora = String(r.corpora || '').split(',').filter(Boolean);
+			const corpora = [...new Set(String(r.corpora || '').split(',').filter(Boolean))];
+			if (corpora.length < 2 || angles.length < 2) continue;
 			const n = Number(r.entry_count || 0);
 			upsertAlignmentCandidate(
 				{
-					dedupeKey: sha256Key(['angle_comparison', pid, ym]),
+					dedupeKey: sha256Key(['angle_comparison', pid, yr]),
 					alignmentKind: 'angle_comparison',
 					leftProfileId: pid,
 					rightProfileId: null,
-					score: Math.min(0.92, 0.65 + angles.length * 0.08),
+					score: Math.min(0.92, 0.65 + angles.length * 0.08 + Math.min(0.1, corpora.length * 0.03)),
 					cautionTier: 'closer_look',
-					rationale: `Multi-angle coverage on "${String(r.name)}" in ${ym}: ${n} entries across ${angles.length} angles (${angles.join(', ')}) from ${corpora.join(', ')}.`,
+					rationale: `Multi-angle coverage on "${String(r.name)}" in ${yr}: ${n} entries across ${angles.length} angles (${angles.join(', ')}) from ${corpora.join(', ')}.`,
 					evidence: corpora.map((c) => ({
 						corpus: c,
-						label: `${ym} coverage (${angles.join(' / ')})`,
-						date: ym,
+						label: `${yr} coverage (${angles.join(' / ')})`,
+						date: yr,
 					})),
 				},
 				tx,
@@ -966,6 +1344,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			const nameOnlyCommits: Array<{
 				profileId: string;
 				profileName: string;
+				profileType: ProfileType;
 				hits: EvaluatedHit[];
 			}> = [];
 
@@ -980,11 +1359,21 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				if (!phrases.length) continue;
 				if (STOP_ALIAS_WORDS.has(phrases[0].toLowerCase())) continue;
 
+				const profileRawTokenCount = aliasRawTokens(
+					stripLegalSuffixes(normalizeText(rawName)) || normalizeText(rawName),
+				).length;
+
 				const seenDoc = new Set<string>();
 				const validHits: EvaluatedHit[] = [];
 				const noteHits: EvaluatedHit[] = [];
 
 				for (const phrase of phrases.slice(0, 4)) {
+					// Skip single-token FTS phrases for multi-token profiles (Grosvenor Group → "Grosvenor").
+					const phraseRawTokenCount = aliasRawTokens(
+						stripLegalSuffixes(normalizeText(phrase)) || normalizeText(phrase),
+					).length;
+					if (phraseRawTokenCount < 2 && profileRawTokenCount >= 2) continue;
+
 					try {
 						const rows = stmt.all(`"${phrase}"`) as Array<Record<string, unknown>>;
 						for (const r of rows) {
@@ -1038,68 +1427,89 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					validatedCommits.push({ profileId: String(cp.id), profileName: rawName, hits: validHits });
 				}
 				if (noteHits.length > 0) {
-					nameOnlyCommits.push({ profileId: String(cp.id), profileName: rawName, hits: noteHits });
+					nameOnlyCommits.push({
+						profileId: String(cp.id),
+						profileName: rawName,
+						profileType: pType,
+						hits: noteHits,
+					});
 				}
 			}
 
 			if (validatedCommits.length > 0 || nameOnlyCommits.length > 0) {
 				withProfilesTransaction((tx) => {
 					for (const m of validatedCommits) {
-						const projects = [...new Set(m.hits.map((h) => h.projectName))];
-						const evidence: AlignmentEvidenceItem[] = m.hits.slice(0, 6).map((h) => ({
-							corpus: `knowledge:${h.projectName}`,
-							label: h.title.slice(0, 120),
-							date: h.date,
-							url: h.url,
-							sourceRef: `knowledge:doc:${h.docId}`,
-							snippet: h.snippet.slice(0, 200),
-						}));
+						const countyHits = m.hits.filter((h) => isCountyFilingHit(h.projectName, h.title, h.url));
+						const knowledgeHits = m.hits.filter((h) => !isCountyFilingHit(h.projectName, h.title, h.url));
 
-						upsertAlignmentCandidate(
-							{
-								dedupeKey: sha256Key(['county_filing_match', m.profileId]),
-								alignmentKind: 'county_filing_match',
-								leftProfileId: m.profileId,
-								rightProfileId: null,
-								score: Math.max(...m.hits.map((h) => h.score)),
-								cautionTier: m.hits.length >= 2 ? 'stronger_indicator' : 'closer_look',
-								rationale: `Validated match for "${m.profileName}" across ${m.hits.length} record(s) in local knowledge store (${projects.join(', ')}). ${m.hits[0].rationale}`,
-								evidence,
-							},
-							tx,
-						);
-						counts.countyFilingMatch += 1;
-
-						// ONLY attach timeline observations for validated matches!
-						for (const h of m.hits.slice(0, 3)) {
-							const srId = upsertSourceRecord(
+						const commitBucket = (
+							hits: EvaluatedHit[],
+							kind: 'county_filing_match' | 'knowledge_store_match',
+						) => {
+							if (!hits.length) return;
+							const projects = [...new Set(hits.map((h) => h.projectName))];
+							const evidence: AlignmentEvidenceItem[] = hits.slice(0, 6).map((h) => ({
+								corpus: `knowledge:${h.projectName}`,
+								label: h.title.slice(0, 120),
+								date: h.date,
+								url: h.url,
+								sourceRef: `knowledge:doc:${h.docId}`,
+								snippet: h.snippet.slice(0, 200),
+							}));
+							const label =
+								kind === 'county_filing_match'
+									? 'county filing record(s)'
+									: 'local knowledge store document(s)';
+							upsertAlignmentCandidate(
 								{
-									corpus: 'knowledge-sqlite',
-									sourceRef: `knowledge:doc:${h.docId}`,
-									sourceUrl: h.url,
-									title: `[${h.projectName}] ${h.title}`,
-									publishedDate: h.date,
-									excerpt: h.snippet,
-									metadata: { projectName: h.projectName, docId: h.docId },
+									dedupeKey: sha256Key([kind, m.profileId]),
+									alignmentKind: kind,
+									leftProfileId: m.profileId,
+									rightProfileId: null,
+									score: Math.max(...hits.map((h) => h.score)),
+									cautionTier: hits.length >= 2 ? 'stronger_indicator' : 'closer_look',
+									rationale: `Validated match for "${m.profileName}" across ${hits.length} ${label} (${projects.join(', ')}). ${hits[0].rationale}`,
+									evidence,
 								},
 								tx,
 							);
-							upsertTimelineEntry(
-								{
-									profileId: m.profileId,
-									eventDate: h.date,
-									title: `[${h.projectName}] ${h.title}`,
-									summary: h.snippet,
-									angle: /county|deeds/i.test(h.projectName) ? 'land_records' : 'general',
-									entryKind: 'filing',
-									confidence: h.score,
-									sourceCorpus: 'knowledge-sqlite',
-									sourceRecordId: srId,
-									dedupeHint: `kdoc:${h.docId}`,
-								},
-								tx,
-							);
-						}
+							if (kind === 'county_filing_match') counts.countyFilingMatch += 1;
+							else counts.knowledgeStoreMatch += 1;
+
+							// ONLY attach timeline observations for validated matches!
+							for (const h of hits.slice(0, 3)) {
+								const srId = upsertSourceRecord(
+									{
+										corpus: 'knowledge-sqlite',
+										sourceRef: `knowledge:doc:${h.docId}`,
+										sourceUrl: h.url,
+										title: `[${h.projectName}] ${h.title}`,
+										publishedDate: h.date,
+										excerpt: h.snippet,
+										metadata: { projectName: h.projectName, docId: h.docId },
+									},
+									tx,
+								);
+								upsertTimelineEntry(
+									{
+										profileId: m.profileId,
+										eventDate: h.date,
+										title: `[${h.projectName}] ${h.title}`,
+										summary: h.snippet,
+										angle: kind === 'county_filing_match' ? 'land_records' : 'general',
+										entryKind: kind === 'county_filing_match' ? 'filing' : 'observation',
+										confidence: h.score,
+										sourceCorpus: 'knowledge-sqlite',
+										sourceRecordId: srId,
+										dedupeHint: `kdoc:${h.docId}`,
+									},
+									tx,
+								);
+							}
+						};
+
+						commitBucket(countyHits, 'county_filing_match');
+						commitBucket(knowledgeHits, 'knowledge_store_match');
 					}
 
 					// Name-only county hits: NEVER attach to timeline or mutate profile; record note only!
@@ -1113,15 +1523,31 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 							sourceRef: `knowledge:doc:${h.docId}`,
 							snippet: h.snippet.slice(0, 200),
 						}));
+						const rawScore = m.hits[0].score;
+						const demotedScore = demoteBareCountyNameOnlyScore(
+							m.profileType,
+							m.hits.map((h) => ({
+								projectName: h.projectName,
+								title: h.title,
+								snippet: h.snippet,
+								profileName: m.profileName,
+							})),
+							rawScore,
+							m.profileName,
+						);
 						upsertAlignmentCandidate(
 							{
 								dedupeKey: sha256Key(['possible_match_name_only', m.profileId, 'knowledge-sqlite']),
 								alignmentKind: 'possible_match_name_only',
 								leftProfileId: m.profileId,
 								rightProfileId: null,
-								score: m.hits[0].score,
+								score: demotedScore,
 								cautionTier: 'observation',
-								rationale: `Name-only match for "${m.profileName}" in ${projects.join(', ')} (${m.hits.length} doc(s)) with NO corroborating address, firm, military base, or institution. NOT merged onto profile/timeline — verify party/address first.`,
+								rationale: `Name-only match for "${m.profileName}" in ${projects.join(', ')} (${m.hits.length} doc(s)) with NO corroborating address, firm, military base, or institution. NOT merged onto profile/timeline — verify party/address first.${
+									demotedScore < rawScore
+										? ' Score demoted (bare county person-name collision; no LLC/INC/Trust party).'
+										: ''
+								}`,
 								evidence,
 							},
 							tx,
@@ -1154,6 +1580,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		counts.buildingColocation +
 		counts.angleComparison +
 		counts.countyFilingMatch +
+		counts.knowledgeStoreMatch +
 		counts.possibleMatchNameOnly;
 	counts.durationMs = Date.now() - t0;
 
