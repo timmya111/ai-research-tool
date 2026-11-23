@@ -487,22 +487,36 @@ export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
 	result: Record<string, unknown>;
 }> {
 	try {
-		const name = String(args.name || '').trim();
-		if (!name) {
-			return { ok: false, result: { ok: false, error: 'name is required' } };
-		}
 		const profileType = resolveProfileType(args.profileType, 'firm');
 		const corpus = String(args.sourceCorpus || DEFAULT_UPSERT_CORPUS).trim() || DEFAULT_UPSERT_CORPUS;
 		const dryRun = Boolean(args.dryRun);
 		const createPeersDefault = args.createPeerIfMissing !== false;
 
-		const requestedSlug = args.slug
-			? makeProfileSlug(profileType, String(args.slug))
+		const slugArg = args.slug ? String(args.slug).trim() : '';
+		const nameArg = String(args.name || '').trim();
+		// Slug-only updates are allowed so models can avoid XML-breaking chars like & in names.
+		const existingBySlug = slugArg
+			? getProfile(makeProfileSlug(profileType, slugArg)) || resolveExistingProfile(slugArg, profileType)
+			: null;
+		let name = nameArg || existingBySlug?.name || '';
+		if (!name) {
+			return {
+				ok: false,
+				result: {
+					ok: false,
+					error: 'name is required (or pass slug of an existing profile to update locations/identifiers)',
+				},
+			};
+		}
+
+		const requestedSlug = slugArg
+			? makeProfileSlug(profileType, slugArg)
 			: makeProfileSlug(profileType, name);
 		let existing =
+			existingBySlug ||
 			getProfile(requestedSlug) ||
 			resolveExistingProfile(name, profileType) ||
-			(args.slug ? resolveExistingProfile(String(args.slug), profileType) : null);
+			(slugArg ? resolveExistingProfile(slugArg, profileType) : null);
 		// Never rename/hijack a different firm that only fuzzy-matched earlier.
 		if (
 			existing &&
@@ -510,6 +524,9 @@ export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
 			existing.name.trim().toLowerCase() !== name.trim().toLowerCase()
 		) {
 			existing = null;
+		}
+		if (!nameArg && existing) {
+			name = existing.name;
 		}
 
 		const statusRaw = String(args.status || (existing ? existing.status : 'pinned')).trim().toLowerCase();

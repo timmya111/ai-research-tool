@@ -238,7 +238,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'upsert_profile',
 			description:
-				'Create or update a canonical entity profile in the app Profiles store when the user pastes founding/start dates, end/status, merger/predecessor history, HQ locations, aliases, or asks to add firms/people/orgs to the data. Prefer search_profiles first to reuse an existing slug. Use endDate=null (or omit end while setting start) for still-active firms. Links: owned_by (subsidiary→parent), business_tie (predecessor/successor/merger with roleLabel), affiliated_with. Pass createPeerIfMissing=true (default) to create missing related firms named in merger history. Does NOT replace enrich_profile (Wikipedia/BrokerCheck research).',
+				'Create or update a canonical entity profile in the app Profiles store when the user pastes founding/start dates, end/status, merger/predecessor history, street address/HQ, EIN/URL, aliases, or asks to add firms/people/orgs to the data. Prefer search_profiles first to reuse an existing slug. Include locations[] and identifiers[] on the FIRST call when the paste has them (do not defer address/EIN). For updates, slug alone is enough — omit name if it contains & (breaks Ollama tool XML). Use endDate="" to clear a wrong end on still-active firms. Links: owned_by (subsidiary→parent), business_tie (predecessor/successor/merger with roleLabel), affiliated_with. Pass createPeerIfMissing=true (default) to create missing related firms named in merger history. Does NOT replace enrich_profile (Wikipedia/BrokerCheck research).',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -246,10 +246,15 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 						type: 'string',
 						description: 'person | firm | education | nonprofit | medical_hospital | government | historic_event (default firm)',
 					},
-					name: { type: 'string', description: 'Canonical display name (required)' },
+					name: {
+						type: 'string',
+						description:
+							'Canonical display name (required on create). Optional on update when slug is provided — omit or replace & with "and" if the name has ampersands.',
+					},
 					slug: {
 						type: 'string',
-						description: 'Optional exact slug (e.g. firm:rockwell-collins). Auto-derived from name when omitted.',
+						description:
+							'Exact slug (e.g. firm:love-beal-nixon-p-c). Prefer this on updates; auto-derived from name when omitted on create.',
 					},
 					summary: { type: 'string', description: 'Short dossier summary including status and merger notes' },
 					startDate: {
@@ -289,7 +294,8 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					},
 					identifiers: {
 						type: 'array',
-						description: 'Optional registry IDs / URLs (scheme: sec_cik|ticker|url|parent_sec_cik|…)',
+						description:
+							'Registry IDs / URLs. scheme must be one of: irs_ein, url, sec_cik, parent_sec_cik, ticker, finra_crd, cusip, wikidata, source_id, … (no phone scheme — put phone in summary/metadata)',
 						items: {
 							type: 'object',
 							properties: {
@@ -330,7 +336,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					},
 					dryRun: { type: 'boolean', description: 'If true, validate/plan without writing' },
 				},
-				required: ['name'],
+				required: [],
 			},
 		},
 	},

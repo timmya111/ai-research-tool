@@ -71,7 +71,7 @@ Rules:
 - For prior Gemini / Google Takeout chats the user imported under .data/gemini-qa: call search_gemini_qa (and/or search_knowledge on project “Gemini Q&A”). Empty corpus usually means Takeout only had empty Gemini stubs — need My Activity→Gemini Apps or chat JSON/MD re-import.
 - For people/org/place dossiers (Karp, Thiel, Vance, Palantir, Halliburton, Rockefeller hub, Campion Trail, alias buckets, etc.) and entity↔authority edges: call search_entity_dossiers. Do not invent conspiracy links; cite dossier evidence URLs/notes only. Alias buckets stay candidate until pinned.
 - For cross-source entity alignment across ALL local corpora (people, firms, education, non-profits, medical hospitals, government, and historic events): call search_profiles to find unified profiles and their links; call enrich_profile to research and fill missing details from local offline Wikipedia, FINRA BrokerCheck (by CRD), county deeds/Research Drive, and Bryan County UCC filings (strictly validated: NEVER merges name-only matches — holds uncorroborated matches as possible_match_name_only notes until validated by address, firm, military base, institution, or identifier); call get_profile_timeline on a historic_event or actor to compare multiple source angles and surface chronological timeline gaps with cross-source gap-fill leads; call find_profile_alignments to inspect candidate cross-corpus matches. Always respect caution tiers (observation / closer_look / stronger_indicator) and treat proposed alignments & possible_match_name_only notes as leads to verify, not proven conclusions.
-- When the user pastes founding/start dates, end/status, merger/predecessor history, or asks to add/save/update firms (or other entities) into the app Profiles data: call upsert_profile for each entity (search_profiles first to reuse existing slugs). Set startDate/endDate from the paste; use endDate="" to clear a wrong end on still-active firms; add aliases, HQ locations, and links (owned_by subsidiary→parent; business_tie for predecessor/successor/merger with a clear roleLabel). Then briefly confirm created/updated slugs and UI paths. Use enrich_profile afterward only when they want Wikipedia/BrokerCheck research on an existing card.
+- When the user pastes founding/start dates, end/status, merger/predecessor history, address/HQ, EIN/URL, or asks to add/save/update firms (or other entities) into the app Profiles data: call upsert_profile for each entity (search_profiles first to reuse existing slugs). On the FIRST call include everything available from the paste in one shot: startDate/endDate, summary, aliases, locations (raw street + role hq|associated), identifiers (irs_ein, url, …), and links (owned_by subsidiary→parent; business_tie for predecessor/successor/merger with a clear roleLabel). Use endDate="" to clear a wrong end on still-active firms. For follow-up detail fills, pass slug=firm:… and omit name when the display name contains & or other XML-special characters (Ollama tool XML breaks on unescaped &). Phone / registered agent go in summary or metadata (no phone identifier scheme). Then briefly confirm created/updated slugs and UI paths. Use enrich_profile afterward only when they want Wikipedia/BrokerCheck research on an existing card.
 - For encyclopedia background from the local offline English Wikipedia ZIM: call search_wikipedia (kiwix-serve on :8765). If the tool says the ZIM is still downloading or the server is down, say so — do not invent article text.
 - For YouTube videos the user added to this app (ControlAltHistory, MindUnveiled, eyes_wideopen, dig.archaeology, FRESHboosters, PhilipThompson, HiddenAmuraKa, UTDGeoscienceStudio, TheMysteryAbyss, Fall of Civilizations, Timeline World History, EpicHistoryTV, History Matters, Global History Scope, Dr. Joanne Freeman, Ancient Lives, Silk Road Asian History, Spark, Ottoman History, History’s Mysteries WWI doc, The Great War, Old Britannia, History Mapped Out, Interesting Books Reviewed, questions playlist, Athens Unveiled, deep SCRUB-01…05): call search_concealment_scrubs. For timeline / chronology / “years mentioned” questions, pass timelinesOnly=true (and limit≥2). Prefer deep SCRUB cards when present. Quote timeline tables from the tool excerpts; label them as narration/OCR leads, not verified facts. Never claim you lack YouTube access when this local archive exists — do not fall back to Bryan County filings for video questions.
 - For Texas Trinity Aquifer / TWDB groundwater PDFs (GAMs, advisories, GMPs, water levels): call search_twdb_trinity (and/or search_knowledge on project “TWDB Trinity Aquifer”). Do not stall asking A/B/C/D download options when the user already wants the full corpus organized for retrieval — assume local corpus build is the path; report progress from tool errors if not ready yet.
@@ -173,13 +173,32 @@ async function runToolAgentLoop(options: {
 		? selectResearchToolsForQuestion(options.question, options.aboutNodeGraph)
 		: undefined;
 
+	const xmlToolHint =
+		'Your previous tool call failed Ollama XML parsing (often an unescaped & in a parameter). Retry the tool call: prefer slug=firm:… and omit name when it contains &; put street addresses in locations[].raw and EIN/URL in identifiers[]; put phone in summary/metadata.';
+
 	try {
+		let xmlRetries = 0;
 		for (let round = 0; round < options.maxRounds; round++) {
-			const { message } = await ollamaChat({
-				model: options.model,
-				messages,
-				tools: activeTools,
-			});
+			let message: OllamaChatMessage;
+			try {
+				({ message } = await ollamaChat({
+					model: options.model,
+					messages,
+					tools: activeTools,
+				}));
+			} catch (chatErr: unknown) {
+				const errText = chatErr instanceof Error ? chatErr.message : String(chatErr);
+				const isXml =
+					/XML syntax error/i.test(errText) ||
+					(/element\s*<function>/i.test(errText) && /parameter/i.test(errText));
+				if (isXml && xmlRetries < 2 && options.useTools) {
+					xmlRetries += 1;
+					messages.push({ role: 'user', content: xmlToolHint });
+					round -= 1;
+					continue;
+				}
+				throw chatErr;
+			}
 			messages.push(message);
 
 			const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
