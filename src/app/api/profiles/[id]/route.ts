@@ -3,11 +3,14 @@ import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
 import {
 	addAlias,
 	addLocation,
+	deleteLocation,
 	deleteProfile,
 	getProfileDetail,
+	updateLocation,
 	updateProfileFields,
 } from '@/lib/research/profiles/store';
 import {
+	LOCATION_ROLES,
 	PROFILE_TYPES,
 	type LocationRole,
 	type ProfileStatus,
@@ -68,6 +71,10 @@ export async function PATCH(request: Request, context: Ctx) {
 		if (body.addLocation && typeof body.addLocation === 'object') {
 			const loc = body.addLocation as Record<string, unknown>;
 			if (loc.raw) {
+				const roleRaw = loc.role ? String(loc.role) : 'associated';
+				const role = (LOCATION_ROLES.includes(roleRaw as LocationRole)
+					? roleRaw
+					: 'associated') as LocationRole;
 				addLocation({
 					profileId: updated.id,
 					raw: String(loc.raw),
@@ -75,9 +82,49 @@ export async function PATCH(request: Request, context: Ctx) {
 					county: loc.county ? String(loc.county) : null,
 					state: loc.state ? String(loc.state) : null,
 					country: loc.country ? String(loc.country) : null,
-					role: (loc.role ? String(loc.role) : 'associated') as LocationRole,
+					role,
 					sourceCorpus: 'manual',
+					confirmed: Boolean(loc.confirmed),
 				});
+			}
+		}
+		if (body.updateLocation && typeof body.updateLocation === 'object') {
+			const loc = body.updateLocation as Record<string, unknown>;
+			const locId = loc.id != null ? String(loc.id).trim() : '';
+			if (!locId) {
+				return NextResponse.json({ ok: false, error: 'updateLocation.id is required' }, { status: 400 });
+			}
+			const roleRaw = loc.role != null ? String(loc.role) : undefined;
+			const role =
+				roleRaw && LOCATION_ROLES.includes(roleRaw as LocationRole)
+					? (roleRaw as LocationRole)
+					: undefined;
+			const ok = updateLocation({
+				id: locId,
+				profileId: updated.id,
+				raw: loc.raw != null ? String(loc.raw) : undefined,
+				city: loc.city !== undefined ? (loc.city ? String(loc.city) : null) : undefined,
+				county: loc.county !== undefined ? (loc.county ? String(loc.county) : null) : undefined,
+				state: loc.state !== undefined ? (loc.state ? String(loc.state) : null) : undefined,
+				country: loc.country !== undefined ? (loc.country ? String(loc.country) : null) : undefined,
+				role,
+				confirmed: loc.confirmed !== undefined ? Boolean(loc.confirmed) : undefined,
+			});
+			if (!ok) {
+				return NextResponse.json({ ok: false, error: 'Location not found or invalid' }, { status: 404 });
+			}
+		}
+		if (body.deleteLocation != null) {
+			const locId =
+				typeof body.deleteLocation === 'object' && body.deleteLocation !== null
+					? String((body.deleteLocation as Record<string, unknown>).id || '').trim()
+					: String(body.deleteLocation).trim();
+			if (!locId) {
+				return NextResponse.json({ ok: false, error: 'deleteLocation id is required' }, { status: 400 });
+			}
+			const ok = deleteLocation({ id: locId, profileId: updated.id });
+			if (!ok) {
+				return NextResponse.json({ ok: false, error: 'Location not found' }, { status: 404 });
 			}
 		}
 

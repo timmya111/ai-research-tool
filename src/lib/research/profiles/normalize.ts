@@ -461,7 +461,7 @@ export function formatFullAddress(loc: {
 	return built || (raw && !GENERIC_COUNTRY_ONLY_RE.test(raw) ? raw : null);
 }
 
-/** Score a location for "best display address" (street + HQ preferred). */
+/** Score a location for "best display address" (confirmed residence/HQ + street preferred). */
 export function scoreLocationCompleteness(loc: {
 	raw?: string | null;
 	city?: string | null;
@@ -469,16 +469,32 @@ export function scoreLocationCompleteness(loc: {
 	state?: string | null;
 	country?: string | null;
 	role?: string | null;
+	confirmed?: boolean | null;
 }): number {
 	const label = formatFullAddress(loc) || '';
 	if (!label) return -1;
 	const streety = /\d/.test(label) ? 1000 : 0;
 	const commaParts = label.split(',').length;
+	const confirmed = Boolean(loc.confirmed);
+	// Unconfirmed residence must never win the primary/header address.
 	const roleBoost =
-		loc.role === 'hq' ? 500 : loc.role === 'residence' ? 400 : loc.role === 'branch' ? 100 : 0;
+		loc.role === 'hq'
+			? confirmed
+				? 900
+				: 500
+			: loc.role === 'residence'
+				? confirmed
+					? 950
+					: -10_000
+				: loc.role === 'birthplace'
+					? 150
+					: loc.role === 'branch'
+						? 100
+						: 0;
+	const confirmedBoost = confirmed ? 2000 : 0;
 	const structured =
 		(loc.city ? 40 : 0) + (loc.state ? 40 : 0) + (loc.county ? 20 : 0) + (loc.country ? 10 : 0);
-	return streety + roleBoost + commaParts * 25 + structured + label.length;
+	return confirmedBoost + streety + roleBoost + commaParts * 25 + structured + label.length;
 }
 
 /** Pick the best location row and return a full display address string. */
@@ -490,6 +506,7 @@ export function pickBestFullAddress(
 		state?: string | null;
 		country?: string | null;
 		role?: string | null;
+		confirmed?: boolean | null;
 	}>,
 ): string | null {
 	if (!locs.length) return null;
@@ -497,6 +514,22 @@ export function pickBestFullAddress(
 		(a, b) => scoreLocationCompleteness(b) - scoreLocationCompleteness(a),
 	);
 	return formatFullAddress(ranked[0]);
+}
+
+/** Best location object for UI (includes role/confirmed for badges). */
+export function pickBestLocation<
+	T extends {
+		raw?: string | null;
+		city?: string | null;
+		county?: string | null;
+		state?: string | null;
+		country?: string | null;
+		role?: string | null;
+		confirmed?: boolean | null;
+	},
+>(locs: T[]): T | null {
+	if (!locs.length) return null;
+	return [...locs].sort((a, b) => scoreLocationCompleteness(b) - scoreLocationCompleteness(a))[0] || null;
 }
 
 /**
@@ -518,9 +551,10 @@ export function isTooGenericLocation(loc: {
 const LOCATION_ROLE_PRIORITY: Record<string, number> = {
 	hq: 7,
 	residence: 6,
-	branch: 5,
-	event_site: 4,
-	jurisdiction: 3,
+	birthplace: 5,
+	branch: 4,
+	event_site: 3,
+	jurisdiction: 2,
 	corridor: 2,
 	associated: 1,
 };
@@ -630,21 +664,57 @@ export function normalizeIsoDate(raw?: string | null): {
 	const s = String(raw || '').trim();
 	if (!s) return { date: null, precision: 'unknown' };
 
-	const dayMatch = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+	// Prefer ISO YYYY-MM-DD first so "1906-06-05" is not misread as US order.
+	const dayMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
 	if (dayMatch) return { date: `${dayMatch[1]}-${dayMatch[2]}-${dayMatch[3]}`, precision: 'day' };
 
-	const slashMatch = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+	const isoEmbedded = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+	if (isoEmbedded && !/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(s)) {
+		return { date: `${isoEmbedded[1]}-${isoEmbedded[2]}-${isoEmbedded[3]}`, precision: 'day' };
+	}
+
+	const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
 	if (slashMatch) {
 		const mm = slashMatch[1].padStart(2, '0');
 		const dd = slashMatch[2].padStart(2, '0');
 		return { date: `${slashMatch[3]}-${mm}-${dd}`, precision: 'day' };
 	}
 
+	// US display form MM-DD-YYYY (e.g. typed into create form as 06-05-1906)
+	const usDashMatch = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+	if (usDashMatch) {
+		const mm = Number(usDashMatch[1]);
+		const dd = Number(usDashMatch[2]);
+		if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+			return {
+				date: `${usDashMatch[3]}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`,
+				precision: 'day',
+			};
+		}
+	}
+
+	// Compact MMDDYYYY (e.g. 10191983 → 1983-10-19)
+	const compact = s.match(/^(\d{2})(\d{2})(\d{4})$/);
+	if (compact) {
+		const mm = Number(compact[1]);
+		const dd = Number(compact[2]);
+		const yyyy = Number(compact[3]);
+		if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && yyyy >= 1800 && yyyy <= 2100) {
+			return {
+				date: `${compact[3]}-${compact[1]}-${compact[2]}`,
+				precision: 'day',
+			};
+		}
+	}
+
 	const monthMatch = s.match(/^(\d{4})-(\d{2})$/);
 	if (monthMatch) return { date: `${monthMatch[1]}-${monthMatch[2]}`, precision: 'month' };
 
-	const yearMatch = s.match(/\b(1[89]\d{2}|20\d{2})\b/);
+	const yearMatch = s.match(/^(1[89]\d{2}|20\d{2})$/);
 	if (yearMatch) return { date: yearMatch[1], precision: 'year' };
+
+	const yearEmbedded = s.match(/\b(1[89]\d{2}|20\d{2})\b/);
+	if (yearEmbedded) return { date: yearEmbedded[1], precision: 'year' };
 
 	return { date: null, precision: 'unknown' };
 }

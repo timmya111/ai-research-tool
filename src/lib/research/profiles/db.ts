@@ -10,6 +10,9 @@ const g = globalThis as typeof globalThis & {
 export function getProfilesDb(): DatabaseSync {
 	const dbPath = getProfilesDbPath();
 	if (g.__researchProfilesDb && g.__researchProfilesDbPath === dbPath) {
+		// Re-run idempotent migrations so hot-reloaded schema changes (e.g. new columns)
+		// apply without restarting the Next.js process.
+		migrateProfilesDb(g.__researchProfilesDb);
 		return g.__researchProfilesDb;
 	}
 	if (g.__researchProfilesDb) {

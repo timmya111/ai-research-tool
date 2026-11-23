@@ -2,19 +2,26 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import AlignmentEvidenceList from '@/components/AlignmentEvidenceList';
 import ThemeToggle from '@/components/ThemeToggle';
+import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import type {
 	AlignmentCandidate,
 	AlignmentKind,
 	AlignmentStatus,
 	CautionTier,
 	EnrichProfileReport,
+	LocationRole,
 	Profile,
 	ProfileDetail,
 	ProfileStats,
 	ProfileTimelineResult,
 	ProfileType,
 } from '@/lib/research/profiles/types';
+import { LOCATION_ROLES } from '@/lib/research/profiles/types';
+
+/** Placeholder showing page display form + compact MMDDYYYY. */
+const DATE_INPUT_PLACEHOLDER = 'MM-DD-YYYY or MMDDYYYY';
 
 const TYPE_META: Record<
 	ProfileType,
@@ -740,11 +747,25 @@ function formatDisplayDate(iso?: string | null): string {
 	if (!raw) return '';
 	const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
 	if (ymd) return `${ymd[2]}-${ymd[3]}-${ymd[1]}`;
+	// Legacy create-form US dashes (MM-DD-YYYY) before ISO normalization
+	const us = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+	if (us) {
+		return `${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}-${us[3]}`;
+	}
 	const ym = raw.match(/^(\d{4})-(\d{2})$/);
 	if (ym) return `${ym[2]}-${ym[1]}`;
 	const y = raw.match(/^(\d{4})$/);
 	if (y) return y[1];
 	return raw;
+}
+
+/** Normalize typed date input to page display form (MM-DD-YYYY) when parseable. */
+function formatDateDraftOnBlur(raw: string): string {
+	const trimmed = String(raw || '').trim();
+	if (!trimmed) return '';
+	const iso = normalizeIsoDate(trimmed).date;
+	if (!iso) return trimmed;
+	return formatDisplayDate(iso) || trimmed;
 }
 
 const SUMMARY_MONTH_NAMES = [
@@ -1367,10 +1388,15 @@ export default function ProfilesClient({
 	const [newAliases, setNewAliases] = useState('');
 	const [newLocation, setNewLocation] = useState('');
 	const [newStartDate, setNewStartDate] = useState('');
+	const [newEndDate, setNewEndDate] = useState('');
 	const [newEmployer, setNewEmployer] = useState('');
 	const [newEmployerCategory, setNewEmployerCategory] = useState<ProfileType>('firm');
 	const [newEmployerRole, setNewEmployerRole] = useState('');
 	const [creating, setCreating] = useState(false);
+	const [editingLifeDates, setEditingLifeDates] = useState(false);
+	const [lifeStartDraft, setLifeStartDraft] = useState('');
+	const [lifeEndDraft, setLifeEndDraft] = useState('');
+	const [savingLifeDates, setSavingLifeDates] = useState(false);
 
 	// Manual timeline observation form
 	const [obsDate, setObsDate] = useState('');
@@ -1384,6 +1410,14 @@ export default function ProfilesClient({
 	// Manual alias, location, and employment forms
 	const [aliasDraft, setAliasDraft] = useState('');
 	const [locationDraft, setLocationDraft] = useState('');
+	const [locationRoleDraft, setLocationRoleDraft] = useState<LocationRole>('residence');
+	const [locationConfirmDraft, setLocationConfirmDraft] = useState(false);
+	const [editingLocationId, setEditingLocationId] = useState<string | null>(null);
+	const [editLocationRaw, setEditLocationRaw] = useState('');
+	const [editLocationRole, setEditLocationRole] = useState<LocationRole>('associated');
+	const [editLocationConfirmed, setEditLocationConfirmed] = useState(false);
+	const [savingLocation, setSavingLocation] = useState(false);
+	const [savingAlignmentId, setSavingAlignmentId] = useState<string | null>(null);
 	const [empOrgName, setEmpOrgName] = useState('');
 	const [empOrgCategory, setEmpOrgCategory] = useState<ProfileType>('firm');
 	const [empRole, setEmpRole] = useState('');
@@ -1508,6 +1542,7 @@ export default function ProfilesClient({
 				if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
 				const loaded = data as ProfileDetail;
 				setDetail(loaded);
+				setEditingLifeDates(false);
 				// Keep URL canonicalized to the readable slug (e.g. /profiles?profile=person:alex-karp)
 				const mode = skipNextPushRef.current ? 'replace' : 'push';
 				skipNextPushRef.current = false;
@@ -1805,6 +1840,7 @@ export default function ProfilesClient({
 					name: newName.trim(),
 					summary: newSummary.trim(),
 					startDate: newStartDate.trim() || null,
+					endDate: newEndDate.trim() || null,
 					aliases,
 					locations,
 					employmentHistory,
@@ -1819,6 +1855,7 @@ export default function ProfilesClient({
 			setNewAliases('');
 			setNewLocation('');
 			setNewStartDate('');
+			setNewEndDate('');
 			setNewEmployer('');
 			setNewEmployerRole('');
 			setSelectedId(String(data.profile.id));
@@ -1829,6 +1866,39 @@ export default function ProfilesClient({
 			setError(e instanceof Error ? e.message : String(e));
 		} finally {
 			setCreating(false);
+		}
+	}
+
+	function beginEditLifeDates() {
+		if (!detail) return;
+		setLifeStartDraft(detail.profile.startDate || '');
+		setLifeEndDraft(detail.profile.endDate || '');
+		setEditingLifeDates(true);
+	}
+
+	async function handleSaveLifeDates() {
+		if (!selectedId || !detail) return;
+		setSavingLifeDates(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					startDate: lifeStartDraft.trim() || null,
+					endDate: lifeEndDraft.trim() || null,
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to save dates');
+			setEditingLifeDates(false);
+			setDetail(data as ProfileDetail);
+			await loadList();
+			setBanner('Saved birth/death (start/end) dates.');
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingLifeDates(false);
 		}
 	}
 
@@ -1887,19 +1957,97 @@ export default function ProfilesClient({
 
 	async function handleAddLocation() {
 		if (!selectedId || !locationDraft.trim()) return;
+		setSavingLocation(true);
+		setError(null);
 		try {
 			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ addLocation: { raw: locationDraft.trim(), role: 'residence' } }),
+				body: JSON.stringify({
+					addLocation: {
+						raw: locationDraft.trim(),
+						role: locationRoleDraft,
+						confirmed: locationConfirmDraft,
+					},
+				}),
 			});
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
 			setLocationDraft('');
+			setLocationConfirmDraft(false);
 			setDetail(data as ProfileDetail);
 			await loadList();
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingLocation(false);
+		}
+	}
+
+	function beginEditLocation(loc: ProfileDetail['locations'][number]) {
+		setEditingLocationId(loc.id);
+		setEditLocationRaw(loc.raw);
+		setEditLocationRole(loc.role);
+		setEditLocationConfirmed(Boolean(loc.confirmed));
+	}
+
+	async function handleUpdateLocation(locId: string, patch: {
+		raw?: string;
+		role?: LocationRole;
+		confirmed?: boolean;
+	}) {
+		if (!selectedId) return;
+		setSavingLocation(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					updateLocation: { id: locId, ...patch },
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to update location');
+			setEditingLocationId(null);
+			setDetail(data as ProfileDetail);
+			await loadList();
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingLocation(false);
+		}
+	}
+
+	async function handleSaveLocationEdit() {
+		if (!editingLocationId || !editLocationRaw.trim()) return;
+		await handleUpdateLocation(editingLocationId, {
+			raw: editLocationRaw.trim(),
+			role: editLocationRole,
+			confirmed: editLocationConfirmed,
+		});
+	}
+
+	async function handleDeleteLocation(locId: string) {
+		if (!selectedId) return;
+		if (typeof window !== 'undefined' && !window.confirm('Delete this location?')) return;
+		setSavingLocation(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ deleteLocation: locId }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to delete location');
+			if (editingLocationId === locId) setEditingLocationId(null);
+			setDetail(data as ProfileDetail);
+			await loadList();
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingLocation(false);
 		}
 	}
 
@@ -1939,6 +2087,18 @@ export default function ProfilesClient({
 	}
 
 	async function handleTriageAlignment(id: string, status: AlignmentStatus) {
+		setSavingAlignmentId(id);
+		setError(null);
+		// Optimistic local update so Accept/Dismiss feels immediate on the profile tab.
+		if (detail?.alignments?.some((a) => a.id === id)) {
+			setDetail({
+				...detail,
+				alignments: detail.alignments.map((a) => (a.id === id ? { ...a, status } : a)),
+			});
+		}
+		if (globalAlignments.some((a) => a.id === id)) {
+			setGlobalAlignments((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+		}
 		try {
 			const res = await fetch('/api/profiles/alignments', {
 				method: 'PATCH',
@@ -1946,11 +2106,15 @@ export default function ProfilesClient({
 				body: JSON.stringify({ id, status }),
 			});
 			const data = await res.json();
-			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to update alignment');
 			if (selectedId && mainView === 'profile') await loadDetail(selectedId);
 			if (mainView === 'alignments') await loadGlobalAlignments();
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
+			if (selectedId && mainView === 'profile') await loadDetail(selectedId);
+			if (mainView === 'alignments') await loadGlobalAlignments();
+		} finally {
+			setSavingAlignmentId(null);
 		}
 	}
 
@@ -2279,11 +2443,44 @@ export default function ProfilesClient({
 							/>
 						</label>
 						<label className="flex flex-col gap-1 text-xs">
-							<span className="opacity-75">Start Date (optional)</span>
+							<span className="opacity-75">
+								{newType === 'person'
+									? 'Birth date (optional)'
+									: newType === 'firm' ||
+										  newType === 'education' ||
+										  newType === 'nonprofit' ||
+										  newType === 'medical_hospital' ||
+										  newType === 'government'
+										? 'Founded / start (optional)'
+										: 'Start date (optional)'}
+							</span>
 							<input
 								value={newStartDate}
 								onChange={(e) => setNewStartDate(e.target.value)}
-								placeholder="YYYY-MM-DD or YYYY"
+								onBlur={() => setNewStartDate((v) => formatDateDraftOnBlur(v))}
+								placeholder={DATE_INPUT_PLACEHOLDER}
+								title="Examples: 10-19-1983 or 10191983"
+								className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs"
+							/>
+						</label>
+						<label className="flex flex-col gap-1 text-xs">
+							<span className="opacity-75">
+								{newType === 'person'
+									? 'Death date (optional)'
+									: newType === 'firm' ||
+										  newType === 'education' ||
+										  newType === 'nonprofit' ||
+										  newType === 'medical_hospital' ||
+										  newType === 'government'
+										? 'Dissolved / end (optional)'
+										: 'End date (optional)'}
+							</span>
+							<input
+								value={newEndDate}
+								onChange={(e) => setNewEndDate(e.target.value)}
+								onBlur={() => setNewEndDate((v) => formatDateDraftOnBlur(v))}
+								placeholder={DATE_INPUT_PLACEHOLDER}
+								title="Examples: 10-19-1983 or 10191983"
 								className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs"
 							/>
 						</label>
@@ -2356,7 +2553,7 @@ export default function ProfilesClient({
 							</h2>
 							<p className="m-0 text-xs opacity-75">
 								Possible links, alias collisions, geo-temporal overlaps, multi-angle windows, and
-								knowledge.sqlite county-filing matches. Confirm verified links or dismiss false positives.
+								knowledge.sqlite / Research Drive matches. Click a source chip to open OCR text and original files. Confirm verified links or dismiss false positives.
 							</p>
 						</div>
 						<div className="flex flex-wrap items-center gap-2">
@@ -2459,7 +2656,21 @@ export default function ProfilesClient({
 													: al.alignmentKind.replace(/_/g, ' ')}
 											</span>
 											<span className="text-[11px] opacity-70">score {al.score.toFixed(2)}</span>
-											<span className="text-[11px] opacity-60">· {al.status}</span>
+											<span
+												className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+													al.status === 'confirmed'
+														? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-800 dark:text-emerald-200'
+														: al.status === 'dismissed'
+															? 'border border-rose-500/35 bg-rose-500/10 text-rose-800 dark:text-rose-200'
+															: 'border border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-200'
+												}`}
+											>
+												{al.status === 'confirmed'
+													? 'accepted'
+													: al.status === 'dismissed'
+														? 'dismissed'
+														: 'needs review'}
+											</span>
 										</div>
 										<div className="flex items-center gap-1.5">
 											{(al.alignmentKind === 'same_entity_alias' ||
@@ -2483,17 +2694,19 @@ export default function ProfilesClient({
 											{al.status !== 'confirmed' ? (
 												<button
 													type="button"
+													disabled={savingAlignmentId === al.id}
 													onClick={() => void handleTriageAlignment(al.id, 'confirmed')}
-													className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-200"
+													className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 disabled:opacity-50 dark:text-emerald-200"
 												>
-													Confirm
+													{savingAlignmentId === al.id ? 'Saving…' : 'Accept'}
 												</button>
 											) : null}
 											{al.status !== 'dismissed' ? (
 												<button
 													type="button"
+													disabled={savingAlignmentId === al.id}
 													onClick={() => void handleTriageAlignment(al.id, 'dismissed')}
-													className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-2 py-0.5 text-[11px] opacity-75 hover:opacity-100"
+													className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-2 py-0.5 text-[11px] opacity-75 hover:opacity-100 disabled:opacity-50"
 												>
 													Dismiss
 												</button>
@@ -2534,18 +2747,7 @@ export default function ProfilesClient({
 									</p>
 
 									{al.evidence.length > 0 ? (
-										<div className="flex flex-wrap gap-1.5">
-											{al.evidence.slice(0, 5).map((ev, idx) => (
-												<span
-													key={idx}
-													className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[10px] opacity-85"
-												>
-													<strong>{formatSourceCorpusLabel(ev.corpus)}</strong>:{' '}
-													{scrubEpsteinSourceLabels(ev.label)}
-													{ev.date ? ` (${ev.date})` : ''}
-												</span>
-											))}
-										</div>
+										<AlignmentEvidenceList evidence={al.evidence} initialLimit={6} compact />
 									) : null}
 								</div>
 							))}
@@ -2822,14 +3024,84 @@ export default function ProfilesClient({
 											<code className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px] opacity-75">
 												{detail.profile.slug}
 											</code>
-											{detail.profile.startDate ? (
-												<span className="text-[11px] opacity-70">
-													{formatDisplayDate(detail.profile.startDate)}
-													{detail.profile.endDate
-														? ` → ${formatDisplayDate(detail.profile.endDate)}`
-														: ''}
+											{editingLifeDates ? (
+												<span className="flex flex-wrap items-center gap-1.5 text-[11px]">
+													<input
+														value={lifeStartDraft}
+														onChange={(e) => setLifeStartDraft(e.target.value)}
+														onBlur={() => setLifeStartDraft((v) => formatDateDraftOnBlur(v))}
+														placeholder={DATE_INPUT_PLACEHOLDER}
+														title={
+															detail.profile.profileType === 'person'
+																? 'Birth: 10-19-1983 or 10191983'
+																: 'Start: 10-19-1983 or 10191983'
+														}
+														className="w-[11.5rem] rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px]"
+													/>
+													<span className="opacity-50">→</span>
+													<input
+														value={lifeEndDraft}
+														onChange={(e) => setLifeEndDraft(e.target.value)}
+														onBlur={() => setLifeEndDraft((v) => formatDateDraftOnBlur(v))}
+														placeholder={DATE_INPUT_PLACEHOLDER}
+														title={
+															detail.profile.profileType === 'person'
+																? 'Death: 10-19-1983 or 10191983'
+																: 'End: 10-19-1983 or 10191983'
+														}
+														className="w-[11.5rem] rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px]"
+													/>
+													<button
+														type="button"
+														disabled={savingLifeDates}
+														onClick={() => void handleSaveLifeDates()}
+														className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 disabled:opacity-50 dark:text-emerald-200"
+													>
+														{savingLifeDates ? 'Saving…' : 'Save'}
+													</button>
+													<button
+														type="button"
+														disabled={savingLifeDates}
+														onClick={() => setEditingLifeDates(false)}
+														className="cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px]"
+													>
+														Cancel
+													</button>
 												</span>
-											) : null}
+											) : (
+												<span className="inline-flex flex-wrap items-center gap-1.5 text-[11px] opacity-70">
+													{detail.profile.startDate || detail.profile.endDate ? (
+														<span>
+															{detail.profile.startDate
+																? formatDisplayDate(detail.profile.startDate)
+																: '—'}
+															{detail.profile.endDate
+																? ` → ${formatDisplayDate(detail.profile.endDate)}`
+																: detail.profile.profileType === 'person'
+																	? ''
+																	: ''}
+														</span>
+													) : (
+														<span className="italic opacity-60">
+															{detail.profile.profileType === 'person'
+																? 'No birth/death dates'
+																: 'No start/end dates'}
+														</span>
+													)}
+													<button
+														type="button"
+														onClick={beginEditLifeDates}
+														className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold opacity-100"
+														title={
+															detail.profile.profileType === 'person'
+																? 'Edit birth and death dates'
+																: 'Edit start and end dates'
+														}
+													>
+														Edit dates
+													</button>
+												</span>
+											)}
 										</div>
 										{(() => {
 											const isPerson = detail.profile.profileType === 'person';
@@ -2918,12 +3190,43 @@ export default function ProfilesClient({
 											);
 										})()}
 										{detail.profile.primaryLocation ? (
-											<div className="mb-1.5 text-xs opacity-80">
-												📍 <strong>{detail.profile.primaryLocation}</strong>
-												{detail.locations.length > 1
-													? ` (+${detail.locations.length - 1} more location${detail.locations.length === 2 ? '' : 's'})`
-													: ''}
-											</div>
+											(() => {
+												const primary = detail.profile.primaryLocation;
+												const match =
+													detail.locations.find((l) => l.raw === primary) ||
+													detail.locations.find(
+														(l) => primary.includes(l.raw) || l.raw.includes(primary),
+													);
+												const isConfirmedResidence =
+													match?.role === 'residence' && Boolean(match.confirmed);
+												const isConfirmedHq = match?.role === 'hq' && Boolean(match.confirmed);
+												return (
+													<div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs opacity-80">
+														<span>
+															📍 <strong>{primary}</strong>
+															{detail.locations.length > 1
+																? ` (+${detail.locations.length - 1} more location${detail.locations.length === 2 ? '' : 's'})`
+																: ''}
+														</span>
+														{isConfirmedResidence ? (
+															<span
+																className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200"
+																title="Residence confirmed from strong evidence"
+															>
+																Residence · confirmed
+															</span>
+														) : isConfirmedHq ? (
+															<span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">
+																HQ · confirmed
+															</span>
+														) : match?.role && match.role !== 'associated' ? (
+															<span className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] uppercase opacity-70">
+																{match.role.replace(/_/g, ' ')}
+															</span>
+														) : null}
+													</div>
+												);
+											})()
 										) : null}
 										{detail.profile.summary ? <ProfileSummaryText text={detail.profile.summary} /> : null}
 									</div>
@@ -3563,25 +3866,172 @@ export default function ProfilesClient({
 															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
 																Locations ({detail.locations.length})
 															</h3>
-															<ul className="m-0 mb-2 list-none space-y-1 p-0 text-[11px]">
-																{detail.locations.slice(0, 12).map((loc) => (
-																	<li key={loc.id}>
-																		<span>📍 {loc.raw}</span>{' '}
-																		<span className="text-[10px] opacity-60">({loc.role})</span>
-																	</li>
-																))}
+															<ul className="m-0 mb-2 list-none space-y-2 p-0 text-[11px]">
+																{detail.locations.slice(0, 20).map((loc) => {
+																	const editing = editingLocationId === loc.id;
+																	return (
+																		<li
+																			key={loc.id}
+																			className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5"
+																		>
+																			{editing ? (
+																				<div className="space-y-1.5">
+																					<input
+																						value={editLocationRaw}
+																						onChange={(e) => setEditLocationRaw(e.target.value)}
+																						className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]"
+																						placeholder="Address…"
+																					/>
+																					<div className="flex flex-wrap items-center gap-1.5">
+																						<select
+																							value={editLocationRole}
+																							onChange={(e) =>
+																								setEditLocationRole(e.target.value as LocationRole)
+																							}
+																							className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]"
+																						>
+																							{LOCATION_ROLES.map((r) => (
+																								<option key={r} value={r}>
+																									{r.replace(/_/g, ' ')}
+																								</option>
+																							))}
+																						</select>
+																						<label className="flex items-center gap-1 text-[10px]">
+																							<input
+																								type="checkbox"
+																								checked={editLocationConfirmed}
+																								onChange={(e) =>
+																									setEditLocationConfirmed(e.target.checked)
+																								}
+																							/>
+																							Confirmed
+																						</label>
+																						<button
+																							type="button"
+																							disabled={savingLocation || !editLocationRaw.trim()}
+																							onClick={() => void handleSaveLocationEdit()}
+																							className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 disabled:opacity-50 dark:text-emerald-200"
+																						>
+																							Save
+																						</button>
+																						<button
+																							type="button"
+																							disabled={savingLocation}
+																							onClick={() => setEditingLocationId(null)}
+																							className="cursor-pointer rounded border border-[var(--app-border)] px-2 py-0.5 text-[10px]"
+																						>
+																							Cancel
+																						</button>
+																					</div>
+																				</div>
+																			) : (
+																				<div className="flex flex-wrap items-start justify-between gap-2">
+																					<div className="min-w-0 flex-1">
+																						<div>
+																							📍 {loc.raw}{' '}
+																							<span className="text-[10px] opacity-60">
+																								({loc.role.replace(/_/g, ' ')})
+																							</span>
+																							{loc.confirmed ? (
+																								<span className="ml-1 rounded border border-emerald-500/40 bg-emerald-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-emerald-800 dark:text-emerald-200">
+																									confirmed
+																								</span>
+																							) : loc.role === 'residence' ? (
+																								<span
+																									className="ml-1 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-800 dark:text-amber-200"
+																									title="Residence is not shown as primary until confirmed"
+																								>
+																									unconfirmed
+																								</span>
+																							) : null}
+																						</div>
+																					</div>
+																					<div className="flex shrink-0 flex-wrap gap-1">
+																						<button
+																							type="button"
+																							disabled={savingLocation}
+																							onClick={() => beginEditLocation(loc)}
+																							className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold"
+																						>
+																							Edit
+																						</button>
+																						{loc.role === 'residence' && !loc.confirmed ? (
+																							<button
+																								type="button"
+																								disabled={savingLocation}
+																								onClick={() =>
+																									void handleUpdateLocation(loc.id, {
+																										confirmed: true,
+																									})
+																								}
+																								className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200"
+																								title="Mark residence as strongly confirmed"
+																							>
+																								Confirm
+																							</button>
+																						) : null}
+																						{loc.confirmed ? (
+																							<button
+																								type="button"
+																								disabled={savingLocation}
+																								onClick={() =>
+																									void handleUpdateLocation(loc.id, {
+																										confirmed: false,
+																									})
+																								}
+																								className="cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px]"
+																							>
+																								Unconfirm
+																							</button>
+																						) : null}
+																						<button
+																							type="button"
+																							disabled={savingLocation}
+																							onClick={() => void handleDeleteLocation(loc.id)}
+																							className="cursor-pointer rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200"
+																						>
+																							Delete
+																						</button>
+																					</div>
+																				</div>
+																			)}
+																		</li>
+																	);
+																})}
 															</ul>
-															<div className="flex gap-1">
+															<div className="flex flex-wrap gap-1">
 																<input
 																	value={locationDraft}
 																	onChange={(e) => setLocationDraft(e.target.value)}
-																	placeholder="Add location (e.g. Dallas, TX)…"
-																	className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
+																	placeholder="Add location (e.g. 123 Main St, Dallas, TX)…"
+																	className="min-w-[12rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
 																/>
+																<select
+																	value={locationRoleDraft}
+																	onChange={(e) =>
+																		setLocationRoleDraft(e.target.value as LocationRole)
+																	}
+																	className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-[11px]"
+																>
+																	{LOCATION_ROLES.map((r) => (
+																		<option key={r} value={r}>
+																			{r.replace(/_/g, ' ')}
+																		</option>
+																	))}
+																</select>
+																<label className="flex items-center gap-1 px-1 text-[10px]">
+																	<input
+																		type="checkbox"
+																		checked={locationConfirmDraft}
+																		onChange={(e) => setLocationConfirmDraft(e.target.checked)}
+																	/>
+																	Confirmed
+																</label>
 																<button
 																	type="button"
+																	disabled={savingLocation || !locationDraft.trim()}
 																	onClick={() => void handleAddLocation()}
-																	className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
+																	className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
 																>
 																	Add
 																</button>
@@ -3765,13 +4215,17 @@ export default function ProfilesClient({
 																		<input
 																			value={empStart}
 																			onChange={(e) => setEmpStart(e.target.value)}
-																			placeholder="From"
+																			onBlur={() => setEmpStart((v) => formatDateDraftOnBlur(v))}
+																			placeholder={DATE_INPUT_PLACEHOLDER}
+																			title="From: 10-19-1983 or 10191983"
 																			className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
 																		/>
 																		<input
 																			value={empEnd}
 																			onChange={(e) => setEmpEnd(e.target.value)}
-																			placeholder="To"
+																			onBlur={() => setEmpEnd((v) => formatDateDraftOnBlur(v))}
+																			placeholder={DATE_INPUT_PLACEHOLDER}
+																			title="To: 10-19-1983 or 10191983"
 																			className="w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs"
 																		/>
 																	</div>
@@ -4387,7 +4841,12 @@ export default function ProfilesClient({
 														<input
 															value={obsDate}
 															onChange={(e) => setObsDate(e.target.value)}
-															placeholder="Date (YYYY-MM-DD)"
+															placeholder={DATE_INPUT_PLACEHOLDER}
+															title="Examples: 10-19-1983 or 10191983"
+															onBlur={(e) => {
+																const next = formatDateDraftOnBlur(e.target.value);
+																if (next !== e.target.value) setObsDate(next);
+															}}
 															className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs"
 														/>
 														<select
@@ -4458,7 +4917,14 @@ export default function ProfilesClient({
 												<strong>Sync &amp; Align All Data</strong> to scan all corpora.
 											</p>
 										) : (
-											detail.alignments.map((al) => {
+											<>
+											<p className="text-[11px] leading-relaxed opacity-70">
+												<strong>Accept</strong> marks a candidate as reviewed/valid;{' '}
+												<strong>Dismiss</strong> rejects it. Name-only Research Drive hits stay as
+												notes until you confirm addresses or other facts separately — Accept does
+												not auto-merge document fields onto the dossier.
+											</p>
+											{detail.alignments.map((al) => {
 												const peerId =
 													al.leftProfileId === detail.profile.id
 														? al.rightProfileId
@@ -4477,11 +4943,33 @@ export default function ProfilesClient({
 																>
 																	{al.cautionTier.replace(/_/g, ' ')}
 																</span>
-																<span className="rounded bg-[var(--app-surface-hover)] px-1.5 py-0.5 text-[10px] font-semibold">
-																	{al.alignmentKind.replace(/_/g, ' ')}
+																<span
+																	className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+																		al.alignmentKind === 'possible_match_name_only'
+																			? 'border border-amber-500/40 bg-amber-500/15 text-amber-900 dark:text-amber-200'
+																			: 'bg-[var(--app-surface-hover)]'
+																	}`}
+																>
+																	{al.alignmentKind === 'possible_match_name_only'
+																		? 'Name-only match'
+																		: al.alignmentKind.replace(/_/g, ' ')}
 																</span>
 																<span className="opacity-70">score {al.score.toFixed(2)}</span>
-																<span className="opacity-60">· {al.status}</span>
+																<span
+																	className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+																		al.status === 'confirmed'
+																			? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-800 dark:text-emerald-200'
+																			: al.status === 'dismissed'
+																				? 'border border-rose-500/35 bg-rose-500/10 text-rose-800 dark:text-rose-200'
+																				: 'border border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-200'
+																	}`}
+																>
+																	{al.status === 'confirmed'
+																		? 'accepted'
+																		: al.status === 'dismissed'
+																			? 'dismissed'
+																			: 'needs review'}
+																</span>
 															</div>
 															<div className="flex gap-1.5">
 																{(al.alignmentKind === 'same_entity_alias' ||
@@ -4506,17 +4994,19 @@ export default function ProfilesClient({
 																{al.status !== 'confirmed' ? (
 																	<button
 																		type="button"
+																		disabled={savingAlignmentId === al.id}
 																		onClick={() => void handleTriageAlignment(al.id, 'confirmed')}
-																		className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-200"
+																		className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 disabled:opacity-50 dark:text-emerald-200"
 																	>
-																		Confirm
+																		{savingAlignmentId === al.id ? 'Saving…' : 'Accept'}
 																	</button>
 																) : null}
 																{al.status !== 'dismissed' ? (
 																	<button
 																		type="button"
+																		disabled={savingAlignmentId === al.id}
 																		onClick={() => void handleTriageAlignment(al.id, 'dismissed')}
-																		className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-2 py-0.5 text-[11px] opacity-75"
+																		className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-2 py-0.5 text-[11px] opacity-75 disabled:opacity-50"
 																	>
 																		Dismiss
 																	</button>
@@ -4542,22 +5032,12 @@ export default function ProfilesClient({
 														</p>
 
 														{al.evidence.length > 0 ? (
-															<div className="flex flex-wrap gap-1.5">
-																{al.evidence.map((ev, idx) => (
-																	<span
-																		key={idx}
-																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[10px]"
-																	>
-																		<strong>{formatSourceCorpusLabel(ev.corpus)}</strong>:{' '}
-																		{scrubEpsteinSourceLabels(ev.label)}
-																		{ev.date ? ` (${ev.date})` : ''}
-																	</span>
-																))}
-															</div>
+															<AlignmentEvidenceList evidence={al.evidence} initialLimit={8} />
 														) : null}
 													</div>
 												);
-											})
+											})}
+											</>
 										)}
 									</div>
 								) : null}

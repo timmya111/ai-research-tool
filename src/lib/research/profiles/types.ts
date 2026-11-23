@@ -56,11 +56,23 @@ export type IdentifierScheme =
 export type LocationRole =
 	| 'hq'
 	| 'residence'
+	| 'birthplace'
 	| 'branch'
 	| 'event_site'
 	| 'jurisdiction'
 	| 'corridor'
 	| 'associated';
+
+export const LOCATION_ROLES: LocationRole[] = [
+	'hq',
+	'residence',
+	'birthplace',
+	'branch',
+	'event_site',
+	'jurisdiction',
+	'corridor',
+	'associated',
+];
 
 export type DatePrecision = 'day' | 'month' | 'year' | 'range' | 'unknown';
 
@@ -288,6 +300,8 @@ export type ProfileLocation = {
 	lon: number | null;
 	role: LocationRole;
 	sourceCorpus: string | null;
+	/** User- or evidence-confirmed; required before a residence is trusted in the header. */
+	confirmed: boolean;
 };
 
 export type SourceRecord = {
@@ -477,4 +491,4 @@ export type ProfileStats = {
 	path: string;
 };
 
-export const PROFILES_SCHEMA_VERSION = '1';
+export const PROFILES_SCHEMA_VERSION = '2';

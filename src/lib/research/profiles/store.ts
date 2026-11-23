@@ -165,6 +165,26 @@ export type UpsertProfileInput = {
 	sourceCorpus?: string;
 };
 
+function syncLifeDateMetadata(
+	profileType: ProfileType,
+	meta: Record<string, unknown>,
+	startDate: string | null,
+	endDate: string | null,
+): Record<string, unknown> {
+	if (profileType !== 'person') return meta;
+	const next = { ...meta };
+	if (startDate) next.birthDate = startDate;
+	else delete next.birthDate;
+	if (endDate) {
+		next.deathDate = endDate;
+		next.deceased = true;
+	} else {
+		delete next.deathDate;
+		if (next.deceased === true) delete next.deceased;
+	}
+	return next;
+}
+
 export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSync): Profile {
 	const db = dbOverride ?? getProfilesDb();
 	const cleanName = String(input.name || '').trim();
@@ -176,6 +196,18 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 	const slug = input.slug ? makeProfileSlug(input.profileType, input.slug) : makeProfileSlug(input.profileType, cleanName);
 	const normalizedName = normalizeText(cleanName);
 	const now = new Date().toISOString();
+	const inputStart =
+		input.startDate !== undefined && input.startDate !== null
+			? normalizeIsoDate(String(input.startDate)).date
+			: input.startDate === null
+				? null
+				: undefined;
+	const inputEnd =
+		input.endDate !== undefined && input.endDate !== null
+			? normalizeIsoDate(String(input.endDate)).date
+			: input.endDate === null
+				? null
+				: undefined;
 
 	const existing = db.prepare('SELECT * FROM profiles WHERE slug = ?').get(slug) as
 		| Record<string, unknown>
@@ -183,7 +215,7 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 
 	if (existing) {
 		const prevMeta = safeJsonParse<Record<string, unknown>>(existing.metadata_json, {});
-		const mergedMeta: Record<string, unknown> = { ...prevMeta, ...(input.metadata || {}) };
+		let mergedMeta: Record<string, unknown> = { ...prevMeta, ...(input.metadata || {}) };
 		if (input.sourceCorpus) {
 			const prevCorpora = Array.isArray(prevMeta.corpora)
 				? (prevMeta.corpora as unknown[]).map(String)
@@ -204,8 +236,15 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 				? input.summary.trim()
 				: String(existing.summary || '');
 
-		const nextStart = input.startDate || (existing.start_date != null ? String(existing.start_date) : null);
-		const nextEnd = input.endDate || (existing.end_date != null ? String(existing.end_date) : null);
+		const nextStart =
+			inputStart !== undefined
+				? inputStart
+				: existing.start_date != null
+					? String(existing.start_date)
+					: null;
+		const nextEnd =
+			inputEnd !== undefined ? inputEnd : existing.end_date != null ? String(existing.end_date) : null;
+		mergedMeta = syncLifeDateMetadata(input.profileType, mergedMeta, nextStart, nextEnd);
 
 		db.prepare(
 			`UPDATE profiles
@@ -232,10 +271,13 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 	}
 
 	const id = crypto.randomUUID();
-	const meta: Record<string, unknown> = { ...(input.metadata || {}) };
+	let meta: Record<string, unknown> = { ...(input.metadata || {}) };
 	if (input.sourceCorpus) {
 		meta.corpora = [input.sourceCorpus];
 	}
+	const startDate = inputStart ?? null;
+	const endDate = inputEnd ?? null;
+	meta = syncLifeDateMetadata(input.profileType, meta, startDate, endDate);
 
 	db.prepare(
 		`INSERT INTO profiles(
@@ -250,8 +292,8 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 		normalizedName,
 		input.status || 'active',
 		String(input.summary || '').trim(),
-		input.startDate || null,
-		input.endDate || null,
+		startDate,
+		endDate,
 		JSON.stringify(meta),
 		now,
 		now,
@@ -297,9 +339,22 @@ export function updateProfileFields(
 			: current.profileType;
 	const nextStatus = patch.status || current.status;
 	const nextSummary = patch.summary !== undefined ? String(patch.summary).trim() : current.summary;
-	const nextStart = patch.startDate !== undefined ? patch.startDate : current.startDate;
-	const nextEnd = patch.endDate !== undefined ? patch.endDate : current.endDate;
-	const nextMeta = patch.metadata ? { ...current.metadata, ...patch.metadata } : current.metadata;
+	const nextStart =
+		patch.startDate !== undefined
+			? patch.startDate
+				? normalizeIsoDate(String(patch.startDate)).date
+				: null
+			: current.startDate;
+	const nextEnd =
+		patch.endDate !== undefined
+			? patch.endDate
+				? normalizeIsoDate(String(patch.endDate)).date
+				: null
+			: current.endDate;
+	let nextMeta = patch.metadata ? { ...current.metadata, ...patch.metadata } : { ...current.metadata };
+	if (patch.startDate !== undefined || patch.endDate !== undefined) {
+		nextMeta = syncLifeDateMetadata(nextType, nextMeta, nextStart, nextEnd);
+	}
 	const now = new Date().toISOString();
 
 	db.prepare(
@@ -404,6 +459,7 @@ export function addLocation(
 		lon?: number | null;
 		role?: LocationRole;
 		sourceCorpus?: string | null;
+		confirmed?: boolean;
 	},
 	dbOverride?: DatabaseSync,
 ): string {
@@ -421,30 +477,36 @@ export function addLocation(
 	const lat = typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null;
 	const lon = typeof input.lon === 'number' && Number.isFinite(input.lon) ? input.lon : null;
 	const sourceCorpus = input.sourceCorpus || null;
+	const confirmed = input.confirmed ? 1 : 0;
 	// UNIQUE(profile_id, geo_key, role) is city-grain — a street address shares the city geo_key
 	// with a prior "Dallas, TX" row. Upgrade city-only raws to the more specific street string.
 	const existing = db
 		.prepare(
-			`SELECT id, raw FROM profile_locations
+			`SELECT id, raw, confirmed FROM profile_locations
        WHERE profile_id = ? AND geo_key = ? AND role = ?
        LIMIT 1`,
 		)
-		.get(input.profileId, norm.geoKey, role) as { id?: string; raw?: string } | undefined;
+		.get(input.profileId, norm.geoKey, role) as
+		| { id?: string; raw?: string; confirmed?: number }
+		| undefined;
 	if (existing?.id) {
 		const oldRaw = String(existing.raw || '');
 		const oldHasStreet = /\d/.test(oldRaw);
 		const newHasStreet = /\d/.test(raw);
 		const shouldUpgrade =
 			(newHasStreet && !oldHasStreet) || (!oldHasStreet && !newHasStreet && raw.length > oldRaw.length);
-		if (shouldUpgrade) {
+		if (shouldUpgrade || (input.confirmed && !existing.confirmed)) {
 			db.prepare(
 				`UPDATE profile_locations
-         SET raw = ?, city = COALESCE(?, city), county = COALESCE(?, county),
+         SET raw = CASE WHEN ? THEN ? ELSE raw END,
+             city = COALESCE(?, city), county = COALESCE(?, county),
              state = COALESCE(?, state), country = COALESCE(?, country),
              lat = COALESCE(?, lat), lon = COALESCE(?, lon),
-             source_corpus = COALESCE(?, source_corpus)
+             source_corpus = COALESCE(?, source_corpus),
+             confirmed = CASE WHEN ? THEN 1 ELSE confirmed END
          WHERE id = ?`,
 			).run(
+				shouldUpgrade ? 1 : 0,
 				raw,
 				norm.city,
 				norm.county,
@@ -453,6 +515,7 @@ export function addLocation(
 				lat,
 				lon,
 				sourceCorpus,
+				confirmed,
 				existing.id,
 			);
 		}
@@ -460,8 +523,8 @@ export function addLocation(
 	}
 	db.prepare(
 		`INSERT INTO profile_locations(
-       id, profile_id, raw, city, county, state, country, geo_key, lat, lon, role, source_corpus
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       id, profile_id, raw, city, county, state, country, geo_key, lat, lon, role, source_corpus, confirmed
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
 		crypto.randomUUID(),
 		input.profileId,
@@ -475,8 +538,124 @@ export function addLocation(
 		lon,
 		role,
 		sourceCorpus,
+		confirmed,
 	);
 	return norm.geoKey;
+}
+
+export function updateLocation(
+	input: {
+		id: string;
+		profileId: string;
+		raw?: string;
+		city?: string | null;
+		county?: string | null;
+		state?: string | null;
+		country?: string | null;
+		role?: LocationRole;
+		confirmed?: boolean;
+	},
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride ?? getProfilesDb();
+	const existing = db
+		.prepare('SELECT * FROM profile_locations WHERE id = ? AND profile_id = ?')
+		.get(input.id, input.profileId) as Record<string, unknown> | undefined;
+	if (!existing) return false;
+
+	const nextRaw = input.raw != null ? String(input.raw).trim() : String(existing.raw || '');
+	if (!nextRaw) return false;
+
+	const norm = normalizeLocationRecord({
+		raw: nextRaw,
+		city: input.city !== undefined ? input.city : existing.city != null ? String(existing.city) : null,
+		county:
+			input.county !== undefined
+				? input.county
+				: existing.county != null
+					? String(existing.county)
+					: null,
+		state:
+			input.state !== undefined ? input.state : existing.state != null ? String(existing.state) : null,
+		country:
+			input.country !== undefined
+				? input.country
+				: existing.country != null
+					? String(existing.country)
+					: null,
+	});
+	if (isTooGenericLocation(norm)) return false;
+
+	const role = (input.role || String(existing.role || 'associated')) as LocationRole;
+	const raw = norm.raw || norm.geoKey;
+	const confirmed =
+		input.confirmed !== undefined ? (input.confirmed ? 1 : 0) : Number(existing.confirmed || 0);
+
+	// Role/geo change may collide with UNIQUE(profile_id, geo_key, role).
+	const clash = db
+		.prepare(
+			`SELECT id FROM profile_locations
+       WHERE profile_id = ? AND geo_key = ? AND role = ? AND id != ?
+       LIMIT 1`,
+		)
+		.get(input.profileId, norm.geoKey, role, input.id) as { id?: string } | undefined;
+	if (clash?.id) {
+		// Merge into the existing row: keep the more specific raw, take confirmed OR, delete this row.
+		const clashRow = db
+			.prepare('SELECT raw, confirmed FROM profile_locations WHERE id = ?')
+			.get(clash.id) as { raw?: string; confirmed?: number } | undefined;
+		const clashRaw = String(clashRow?.raw || '');
+		const preferNew =
+			(/\d/.test(raw) && !/\d/.test(clashRaw)) ||
+			(!/\d/.test(clashRaw) && !/\d/.test(raw) && raw.length > clashRaw.length);
+		db.prepare(
+			`UPDATE profile_locations
+       SET raw = ?, city = COALESCE(?, city), county = COALESCE(?, county),
+           state = COALESCE(?, state), country = COALESCE(?, country),
+           confirmed = CASE WHEN ? OR confirmed = 1 THEN 1 ELSE 0 END
+       WHERE id = ?`,
+		).run(
+			preferNew ? raw : clashRaw || raw,
+			norm.city,
+			norm.county,
+			norm.state,
+			norm.country,
+			confirmed,
+			clash.id,
+		);
+		db.prepare('DELETE FROM profile_locations WHERE id = ?').run(input.id);
+		return true;
+	}
+
+	db.prepare(
+		`UPDATE profile_locations
+     SET raw = ?, city = ?, county = ?, state = ?, country = ?,
+         geo_key = ?, role = ?, confirmed = ?
+     WHERE id = ? AND profile_id = ?`,
+	).run(
+		raw,
+		norm.city,
+		norm.county,
+		norm.state,
+		norm.country,
+		norm.geoKey,
+		role,
+		confirmed,
+		input.id,
+		input.profileId,
+	);
+	return true;
+}
+
+export function deleteLocation(
+	input: { id: string; profileId: string },
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride ?? getProfilesDb();
+	const result = db
+		.prepare('DELETE FROM profile_locations WHERE id = ? AND profile_id = ?')
+		.run(input.id, input.profileId);
+	return Number(result.changes || 0) > 0;
 }
 
 export function upsertSourceRecord(
@@ -969,8 +1148,13 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
               (SELECT COUNT(*) FROM timeline_entries te WHERE te.profile_id = p.id) AS timeline_count,
               (SELECT COUNT(*) FROM alignment_candidates ac WHERE ac.left_profile_id = p.id OR ac.right_profile_id = p.id) AS alignment_count,
               (SELECT ploc.raw FROM profile_locations ploc WHERE ploc.profile_id = p.id
-               ORDER BY CASE WHEN ploc.raw GLOB '*[0-9]*' THEN 0 ELSE 1 END,
-                        CASE ploc.role WHEN 'residence' THEN 0 WHEN 'hq' THEN 1 WHEN 'branch' THEN 2 ELSE 3 END,
+               ORDER BY CASE WHEN COALESCE(ploc.confirmed, 0) = 1 THEN 0 ELSE 1 END,
+                        CASE WHEN ploc.role = 'residence' AND COALESCE(ploc.confirmed, 0) = 0 THEN 9
+                             WHEN ploc.role = 'residence' THEN 0
+                             WHEN ploc.role = 'hq' THEN 1
+                             WHEN ploc.role = 'branch' THEN 2
+                             ELSE 3 END,
+                        CASE WHEN ploc.raw GLOB '*[0-9]*' THEN 0 ELSE 1 END,
                         length(ploc.raw) DESC, ploc.raw ASC
                LIMIT 1) AS primary_location,
               (SELECT GROUP_CONCAT(DISTINCT peer.profile_type)
@@ -1146,6 +1330,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		lon: r.lon != null ? Number(r.lon) : null,
 		role: String(r.role || 'associated') as LocationRole,
 		sourceCorpus: r.source_corpus != null ? String(r.source_corpus) : null,
+		confirmed: Boolean(r.confirmed),
 	}));
 	const locations: ProfileLocation[] = deduplicateLocations(rawLocations);
 
@@ -1534,7 +1719,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 
 			const peerLocRows = db
 				.prepare(
-					`SELECT profile_id, raw, city, county, state, country, geo_key, role FROM profile_locations WHERE profile_id IN (${placeholders})`,
+					`SELECT profile_id, raw, city, county, state, country, geo_key, role, confirmed FROM profile_locations WHERE profile_id IN (${placeholders})`,
 				)
 				.all(...chunkIds) as Array<Record<string, unknown>>;
 			for (const lr of peerLocRows) {
@@ -1548,6 +1733,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 					country: lr.country != null ? String(lr.country) : null,
 					geoKey: String(lr.geo_key || ''),
 					role: lr.role != null ? String(lr.role) : null,
+					confirmed: Boolean(lr.confirmed),
 				});
 				peerLocsById.set(pid, list);
 			}
@@ -1812,14 +1998,19 @@ export function addPersonEmployment(input: {
 		input.isCurrent === true ? 'status=current' : input.isCurrent === false ? 'status=previous' : '',
 	].filter(Boolean);
 
+	const startDate = input.startDate
+		? normalizeIsoDate(String(input.startDate).trim()).date
+		: null;
+	const endDate = input.endDate ? normalizeIsoDate(String(input.endDate).trim()).date : null;
+
 	const linkId = upsertProfileLink(
 		{
 			fromProfileId: person.id,
 			toProfileId: orgProfile.id,
 			relationType: relType,
 			roleLabel,
-			startDate: input.startDate ? String(input.startDate).trim() : null,
-			endDate: input.endDate ? String(input.endDate).trim() : null,
+			startDate,
+			endDate,
 			status: 'verified',
 			confidence: 0.95,
 			angle: orgType === 'education' ? 'academic_research' : orgType === 'government' ? 'policy' : 'corporate',
@@ -1830,8 +2021,6 @@ export function addPersonEmployment(input: {
 	);
 
 	// Also record on the person's timeline so employment history participates in timeline alignment
-	const startDate = input.startDate ? String(input.startDate).trim() : null;
-	const endDate = input.endDate ? String(input.endDate).trim() : null;
 	if (startDate || endDate) {
 		upsertTimelineEntry(
 			{
@@ -1947,7 +2136,7 @@ export function mergeProfiles(
 		// 4. Move locations (ignore duplicates)
 		const mergeLocs = tx
 			.prepare(
-				'SELECT raw, city, county, state, country, lat, lon, role, source_corpus FROM profile_locations WHERE profile_id = ?',
+				'SELECT raw, city, county, state, country, lat, lon, role, source_corpus, confirmed FROM profile_locations WHERE profile_id = ?',
 			)
 			.all(merge.id) as Array<Record<string, unknown>>;
 		for (const loc of mergeLocs) {
@@ -1963,6 +2152,7 @@ export function mergeProfiles(
 					lon: loc.lon != null ? Number(loc.lon) : null,
 					role: String(loc.role || 'associated') as LocationRole,
 					sourceCorpus: loc.source_corpus != null ? String(loc.source_corpus) : null,
+					confirmed: Boolean(loc.confirmed),
 				},
 				tx,
 			);

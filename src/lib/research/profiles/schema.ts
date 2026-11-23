@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS profile_locations (
   lon REAL,
   role TEXT NOT NULL DEFAULT 'associated',
   source_corpus TEXT,
+  confirmed INTEGER NOT NULL DEFAULT 0,
   UNIQUE (profile_id, geo_key, role)
 );
 
@@ -209,13 +210,18 @@ export function migrateProfilesDb(db: DatabaseSync): void {
 		if (!/already exists/i.test(msg)) throw error;
 	}
 
+	const locCols = db.prepare(`PRAGMA table_info(profile_locations)`).all() as Array<{ name?: string }>;
+	const locColNames = new Set(locCols.map((c) => String(c.name || '')));
+	if (!locColNames.has('confirmed')) {
+		db.exec(`ALTER TABLE profile_locations ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0`);
+	}
+
 	const row = db.prepare('SELECT value FROM schema_meta WHERE key = ?').get('version') as
 		| { value?: string }
 		| undefined;
-	if (!row?.value) {
-		db.prepare(
-			`INSERT INTO schema_meta(key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		).run('version', PROFILES_SCHEMA_VERSION);
-	}
+	db.prepare(
+		`INSERT INTO schema_meta(key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+	).run('version', PROFILES_SCHEMA_VERSION);
+	void row;
 }
