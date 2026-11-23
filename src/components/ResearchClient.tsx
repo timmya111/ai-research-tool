@@ -289,6 +289,9 @@ export default function ResearchClient() {
 	const [showAdvancedModel, setShowAdvancedModel] = useState(false);
 	const [question, setQuestion] = useState('');
 	const [history, setHistory] = useState<ChatTurn[]>([]);
+	/** False until `/api/chat/session` has hydrated (avoids wiping disk with []). */
+	const [sessionReady, setSessionReady] = useState(false);
+	const [sessionMeta, setSessionMeta] = useState<{ id: string; createdAt: string } | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	/** Sticky Q&A panel that fills the viewport above the ask bar. */
@@ -364,6 +367,119 @@ export default function ResearchClient() {
 		return () => window.clearTimeout(timer);
 	}, [projectId]);
 
+	/** Load durable chat session from `.data/chat-sessions/current.json`. */
+	useEffect(() => {
+		let cancelled = false;
+		(async () => {
+			try {
+				const res = await fetch('/api/chat/session', { cache: 'no-store' });
+				const data = await res.json();
+				if (cancelled) return;
+				if (res.ok && data?.ok && data.session) {
+					const turns = Array.isArray(data.session.turns) ? data.session.turns : [];
+					setHistory(
+						turns.map(
+							(t: {
+								role?: string;
+								content?: string;
+								question?: string;
+								toolTrace?: unknown[];
+								chartUrls?: string[];
+								saved?: boolean;
+							}) => ({
+								role: t.role === 'user' || t.role === 'assistant' ? t.role : 'assistant',
+								content: String(t.content ?? ''),
+								question: t.question != null ? String(t.question) : undefined,
+								toolTrace: Array.isArray(t.toolTrace) ? t.toolTrace : undefined,
+								chartUrls: Array.isArray(t.chartUrls)
+									? t.chartUrls.map((u) => String(u || '')).filter(Boolean)
+									: undefined,
+								saved: Boolean(t.saved),
+							}),
+						),
+					);
+					setSessionMeta({
+						id: String(data.session.id || ''),
+						createdAt: String(data.session.createdAt || ''),
+					});
+				}
+			} catch {
+				/* start empty if session API is down */
+			} finally {
+				if (!cancelled) setSessionReady(true);
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	/** Persist full Q&A history to disk after every change (until New session). */
+	useEffect(() => {
+		if (!sessionReady) return;
+		const timer = window.setTimeout(() => {
+			const turns = history.map((t) => ({
+				role: t.role,
+				content: t.content,
+				question: t.question,
+				toolTrace: t.toolTrace,
+				chartUrls: t.chartUrls,
+				saved: t.saved,
+			}));
+			void fetch('/api/chat/session', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					turns,
+					id: sessionMeta?.id,
+					createdAt: sessionMeta?.createdAt,
+				}),
+			})
+				.then(async (res) => {
+					const data = await res.json().catch(() => null);
+					if (res.ok && data?.ok && data.session?.id) {
+						setSessionMeta({
+							id: String(data.session.id),
+							createdAt: String(data.session.createdAt || sessionMeta?.createdAt || ''),
+						});
+					}
+				})
+				.catch(() => {
+					/* ignore transient save errors */
+				});
+		}, 400);
+		return () => window.clearTimeout(timer);
+	}, [history, sessionReady, sessionMeta?.id, sessionMeta?.createdAt]);
+
+	const startNewSession = useCallback(async () => {
+		if (busy) return;
+		if (history.length > 0) {
+			const ok = window.confirm(
+				'Start a new chat session?\n\nThe current Q&A will leave the screen. It is archived under .data/chat-sessions/archive/ on disk.',
+			);
+			if (!ok) return;
+		}
+		setError(null);
+		try {
+			const res = await fetch('/api/chat/session', { method: 'DELETE' });
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || `new session failed (${res.status})`);
+			setHistory([]);
+			setToolTrace(null);
+			setWorkerTraces(null);
+			setLastRoute(null);
+			setFetchToast(null);
+			if (data.session) {
+				setSessionMeta({
+					id: String(data.session.id || ''),
+					createdAt: String(data.session.createdAt || ''),
+				});
+			}
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
+	}, [busy, history.length]);
+
 	const refreshCanvasInfo = useCallback(async () => {
 		try {
 			const snap = await captureCanvasSnapshotForResearch({
@@ -432,7 +548,7 @@ export default function ResearchClient() {
 		opts?: { projectId?: string | null; ragAuto?: boolean; aboutNodeGraph?: boolean },
 	) => {
 		const q = String(overrideQuestion ?? question).trim();
-		if (!q || busy) return;
+		if (!q || busy || !sessionReady) return;
 		setBusy(true);
 		setError(null);
 		setToolTrace(null);
@@ -527,6 +643,7 @@ export default function ResearchClient() {
 		question,
 		ragAuto,
 		refreshCanvasInfo,
+		sessionReady,
 		status,
 	]);
 
@@ -672,7 +789,7 @@ export default function ResearchClient() {
 				onChange={(e) => setQuestion(e.target.value)}
 				placeholder="Ask about Bryan County filings (grantor, grantee, instrument, legal…)…"
 				rows={2}
-				disabled={busy}
+				disabled={busy || !sessionReady}
 				className="max-h-40 min-h-[52px] flex-1 resize-y rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5 font-[inherit] text-[var(--app-fg)]"
 				onKeyDown={(e) => {
 					if (e.key === 'Enter' && !e.shiftKey) {
@@ -684,7 +801,7 @@ export default function ResearchClient() {
 			<div className="flex flex-col items-center gap-1.5">
 				<ComposerAttach
 					projectId={projectId}
-					disabled={busy}
+					disabled={busy || !sessionReady}
 					onAttached={() => {
 						setKnowledgeRefreshToken((n) => n + 1);
 						setError(null);
@@ -693,7 +810,7 @@ export default function ResearchClient() {
 				/>
 				<button
 					type="submit"
-					disabled={busy || !question.trim()}
+					disabled={busy || !sessionReady || !question.trim()}
 					className="min-h-[36px] min-w-[64px] cursor-pointer rounded-md border-none bg-[#F97316] px-2.5 py-1.5 text-sm font-semibold text-white disabled:cursor-wait"
 				>
 					{busy ? '…' : 'Ask'}
@@ -724,16 +841,42 @@ export default function ResearchClient() {
 			}
 		>
 			<div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2">
-				<p className="m-0 text-xs font-semibold opacity-80">Q&amp;A</p>
-				<button
-					type="button"
-					onClick={() => setChatExpanded((v) => !v)}
-					title={chatExpanded ? 'Exit full-height chat (Esc)' : 'Make chat sticky and full height'}
-					aria-pressed={chatExpanded}
-					className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
-				>
-					{chatExpanded ? 'Exit full height' : 'Full height'}
-				</button>
+				<div className="min-w-0">
+					<p className="m-0 text-xs font-semibold opacity-80">Q&amp;A</p>
+					{sessionReady && history.length > 0 ? (
+						<p className="m-0 truncate text-[10px] opacity-55">
+							{history.length} message{history.length === 1 ? '' : 's'} · saved on disk until New
+							session
+							{sessionMeta?.createdAt
+								? ` · started ${new Date(sessionMeta.createdAt).toLocaleString()}`
+								: ''}
+						</p>
+					) : sessionReady ? (
+						<p className="m-0 text-[10px] opacity-55">Session persists on disk until New session</p>
+					) : (
+						<p className="m-0 text-[10px] opacity-55">Loading session…</p>
+					)}
+				</div>
+				<div className="flex shrink-0 items-center gap-1.5">
+					<button
+						type="button"
+						onClick={() => void startNewSession()}
+						disabled={busy || !sessionReady}
+						title="Clear the chat and start a fresh session (current history is archived on disk)"
+						className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						New session
+					</button>
+					<button
+						type="button"
+						onClick={() => setChatExpanded((v) => !v)}
+						title={chatExpanded ? 'Exit full-height chat (Esc)' : 'Make chat sticky and full height'}
+						aria-pressed={chatExpanded}
+						className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
+					>
+						{chatExpanded ? 'Exit full height' : 'Full height'}
+					</button>
+				</div>
 			</div>
 			<div
 				ref={chatScrollRef}
@@ -746,8 +889,9 @@ export default function ResearchClient() {
 			>
 				{history.length === 0 ? (
 					<p className="m-0 opacity-60">
-						No messages yet. Pick a suggested question above (with Auto-retrieve on) to see
-						full filing details from the local knowledge store.
+						{sessionReady
+							? 'No messages yet. Chat history is kept on disk until you click New session. Pick a suggested question above (with Auto-retrieve on) to see full filing details from the local knowledge store.'
+							: 'Loading saved chat session…'}
 					</p>
 				) : (
 					history.map((turn, index) => (
