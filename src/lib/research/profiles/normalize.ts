@@ -592,11 +592,10 @@ export function deduplicateLocations<
 		return true;
 	});
 
-	// Sort cleanly: hq/residence first, then branch, then alphabetical
+	// Sort: digit street first, then hq/residence role, then longer raw, then alpha
 	pruned.sort((a, b) => {
-		const pa = LOCATION_ROLE_PRIORITY[a.role] || 0;
-		const pb = LOCATION_ROLE_PRIORITY[b.role] || 0;
-		if (pa !== pb) return pb - pa;
+		const scoreDiff = scoreLocationCompleteness(b) - scoreLocationCompleteness(a);
+		if (scoreDiff !== 0) return scoreDiff;
 		return a.raw.localeCompare(b.raw);
 	});
 

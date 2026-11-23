@@ -1236,7 +1236,8 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 	profile.corpora = Array.isArray(profile.metadata.corpora)
 		? (profile.metadata.corpora as unknown[]).map(String)
 		: [];
-	profile.primaryLocation = locations[0]?.raw || null;
+	// Prefer digit-bearing street HQ over country/city-only rows (same rule as listProfiles SQL)
+	profile.primaryLocation = pickBestFullAddress(locations) || locations[0]?.raw || null;
 
 	// Compute main category labels as tags from linked orgs/events + manual metadata.categoryTags
 	const tagSet = new Set<ProfileType>();

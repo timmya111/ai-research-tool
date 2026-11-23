@@ -47,6 +47,59 @@ function hasStreetDigit(hq) {
 /** @type {Array<{slug:string, hq:string, note?:string, country?:string}>} */
 const FIRM_HQ = [
 	{
+		slug: 'firm:bloomberg-l-p',
+		hq: '731 Lexington Avenue, New York, NY 10022',
+		note: 'Bloomberg Tower / LEI headquarters address',
+	},
+	{
+		slug: 'firm:adecco-group',
+		hq: 'Bellerivestrasse 30, 8008 Zurich, Switzerland',
+		note: 'Adecco Group AG HQ (PitchBook / Craft)',
+		country: 'CH',
+	},
+	{
+		slug: 'firm:egon-zehnder-international-ltd',
+		hq: 'Wiesenstrasse 17, 8008 Zurich, Switzerland',
+		note: 'Egon Zehnder International AG (OpenCorporates / Swiss UID)',
+		country: 'CH',
+	},
+	{
+		slug: 'firm:kasikornbank-public-company-limited',
+		hq: '1 Soi Rat Burana 27/1, Rat Burana Road, Rat Burana Sub-District, Rat Burana District, Bangkok 10140, Thailand',
+		note: 'Kasikornbank head office (kasikornbank.com 2026 notice)',
+		country: 'TH',
+	},
+	{
+		slug: 'firm:xanadu-quantum',
+		hq: '777 Bay Street, Suite 2400, Toronto, ON M5G 2C8, Canada',
+		note: 'Xanadu principal office (SEC 6-K / LEI)',
+		country: 'CA',
+	},
+	{
+		slug: 'firm:tata-group',
+		hq: 'Bombay House, 24 Homi Mody Street, Mumbai, Maharashtra 400001, India',
+		note: 'Tata Group HQ Bombay House',
+		country: 'IN',
+	},
+	{
+		slug: 'firm:reliance-industries',
+		hq: '3rd Floor, Maker Chambers IV, 222 Nariman Point, Mumbai, Maharashtra 400021, India',
+		note: 'RIL registered/HQ (LEI / ril.com)',
+		country: 'IN',
+	},
+	{
+		slug: 'firm:sparx-asset-management-co-ltd',
+		hq: 'Shinagawa Season Terrace 6F, 1-2-70 Konan, Minato-ku, Tokyo 108-0075, Japan',
+		note: 'SPARX Asset Management official company outline',
+		country: 'JP',
+	},
+	{
+		slug: 'firm:abdul-latif-jameel-international-group',
+		hq: 'Amir Majed Street, Al Safa District, Jeddah 21471, Saudi Arabia',
+		note: 'ALJ domestic HQ (alj.com contact archive)',
+		country: 'SA',
+	},
+	{
 		slug: 'firm:thomson-reuters',
 		hq: '19 Duncan Street, Toronto, ON M5H 3H1, Canada',
 		note: 'Thomson Reuters corporate HQ (thomsonreuters.com / LEI)',
@@ -154,6 +207,88 @@ const FIRM_HQ = [
 		slug: 'firm:the-new-england-journal-of-medicine',
 		hq: '860 Winter Street, Waltham, MA 02451',
 		note: 'NEJM / NEJM Group publishing HQ (nejm.org contact)',
+	},
+	// Twin / alternate slug that still only had country
+	{
+		slug: 'firm:the-adecco-group',
+		hq: 'Bellerivestrasse 30, 8008 Zurich, Switzerland',
+		note: 'Adecco Group AG HQ (same campus as firm:adecco-group)',
+		country: 'CH',
+	},
+	{
+		slug: 'firm:allianz-se',
+		hq: 'Königinstrasse 28, 80802 Munich, Germany',
+		note: 'Allianz SE Head Office (allianz.com / LEI)',
+		country: 'DE',
+	},
+	{
+		slug: 'firm:novozymes-a-s',
+		hq: 'Krogshøjvej 36, 2880 Bagsværd, Denmark',
+		note: 'Novozymes A/S CVR registered address',
+		country: 'DK',
+	},
+	{
+		slug: 'firm:frost-sullivan',
+		hq: '7550 IH 10 West, Suite 400, San Antonio, TX 78229',
+		note: 'Frost & Sullivan Inc HQ (SAM / frost.com)',
+	},
+	{
+		slug: 'firm:apco-worldwide',
+		hq: '1299 Pennsylvania Avenue NW, Suite 300, Washington, DC 20004',
+		note: 'APCO Worldwide global HQ (apcoworldwide.com / SAM)',
+	},
+	{
+		slug: 'firm:pnc-bank-national-association',
+		hq: 'The Tower at PNC Plaza, 300 Fifth Avenue, Pittsburgh, PA 15222',
+		note: 'PNC principal executive offices (investor.pnc.com / LEI parent)',
+	},
+	{
+		slug: 'firm:ptt-global-chemical-public-company-limited',
+		hq: '555/1 Energy Complex, Building A, 18th Floor, Vibhavadi Rangsit Road, Chatuchak, Bangkok 10900, Thailand',
+		note: 'PTTGC head office (pttgcgroup.com contact)',
+		country: 'TH',
+	},
+	{
+		slug: 'firm:itau-bba',
+		hq: 'Avenida Brigadeiro Faria Lima 3500, São Paulo, SP 04538-132, Brazil',
+		note: 'Itaú BBA Faria Lima HQ (LinkedIn / PitchBook)',
+		country: 'BR',
+	},
+	{
+		slug: 'firm:aurec-capital-group-ltd',
+		hq: '3 Hayetzira Street, Ramat Gan 5252141, Israel',
+		note: 'Aurec Capital Ltd registered HQ (Israeli companies registry / LEI)',
+		country: 'IL',
+	},
+	{
+		slug: 'firm:peach-aviation-limited',
+		hq: '1 Senshu-kuko-kita, Izumisano, Osaka 549-0001, Japan',
+		note: 'Peach Aviation registered HQ at Kansai Airport (gBiz / Wikidata)',
+		country: 'JP',
+	},
+	{
+		slug: 'firm:tubacex',
+		hq: 'Tres Cruces 8, 01400 Llodio, Álava, Spain',
+		note: 'Tubacex SA corporate HQ Llodio (company filings / LEI)',
+		country: 'ES',
+	},
+	{
+		slug: 'firm:swiss-reinsurance-company-ltd',
+		hq: 'Mythenquai 50/60, 8002 Zurich, Switzerland',
+		note: 'Swiss Re global HQ (swissre.com / LEI)',
+		country: 'CH',
+	},
+	{
+		slug: 'firm:zurich-insurance-company-ltd',
+		hq: 'Mythenquai 2, 8002 Zurich, Switzerland',
+		note: 'Zurich Insurance Group AG HQ (zurich.com / LEI)',
+		country: 'CH',
+	},
+	{
+		slug: 'firm:thomson-reuters-group',
+		hq: '19 Duncan Street, Toronto, ON M5H 3H1, Canada',
+		note: 'Thomson Reuters corporate HQ (thomsonreuters.com)',
+		country: 'CA',
 	},
 ];
 

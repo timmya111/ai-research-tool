@@ -45,8 +45,8 @@ const TYPE_META: Record<
 		group: 'actor',
 	},
 	medical_hospital: {
-		label: 'Medical Hospital',
-		plural: 'Medical Hospitals',
+		label: 'Hospital',
+		plural: 'Hospitals',
 		badge: 'bg-teal-500/15 text-teal-800 dark:text-teal-200 border-teal-500/30',
 		group: 'actor',
 	},
@@ -2083,7 +2083,7 @@ export default function ProfilesClient({
 					</h1>
 					<p className="m-0 max-w-4xl text-xs leading-relaxed opacity-80">
 						Unified canonical profiles for <strong>People</strong>, <strong>Firms</strong>,{' '}
-						<strong>Education</strong>, <strong>Non-Profits</strong>, <strong>Medical Hospitals</strong>,{' '}
+						<strong>Education</strong>, <strong>Non-Profits</strong>, <strong>Hospitals</strong>,{' '}
 						<strong>Government</strong>, and <strong>Historic Events</strong> — combining all local
 						corpora to fill timeline gaps, compare angles, and surface possible alignments.
 					</p>
@@ -2107,7 +2107,7 @@ export default function ProfilesClient({
 					>
 						{mainView === 'alignments'
 							? 'Back to Profiles'
-							: `Alignment Triage (${stats?.totalAlignments ?? 0})`}
+							: `Alignment Triage (${stats?.alignmentsByStatus?.proposed ?? 0})`}
 					</button>
 					<button
 						type="button"
@@ -2242,7 +2242,7 @@ export default function ProfilesClient({
 									<option value="firm">Firm / Company</option>
 									<option value="education">Education (University / School / District)</option>
 									<option value="nonprofit">Non-Profit / Foundation / Institute</option>
-									<option value="medical_hospital">Medical Hospital / Health System</option>
+									<option value="medical_hospital">Hospital / Health System</option>
 									<option value="government">Government (Domestic / Foreign / Intl)</option>
 								</optgroup>
 								<optgroup label="Events &amp; Timelines">
@@ -2788,9 +2788,6 @@ export default function ProfilesClient({
 												<div className="mt-0.5 truncate text-[10px] italic opacity-70">
 													{p.alternateNames.join(' · ')}
 												</div>
-											) : null}
-											{p.primaryLocation ? (
-												<div className="mt-0.5 text-[10px] opacity-75">📍 {p.primaryLocation}</div>
 											) : null}
 										</button>
 									);
