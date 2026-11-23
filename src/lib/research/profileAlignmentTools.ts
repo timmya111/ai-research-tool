@@ -4,16 +4,98 @@
  */
 import { listAlignments } from '@/lib/research/profiles/align';
 import { enrichProfile } from '@/lib/research/profiles/enrich';
-import { getProfileDetail, getProfileStats, listProfiles } from '@/lib/research/profiles/store';
+import { makeProfileSlug, normalizeLocationRecord } from '@/lib/research/profiles/normalize';
+import {
+	addAlias,
+	addIdentifier,
+	addLocation,
+	getProfile,
+	getProfileDetail,
+	getProfileStats,
+	listProfiles,
+	updateProfileFields,
+	upsertProfile,
+	upsertProfileLink,
+	upsertSourceRecord,
+} from '@/lib/research/profiles/store';
 import { getProfileTimeline } from '@/lib/research/profiles/timeline';
 import {
+	LOCATION_ROLES,
 	PROFILE_TYPES,
+	type AliasKind,
 	type AlignmentKind,
 	type AlignmentStatus,
 	type CautionTier,
+	type IdentifierScheme,
+	type LocationRole,
+	type ProfileRelationType,
 	type ProfileStatus,
 	type ProfileType,
 } from '@/lib/research/profiles/types';
+
+const ALLOWED_IDENTIFIER_SCHEMES = new Set<IdentifierScheme>([
+	'finra_crd',
+	'sec_cik',
+	'parent_sec_cik',
+	'ticker',
+	'irs_ein',
+	'cusip',
+	'ror',
+	'orcid',
+	'wikidata',
+	'dossier_slug',
+	'source_id',
+	'url',
+]);
+
+const ALLOWED_RELATIONS = new Set<ProfileRelationType>([
+	'owned_by',
+	'business_tie',
+	'affiliated_with',
+	'employed_by',
+	'funded_by',
+	'family_or_associate',
+	'alumni_or_faculty',
+	'mentioned_in',
+	'participated_in',
+	'part_of_subject',
+	'regulator_of',
+	'location_overlap',
+]);
+
+const DEFAULT_UPSERT_CORPUS = 'chat-upsert-profile';
+
+function resolveProfileType(raw: unknown, fallback: ProfileType = 'firm'): ProfileType {
+	const t = String(raw || fallback).trim().toLowerCase();
+	return PROFILE_TYPES.includes(t as ProfileType) ? (t as ProfileType) : fallback;
+}
+
+function resolveExistingProfile(nameOrSlug: string, profileType?: ProfileType) {
+	const key = String(nameOrSlug || '').trim();
+	if (!key) return null;
+	const direct = getProfile(key);
+	if (direct) return direct;
+	if (profileType) {
+		const typedSlug = makeProfileSlug(profileType, key);
+		const byTyped = getProfile(typedSlug);
+		if (byTyped) return byTyped;
+	}
+	// Exact name / alias only — never fall back to the first fuzzy search hit
+	// (that previously overwrote unrelated firms like CapRock Exploration).
+	const found = listProfiles({
+		query: key,
+		profileType: profileType || 'all',
+		limit: 20,
+	});
+	const keyLow = key.toLowerCase();
+	const exact = found.profiles.find(
+		(p) =>
+			p.slug === key ||
+			p.name.trim().toLowerCase() === keyLow ||
+			(p.alternateNames || []).some((a) => a.trim().toLowerCase() === keyLow),
+	);
+	return exact || null;
+}
 
 export type SearchProfilesToolArgs = {
 	query?: string;
@@ -347,6 +429,354 @@ export async function enrichProfileTool(args: EnrichProfileToolArgs): Promise<{
 			result: {
 				ok: true,
 				report,
+			},
+		};
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, result: { ok: false, error: message } };
+	}
+}
+
+export type UpsertProfileToolAlias = string | { alias: string; kind?: string };
+export type UpsertProfileToolLocation = {
+	raw: string;
+	role?: string;
+	city?: string;
+	county?: string;
+	state?: string;
+	country?: string;
+};
+export type UpsertProfileToolIdentifier = { scheme: string; value: string };
+export type UpsertProfileToolLink = {
+	peerName?: string;
+	peerSlug?: string;
+	peerType?: string;
+	relationType?: string;
+	roleLabel?: string;
+	startDate?: string | null;
+	endDate?: string | null;
+	note?: string;
+	createPeerIfMissing?: boolean;
+};
+
+export type UpsertProfileToolArgs = {
+	profileType?: string;
+	name?: string;
+	slug?: string;
+	summary?: string;
+	startDate?: string | null;
+	endDate?: string | null;
+	status?: string;
+	aliases?: UpsertProfileToolAlias[];
+	locations?: UpsertProfileToolLocation[];
+	identifiers?: UpsertProfileToolIdentifier[];
+	links?: UpsertProfileToolLink[];
+	metadata?: Record<string, unknown>;
+	sourceCorpus?: string;
+	createPeerIfMissing?: boolean;
+	dryRun?: boolean;
+};
+
+/**
+ * Create or update a canonical profile from chat (founding dates, status, aliases,
+ * locations, identifiers, and predecessor/ownership links). Prefer searching first
+ * with search_profiles so existing cards are updated instead of duplicated.
+ */
+export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
+	ok: boolean;
+	result: Record<string, unknown>;
+}> {
+	try {
+		const name = String(args.name || '').trim();
+		if (!name) {
+			return { ok: false, result: { ok: false, error: 'name is required' } };
+		}
+		const profileType = resolveProfileType(args.profileType, 'firm');
+		const corpus = String(args.sourceCorpus || DEFAULT_UPSERT_CORPUS).trim() || DEFAULT_UPSERT_CORPUS;
+		const dryRun = Boolean(args.dryRun);
+		const createPeersDefault = args.createPeerIfMissing !== false;
+
+		const requestedSlug = args.slug
+			? makeProfileSlug(profileType, String(args.slug))
+			: makeProfileSlug(profileType, name);
+		let existing =
+			getProfile(requestedSlug) ||
+			resolveExistingProfile(name, profileType) ||
+			(args.slug ? resolveExistingProfile(String(args.slug), profileType) : null);
+		// Never rename/hijack a different firm that only fuzzy-matched earlier.
+		if (
+			existing &&
+			existing.slug !== requestedSlug &&
+			existing.name.trim().toLowerCase() !== name.trim().toLowerCase()
+		) {
+			existing = null;
+		}
+
+		const statusRaw = String(args.status || (existing ? existing.status : 'pinned')).trim().toLowerCase();
+		const status = (['pinned', 'active', 'candidate', 'archived'].includes(statusRaw)
+			? statusRaw
+			: 'pinned') as ProfileStatus;
+
+		const startDate =
+			args.startDate === undefined
+				? undefined
+				: args.startDate === null || String(args.startDate).trim() === ''
+					? null
+					: String(args.startDate).trim();
+		const endDate =
+			args.endDate === undefined
+				? undefined
+				: args.endDate === null || String(args.endDate).trim() === ''
+					? null
+					: String(args.endDate).trim();
+
+		const summary = args.summary != null ? String(args.summary).trim() : undefined;
+		const metaIn =
+			args.metadata && typeof args.metadata === 'object' && !Array.isArray(args.metadata)
+				? { ...args.metadata }
+				: {};
+
+		if (dryRun) {
+			return {
+				ok: true,
+				result: {
+					ok: true,
+					dryRun: true,
+					action: existing ? 'update' : 'create',
+					slug: existing?.slug || requestedSlug,
+					name: existing?.name || name,
+					profileType,
+					startDate: startDate === undefined ? existing?.startDate ?? null : startDate,
+					endDate: endDate === undefined ? existing?.endDate ?? null : endDate,
+					aliases: (args.aliases || []).length,
+					locations: (args.locations || []).length,
+					identifiers: (args.identifiers || []).length,
+					links: (args.links || []).length,
+				},
+			};
+		}
+
+		const createdPeers: Array<{ slug: string; name: string }> = [];
+		const linksWritten: Array<Record<string, unknown>> = [];
+		let aliasesAdded = 0;
+		let locationsAdded = 0;
+		let identifiersAdded = 0;
+
+		const srId = upsertSourceRecord({
+			corpus,
+			sourceRef: `chat-upsert:${requestedSlug}`,
+			sourceUrl: null,
+			title: `Chat upsert: ${name}`,
+			excerpt: summary ? summary.slice(0, 400) : `Profile upserted via research chat (${profileType}).`,
+			metadata: { profileType, name, requestedSlug },
+		});
+
+		let profile = existing
+			? updateProfileFields(existing.id, {
+					name,
+					profileType,
+					status,
+					summary,
+					startDate,
+					endDate,
+					metadata: {
+						...metaIn,
+						sourceRecordId: srId,
+						chatUpsertedAt: new Date().toISOString(),
+					},
+				})
+			: upsertProfile({
+					profileType,
+					name,
+					slug: requestedSlug,
+					status,
+					summary,
+					startDate,
+					endDate,
+					metadata: {
+						...metaIn,
+						sourceRecordId: srId,
+						chatUpsertedAt: new Date().toISOString(),
+					},
+					sourceCorpus: corpus,
+				});
+
+		if (!profile) {
+			throw new Error(`Failed to upsert profile for ${name}`);
+		}
+
+		// Ensure corpus tagging on updates (updateProfileFields does not auto-append corpora)
+		if (existing) {
+			const corpora = Array.isArray(profile.metadata?.corpora)
+				? (profile.metadata.corpora as unknown[]).map(String)
+				: [];
+			if (!corpora.includes(corpus)) {
+				profile =
+					updateProfileFields(profile.id, { metadata: { corpora: [...corpora, corpus] } }) ||
+					profile;
+			}
+		}
+
+		for (const rawAlias of args.aliases || []) {
+			const alias =
+				typeof rawAlias === 'string' ? rawAlias.trim() : String(rawAlias?.alias || '').trim();
+			if (!alias) continue;
+			const kindRaw =
+				typeof rawAlias === 'string'
+					? 'name'
+					: String(rawAlias?.kind || 'name').trim().toLowerCase();
+			const aliasKind = (
+				[
+					'name',
+					'acronym',
+					'former_name',
+					'crd',
+					'cik',
+					'ticker',
+					'ein',
+					'domain',
+					'handle',
+					'slug',
+				].includes(kindRaw)
+					? kindRaw
+					: kindRaw === 'formerly' || kindRaw === 'former'
+						? 'former_name'
+						: 'name'
+			) as AliasKind;
+			addAlias({
+				profileId: profile.id,
+				alias,
+				aliasKind,
+				confidence: 0.95,
+				sourceCorpus: corpus,
+			});
+			aliasesAdded += 1;
+		}
+
+		for (const loc of args.locations || []) {
+			const raw = String(loc?.raw || '').trim();
+			if (!raw) continue;
+			const roleRaw = String(loc.role || 'associated').trim().toLowerCase();
+			const role = (LOCATION_ROLES.includes(roleRaw as LocationRole)
+				? roleRaw
+				: 'associated') as LocationRole;
+			const parts = normalizeLocationRecord({
+				raw,
+				city: loc.city,
+				county: loc.county,
+				state: loc.state,
+				country: loc.country,
+			});
+			addLocation({
+				profileId: profile.id,
+				raw: parts.raw || raw,
+				city: parts.city,
+				county: parts.county,
+				state: parts.state,
+				country: parts.country || 'US',
+				role,
+				sourceCorpus: corpus,
+			});
+			locationsAdded += 1;
+		}
+
+		for (const id of args.identifiers || []) {
+			const scheme = String(id?.scheme || '').trim().toLowerCase() as IdentifierScheme;
+			const value = String(id?.value || '').trim();
+			if (!value || !ALLOWED_IDENTIFIER_SCHEMES.has(scheme)) continue;
+			addIdentifier({
+				profileId: profile.id,
+				scheme,
+				value,
+				sourceCorpus: corpus,
+			});
+			identifiersAdded += 1;
+		}
+
+		for (const link of args.links || []) {
+			const peerName = String(link.peerName || '').trim();
+			const peerSlug = String(link.peerSlug || '').trim();
+			if (!peerName && !peerSlug) continue;
+			const peerType = resolveProfileType(link.peerType, profileType);
+			const relationRaw = String(link.relationType || 'business_tie').trim().toLowerCase();
+			const relationType = (ALLOWED_RELATIONS.has(relationRaw as ProfileRelationType)
+				? relationRaw
+				: 'business_tie') as ProfileRelationType;
+			const createPeer = link.createPeerIfMissing ?? createPeersDefault;
+
+			let peer =
+				(peerSlug ? getProfile(peerSlug) : null) ||
+				(peerName ? resolveExistingProfile(peerName, peerType) : null) ||
+				(peerSlug ? resolveExistingProfile(peerSlug, peerType) : null);
+
+			if (!peer && createPeer) {
+				const peerCreateName = peerName || peerSlug.replace(/^[^:]+:/, '').replace(/-/g, ' ');
+				peer = upsertProfile({
+					profileType: peerType,
+					name: peerCreateName,
+					slug: peerSlug || undefined,
+					status: 'pinned',
+					summary: `Related entity linked from ${name} via research chat upsert.`,
+					sourceCorpus: corpus,
+					metadata: { createdAsLinkPeerFrom: profile.slug },
+				});
+				createdPeers.push({ slug: peer.slug, name: peer.name });
+			}
+			if (!peer) continue;
+
+			const linkId = upsertProfileLink({
+				fromProfileId: profile.id,
+				toProfileId: peer.id,
+				relationType,
+				roleLabel: link.roleLabel ? String(link.roleLabel).trim() : null,
+				startDate:
+					link.startDate === undefined
+						? null
+						: link.startDate === null || String(link.startDate).trim() === ''
+							? null
+							: String(link.startDate).trim(),
+				endDate:
+					link.endDate === undefined
+						? null
+						: link.endDate === null || String(link.endDate).trim() === ''
+							? null
+							: String(link.endDate).trim(),
+				status: 'observed',
+				confidence: 0.9,
+				sourceCorpus: corpus,
+				sourceRecordId: srId,
+				evidenceNote: link.note ? String(link.note).trim() : undefined,
+			});
+			linksWritten.push({
+				linkId,
+				relationType,
+				roleLabel: link.roleLabel || null,
+				peerSlug: peer.slug,
+				peerName: peer.name,
+			});
+		}
+
+		const detail = getProfileDetail(profile.id);
+		return {
+			ok: true,
+			result: {
+				ok: true,
+				action: existing ? 'updated' : 'created',
+				slug: profile.slug,
+				id: profile.id,
+				name: profile.name,
+				profileType: profile.profileType,
+				status: profile.status,
+				startDate: profile.startDate,
+				endDate: profile.endDate,
+				summary: (profile.summary || '').slice(0, 280),
+				aliasesAdded,
+				locationsAdded,
+				identifiersAdded,
+				linksWritten,
+				createdPeers,
+				hasLiveSourceUrl: detail?.profile.hasLiveSourceUrl ?? null,
+				uiPath: `/profiles/${profile.slug.replace(':', '/')}`,
 			},
 		};
 	} catch (error: unknown) {

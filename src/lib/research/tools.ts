@@ -26,6 +26,7 @@ import {
 	findProfileAlignmentsTool,
 	getProfileTimelineTool,
 	searchProfilesTool,
+	upsertProfileTool,
 } from '@/lib/research/profileAlignmentTools';
 import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
@@ -49,6 +50,7 @@ export type ResearchToolName =
 	| 'get_profile_timeline'
 	| 'find_profile_alignments'
 	| 'enrich_profile'
+	| 'upsert_profile'
 	| 'search_concealment_scrubs'
 	| 'search_twdb_trinity'
 	| 'search_digital_earth'
@@ -228,6 +230,107 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					includeBryanUcc: { type: 'boolean', description: 'Search Bryan County UCC filings (default true)' },
 				},
 				required: ['profile'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'upsert_profile',
+			description:
+				'Create or update a canonical entity profile in the app Profiles store when the user pastes founding/start dates, end/status, merger/predecessor history, HQ locations, aliases, or asks to add firms/people/orgs to the data. Prefer search_profiles first to reuse an existing slug. Use endDate=null (or omit end while setting start) for still-active firms. Links: owned_by (subsidiary→parent), business_tie (predecessor/successor/merger with roleLabel), affiliated_with. Pass createPeerIfMissing=true (default) to create missing related firms named in merger history. Does NOT replace enrich_profile (Wikipedia/BrokerCheck research).',
+			parameters: {
+				type: 'object',
+				properties: {
+					profileType: {
+						type: 'string',
+						description: 'person | firm | education | nonprofit | medical_hospital | government | historic_event (default firm)',
+					},
+					name: { type: 'string', description: 'Canonical display name (required)' },
+					slug: {
+						type: 'string',
+						description: 'Optional exact slug (e.g. firm:rockwell-collins). Auto-derived from name when omitted.',
+					},
+					summary: { type: 'string', description: 'Short dossier summary including status and merger notes' },
+					startDate: {
+						type: 'string',
+						description: 'Founded/start/birth date (YYYY, YYYY-MM, or YYYY-MM-DD). Pass empty string to clear.',
+					},
+					endDate: {
+						type: 'string',
+						description:
+							'Dissolved/end/death date, or empty string/null-equivalent "" to clear end for an active firm that previously had a wrong end date.',
+					},
+					status: { type: 'string', description: 'pinned | active | candidate | archived (default pinned)' },
+					aliases: {
+						type: 'array',
+						description: 'Alternate / former names. Strings or {alias, kind} where kind is name|former_name|acronym|ticker|…',
+						items: {
+							type: 'object',
+							properties: {
+								alias: { type: 'string' },
+								kind: { type: 'string' },
+							},
+						},
+					},
+					locations: {
+						type: 'array',
+						description: 'HQ / associated locations',
+						items: {
+							type: 'object',
+							properties: {
+								raw: { type: 'string' },
+								role: { type: 'string', description: 'hq | associated | branch | …' },
+								city: { type: 'string' },
+								state: { type: 'string' },
+								country: { type: 'string' },
+							},
+						},
+					},
+					identifiers: {
+						type: 'array',
+						description: 'Optional registry IDs / URLs (scheme: sec_cik|ticker|url|parent_sec_cik|…)',
+						items: {
+							type: 'object',
+							properties: {
+								scheme: { type: 'string' },
+								value: { type: 'string' },
+							},
+						},
+					},
+					links: {
+						type: 'array',
+						description: 'Related entities (parents, predecessors, successors)',
+						items: {
+							type: 'object',
+							properties: {
+								peerName: { type: 'string' },
+								peerSlug: { type: 'string' },
+								peerType: { type: 'string' },
+								relationType: {
+									type: 'string',
+									description: 'owned_by | business_tie | affiliated_with | …',
+								},
+								roleLabel: { type: 'string' },
+								startDate: { type: 'string' },
+								endDate: { type: 'string' },
+								note: { type: 'string' },
+								createPeerIfMissing: { type: 'boolean' },
+							},
+						},
+					},
+					metadata: { type: 'object', description: 'Optional extra metadata bag (industry, sector, notes)' },
+					sourceCorpus: {
+						type: 'string',
+						description: 'Corpus tag (default chat-upsert-profile)',
+					},
+					createPeerIfMissing: {
+						type: 'boolean',
+						description: 'Create missing link peers by name/slug (default true)',
+					},
+					dryRun: { type: 'boolean', description: 'If true, validate/plan without writing' },
+				},
+				required: ['name'],
 			},
 		},
 	},
@@ -1406,6 +1509,7 @@ const CORE_TOOLS = new Set<ResearchToolName>([
 	'get_profile_timeline',
 	'find_profile_alignments',
 	'enrich_profile',
+	'upsert_profile',
 	'fetch_url',
 	'search_wikipedia',
 	'current_time',
@@ -1671,6 +1775,81 @@ export async function runResearchTool(
 			includeBrokercheck: args.includeBrokercheck === undefined ? undefined : Boolean(args.includeBrokercheck),
 			includeKnowledge: args.includeKnowledge === undefined ? undefined : Boolean(args.includeKnowledge),
 			includeBryanUcc: args.includeBryanUcc === undefined ? undefined : Boolean(args.includeBryanUcc),
+		});
+	}
+
+	if (tool === 'upsert_profile') {
+		const aliasesRaw = args.aliases;
+		const aliases = Array.isArray(aliasesRaw)
+			? aliasesRaw.map((a) => {
+					if (typeof a === 'string') return a;
+					if (a && typeof a === 'object') {
+						const o = a as Record<string, unknown>;
+						return { alias: String(o.alias || ''), kind: o.kind != null ? String(o.kind) : undefined };
+					}
+					return String(a ?? '');
+				})
+			: undefined;
+		const locations = Array.isArray(args.locations)
+			? (args.locations as Array<Record<string, unknown>>).map((l) => ({
+					raw: String(l.raw || ''),
+					role: l.role != null ? String(l.role) : undefined,
+					city: l.city != null ? String(l.city) : undefined,
+					county: l.county != null ? String(l.county) : undefined,
+					state: l.state != null ? String(l.state) : undefined,
+					country: l.country != null ? String(l.country) : undefined,
+				}))
+			: undefined;
+		const identifiers = Array.isArray(args.identifiers)
+			? (args.identifiers as Array<Record<string, unknown>>).map((i) => ({
+					scheme: String(i.scheme || ''),
+					value: String(i.value || ''),
+				}))
+			: undefined;
+		const links = Array.isArray(args.links)
+			? (args.links as Array<Record<string, unknown>>).map((l) => ({
+					peerName: l.peerName != null ? String(l.peerName) : undefined,
+					peerSlug: l.peerSlug != null ? String(l.peerSlug) : undefined,
+					peerType: l.peerType != null ? String(l.peerType) : undefined,
+					relationType: l.relationType != null ? String(l.relationType) : undefined,
+					roleLabel: l.roleLabel != null ? String(l.roleLabel) : undefined,
+					startDate: l.startDate != null ? String(l.startDate) : undefined,
+					endDate: l.endDate != null ? String(l.endDate) : undefined,
+					note: l.note != null ? String(l.note) : undefined,
+					createPeerIfMissing:
+						l.createPeerIfMissing === undefined ? undefined : Boolean(l.createPeerIfMissing),
+				}))
+			: undefined;
+		return upsertProfileTool({
+			profileType: args.profileType != null ? String(args.profileType) : undefined,
+			name: args.name != null ? String(args.name) : undefined,
+			slug: args.slug != null ? String(args.slug) : undefined,
+			summary: args.summary != null ? String(args.summary) : undefined,
+			startDate:
+				args.startDate === undefined
+					? undefined
+					: args.startDate === null || String(args.startDate).trim() === ''
+						? null
+						: String(args.startDate),
+			endDate:
+				args.endDate === undefined
+					? undefined
+					: args.endDate === null || String(args.endDate).trim() === ''
+						? null
+						: String(args.endDate),
+			status: args.status != null ? String(args.status) : undefined,
+			aliases,
+			locations,
+			identifiers,
+			links,
+			metadata:
+				args.metadata && typeof args.metadata === 'object' && !Array.isArray(args.metadata)
+					? (args.metadata as Record<string, unknown>)
+					: undefined,
+			sourceCorpus: args.sourceCorpus != null ? String(args.sourceCorpus) : undefined,
+			createPeerIfMissing:
+				args.createPeerIfMissing === undefined ? undefined : Boolean(args.createPeerIfMissing),
+			dryRun: args.dryRun === undefined ? undefined : Boolean(args.dryRun),
 		});
 	}
 
