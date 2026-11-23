@@ -203,7 +203,7 @@ export function getProfileTimeline(
        LEFT JOIN source_records sr ON sr.id = te.source_record_id
        JOIN profiles op ON op.id = te.profile_id
        WHERE ${where.join(' AND ')}
-       ORDER BY COALESCE(te.event_date, '9999-99-99') ASC, te.created_at ASC`,
+       ORDER BY te.event_date IS NULL ASC, te.event_date DESC, te.created_at DESC`,
 		)
 		.all(...params) as Array<Record<string, unknown>>;
 
@@ -270,11 +270,12 @@ export function getProfileTimeline(
 			corpora: [...v.corpora].sort(),
 			count: v.count,
 		}))
-		.sort((a, b) => a.month.localeCompare(b.month));
+		.sort((a, b) => b.month.localeCompare(a.month));
 
 	// Timeline Gap Detection + Cross-Source Gap-Fill Leads
 	const gaps: TimelineGap[] = [];
 	if (detectGaps) {
+		// Ascending for adjacent-gap math; display order is newest-first below.
 		const dated = deduped
 			.map((e) => ({ entry: e, day: dateToEpochDays(e.eventDate) }))
 			.filter((x): x is { entry: TimelineEntry; day: number } => x.day != null && Boolean(x.entry.eventDate))
@@ -321,11 +322,11 @@ export function getProfileTimeline(
 			}
 		}
 
-		// Prioritize the largest gaps (up to 8) then sort chronologically
+		// Prioritize the largest gaps (up to 8) then show most recent first
 		const topGaps = rawGaps
 			.sort((a, b) => b.gapDays - a.gapDays)
 			.slice(0, 8)
-			.sort((a, b) => a.fromDate.localeCompare(b.fromDate));
+			.sort((a, b) => b.toDate.localeCompare(a.toDate) || b.fromDate.localeCompare(a.fromDate));
 
 		const kdb = fillFromKnowledge && topGaps.length > 0 ? openKnowledgeReadOnly() : null;
 		const geoKeyList = [...geoKeys].slice(0, 20);
@@ -474,6 +475,7 @@ export function getProfileTimeline(
 					}
 				}
 
+				fillLeads.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
 				gaps.push({
 					fromDate: g.fromDate,
 					toDate: g.toDate,

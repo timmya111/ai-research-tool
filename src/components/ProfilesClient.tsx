@@ -129,8 +129,8 @@ const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
 	{ key: 'knownFor', label: 'Known For' },
 	{ key: 'notableWorks', label: 'Notable Works' },
 	{ key: 'officesHeld', label: 'Offices Held' },
-	{ key: 'citizenship', label: 'Citizenship / Nationality' },
-	{ key: 'politicalParty', label: 'Political Party' },
+	// citizenship omitted from UI — country flags already show nationality
+	// politicalParty omitted from UI
 	{ key: 'educationSummary', label: 'Education' },
 	{ key: 'awards', label: 'Awards / Honors' },
 	{ key: 'netWorth', label: 'Net Worth' },
@@ -191,6 +191,298 @@ const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
 	{ key: 'website', label: 'Website' },
 ];
 
+const MILITARY_DETAIL_KEYS = new Set([
+	'militaryBranch',
+	'militaryRank',
+	'yearsOfService',
+	'militaryUnit',
+	'militaryCommands',
+	'battlesWars',
+]);
+
+/** Fields that are always rendered full-width in the overview detail grid. */
+const FULL_WIDTH_DETAIL_KEYS = new Set([
+	'finraRegisteredStates',
+	'finraRegisteredSROs',
+	'finraExams',
+	'finraStateLicenses',
+	'finraPrimaryOffice',
+	'knownFor',
+	'notableWorks',
+	'products',
+	'services',
+	'areaServed',
+	'divisions',
+	'awards',
+	'educationSummary',
+	'officesHeld',
+	'belligerents',
+	'commanders',
+	'casualties',
+	'causes',
+	'formerlyOf',
+	'labels',
+]);
+
+/**
+ * Full-width when the field is known-long, the value is a long list (many · separators),
+ * or the text itself is long enough to look cramped in a 1/3 grid cell.
+ */
+function isFullWidthDetailCard(key: string, text: string): boolean {
+	if (FULL_WIDTH_DETAIL_KEYS.has(key)) return true;
+	const t = String(text || '');
+	if (!t) return false;
+	const listParts = t.split(/\s·\s/).filter(Boolean);
+	if (listParts.length >= 4) return true;
+	if (t.length >= 90) return true;
+	return false;
+}
+
+const OCCUPATION_LINK_RELATIONS = new Set([
+	'employed_by',
+	'affiliated_with',
+	'business_tie',
+	'owned_by',
+	'registered_at',
+	'alumni_or_faculty',
+	'funded_by',
+]);
+
+type OccupationOrgPeer = { id: string; name: string };
+
+/**
+ * Hide / rewrite "epstein" data-source labels in the Profiles UI.
+ * Underlying IDs stay in the DB; display only.
+ */
+function isHiddenEpsteinSourceIdentifier(scheme: string, value: string): boolean {
+	const s = String(scheme || '').toLowerCase();
+	const v = String(value || '').toLowerCase();
+	if (s === 'source_id' && v.includes('epstein')) return true;
+	if (v.startsWith('epstein-dialog-') || v.startsWith('epstein-files')) return true;
+	return false;
+}
+
+function formatSourceCorpusLabel(corpus: string | null | undefined): string {
+	const raw = String(corpus || '').trim();
+	if (!raw) return '';
+	let out = raw
+		.replace(/\bepstein-dialog-curated\b/gi, 'dialog-curated')
+		.replace(/\bepstein-dialog-/gi, 'dialog-')
+		.replace(/\bepstein-files\b/gi, 'court-files')
+		.replace(/\bepstein[_-]+/gi, '')
+		.replace(/--+/g, '-')
+		.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
+	if (!out) out = 'curated';
+	return out;
+}
+
+function scrubEpsteinSourceLabels(text: string | null | undefined): string {
+	return String(text || '')
+		.replace(/\bepstein-dialog-curated\b/gi, 'dialog-curated')
+		.replace(/\bepstein-dialog-[a-z0-9:_-]+\b/gi, (m) => m.replace(/^epstein-/i, ''))
+		.replace(/\bepstein-files\b/gi, 'court-files')
+		.replace(/\bepstein[_-]+dialog\b/gi, 'dialog')
+		.replace(/\bsource_id:\s*epstein-[^\s,;)]+/gi, '')
+		.replace(/\s{2,}/g, ' ')
+		.trim();
+}
+
+/** Resolve a FINRA CRD from metadata or identifiers (person or firm). */
+function resolveProfileFinraCrd(
+	profileType: ProfileType,
+	metadata: Record<string, unknown> | null | undefined,
+	identifiers: Array<{ scheme: string; value: string }> | null | undefined,
+): string | null {
+	const fromMeta = String(metadata?.finraCrd || '').trim();
+	if (/^\d{1,10}$/.test(fromMeta)) return fromMeta;
+	for (const id of identifiers || []) {
+		if (String(id.scheme || '').toLowerCase() !== 'finra_crd') continue;
+		const v = String(id.value || '').trim();
+		if (/^\d{1,10}$/.test(v)) return v;
+	}
+	void profileType;
+	return null;
+}
+
+/** True when SEC IAPD has a meaningful page (not NotInScope / unknown). */
+function hasValidSecIaScope(iaScope: unknown): boolean {
+	const s = String(iaScope || '')
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z]/g, '');
+	return s === 'active' || s === 'inactive' || s === 'expanded';
+}
+
+function finraSecSourceLinks(opts: {
+	profileType: ProfileType;
+	crd: string;
+	iaScope?: unknown;
+}): Array<{ href: string; label: string; className: string }> {
+	const crd = encodeURIComponent(opts.crd);
+	const sky = 'text-[11px] font-semibold text-sky-600 underline dark:text-sky-300';
+	const emerald = 'text-[11px] font-semibold text-emerald-600 underline dark:text-emerald-300';
+	const includeSec = hasValidSecIaScope(opts.iaScope);
+	const links: Array<{ href: string; label: string; className: string }> = [];
+	if (opts.profileType === 'firm') {
+		links.push(
+			{
+				href: `https://brokercheck.finra.org/firm/summary/${crd}`,
+				label: 'FINRA Summary ↗',
+				className: sky,
+			},
+			{
+				href: `https://files.brokercheck.finra.org/firm/firm_${crd}.pdf`,
+				label: 'FINRA PDF ↗',
+				className: sky,
+			},
+		);
+		if (includeSec) {
+			links.push({
+				href: `https://adviserinfo.sec.gov/firm/summary/${crd}`,
+				label: 'SEC AdvisorInfo ↗',
+				className: emerald,
+			});
+		}
+		return links;
+	}
+	// person (and any other actor type that carries an individual CRD)
+	links.push(
+		{
+			href: `https://brokercheck.finra.org/individual/summary/${crd}`,
+			label: 'FINRA Summary ↗',
+			className: sky,
+		},
+		{
+			href: `https://files.brokercheck.finra.org/individual/individual_${crd}.pdf`,
+			label: 'FINRA PDF ↗',
+			className: sky,
+		},
+	);
+	if (includeSec) {
+		links.push({
+			href: `https://adviserinfo.sec.gov/individual/summary/${crd}`,
+			label: 'SEC AdvisorInfo ↗',
+			className: emerald,
+		});
+	}
+	return links;
+}
+
+/** Match linked org names inside occupation text (longest name first). */
+function renderClickableOccupation(
+	occupation: string,
+	orgPeers: OccupationOrgPeer[],
+	onJump: (id: string) => void,
+): ReactNode {
+	const text = String(occupation || '');
+	if (!text) return null;
+	if (!orgPeers.length) return text;
+
+	const sorted = [...orgPeers]
+		.filter((p) => p.id && p.name && p.name.trim().length >= 3)
+		.sort((a, b) => b.name.length - a.name.length);
+
+	type Hit = { start: number; end: number; id: string; label: string };
+	const hits: Hit[] = [];
+	const lower = text.toLowerCase();
+	for (const peer of sorted) {
+		const needle = peer.name.toLowerCase();
+		let from = 0;
+		while (from < lower.length) {
+			const idx = lower.indexOf(needle, from);
+			if (idx < 0) break;
+			const end = idx + peer.name.length;
+			const overlaps = hits.some((h) => idx < h.end && end > h.start);
+			if (!overlaps) hits.push({ start: idx, end, id: peer.id, label: text.slice(idx, end) });
+			from = idx + needle.length;
+		}
+	}
+
+	if (!hits.length) {
+		// No substring match — if a single clear employer peer exists, link the whole string
+		if (sorted.length === 1) {
+			return (
+				<button
+					type="button"
+					onClick={() => onJump(sorted[0].id)}
+					className="cursor-pointer border-0 bg-transparent p-0 text-left text-[11px] font-semibold text-[#F97316] underline"
+					title={`Open ${sorted[0].name}`}
+				>
+					{text}
+				</button>
+			);
+		}
+		return text;
+	}
+
+	hits.sort((a, b) => a.start - b.start);
+	const parts: ReactNode[] = [];
+	let cursor = 0;
+	hits.forEach((hit, i) => {
+		if (hit.start > cursor) parts.push(text.slice(cursor, hit.start));
+		parts.push(
+			<button
+				key={`${hit.id}-${hit.start}-${i}`}
+				type="button"
+				onClick={() => onJump(hit.id)}
+				className="cursor-pointer border-0 bg-transparent p-0 text-[11px] font-semibold text-[#F97316] underline"
+				title={`Open ${hit.label}`}
+			>
+				{hit.label}
+			</button>,
+		);
+		cursor = hit.end;
+	});
+	if (cursor < text.length) parts.push(text.slice(cursor));
+	return parts;
+}
+
+/** Color accents for Captured Entity Details cards (by field key). */
+function enrichedDetailCardClass(key: string): string {
+	if (MILITARY_DETAIL_KEYS.has(key)) {
+		return 'border-emerald-700/40 bg-emerald-950/30';
+	}
+	switch (key) {
+		case 'occupation':
+		case 'title':
+		case 'yearsActive':
+		case 'officesHeld':
+			return 'border-orange-500/35 bg-orange-500/10';
+		case 'knownFor':
+		case 'notableWorks':
+		case 'genres':
+		case 'instruments':
+		case 'labels':
+		case 'formerlyOf':
+			return 'border-violet-500/35 bg-violet-500/10';
+		case 'educationSummary':
+		case 'awards':
+			return 'border-sky-500/35 bg-sky-500/10';
+		case 'netWorth':
+		case 'revenue':
+		case 'netIncome':
+		case 'assets':
+		case 'employees':
+			return 'border-amber-500/35 bg-amber-500/10';
+		case 'familyAndRelatives':
+			return 'border-rose-500/35 bg-rose-500/10';
+		case 'companyType':
+		case 'industry':
+		case 'products':
+		case 'services':
+		case 'areaServed':
+		case 'divisions':
+		case 'predecessor':
+		case 'successor':
+		case 'jurisdiction':
+		case 'parentAgency':
+		case 'isin':
+			return 'border-slate-500/35 bg-slate-500/10';
+		default:
+			return 'border-[var(--app-border)] bg-[var(--app-surface)]';
+	}
+}
+
 const SPECIAL_FLAG_LABELS: Record<string, string> = {
 	eu: 'European Union',
 	un: 'United Nations',
@@ -228,6 +520,84 @@ function formatDisplayDate(iso?: string | null): string {
 	return raw;
 }
 
+const SUMMARY_MONTH_NAMES = [
+	'January',
+	'February',
+	'March',
+	'April',
+	'May',
+	'June',
+	'July',
+	'August',
+	'September',
+	'October',
+	'November',
+	'December',
+] as const;
+
+/** Summary-section only: November 22, 2026 / June 2026 / 1995 – 1999 / October 2008 – present. */
+function formatSummaryDatePart(part: string): string {
+	const s = String(part || '').trim();
+	if (!s) return '';
+	if (/^present$/i.test(s)) return 'present';
+	const iso = s.match(/^((?:18|19|20)\d{2})-(\d{2})-(\d{2})$/);
+	if (iso) {
+		const month = Number(iso[2]);
+		const day = Number(iso[3]);
+		if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+			return `${SUMMARY_MONTH_NAMES[month - 1]} ${day}, ${iso[1]}`;
+		}
+	}
+	const us = s.match(/^(\d{2})-(\d{2})-((?:18|19|20)\d{2})$/);
+	if (us) {
+		const month = Number(us[1]);
+		const day = Number(us[2]);
+		if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+			return `${SUMMARY_MONTH_NAMES[month - 1]} ${day}, ${us[3]}`;
+		}
+	}
+	const yyyyMm = s.match(/^((?:18|19|20)\d{2})-(\d{2})$/);
+	if (yyyyMm) {
+		const month = Number(yyyyMm[2]);
+		if (month >= 1 && month <= 12) return `${SUMMARY_MONTH_NAMES[month - 1]} ${yyyyMm[1]}`;
+	}
+	const mmYyyy = s.match(/^(\d{2})-((?:18|19|20)\d{2})$/);
+	if (mmYyyy) {
+		const month = Number(mmYyyy[1]);
+		if (month >= 1 && month <= 12) return `${SUMMARY_MONTH_NAMES[month - 1]} ${mmYyyy[2]}`;
+	}
+	if (/^(?:18|19|20)\d{2}$/.test(s)) return s;
+	return s;
+}
+
+function formatSummaryDateLabel(label: string): string {
+	const raw = String(label || '').trim();
+	if (!raw) return '';
+	let formatted = '';
+	// En/em dash ranges (preferred in curated summaries).
+	const enRange = raw.match(/^(.+?)\s*[–—]\s*(.+)$/);
+	if (enRange) {
+		formatted = `${formatSummaryDatePart(enRange[1])} – ${formatSummaryDatePart(enRange[2])}`;
+	} else {
+		// Hyphen year–year / year–present only (avoid splitting MM-DD-YYYY).
+		const yearRange = raw.match(/^((?:18|19|20)\d{2})\s*-\s*((?:18|19|20)\d{2}|present|Present)$/i);
+		if (yearRange) {
+			formatted = `${formatSummaryDatePart(yearRange[1])} – ${formatSummaryDatePart(yearRange[2])}`;
+		} else {
+			const mmYyyyRange = raw.match(
+				/^(\d{2}-(?:18|19|20)\d{2})\s*-\s*((?:18|19|20)\d{2}|\d{2}-(?:18|19|20)\d{2}|present|Present)$/i,
+			);
+			if (mmYyyyRange) {
+				formatted = `${formatSummaryDatePart(mmYyyyRange[1])} – ${formatSummaryDatePart(mmYyyyRange[2])}`;
+			} else {
+				formatted = formatSummaryDatePart(raw);
+			}
+		}
+	}
+	// Summary dates render in capital case (AUGUST 14, 2026).
+	return formatted.toUpperCase();
+}
+
 function formatExactDate(iso?: string | null): string {
 	return formatDisplayDate(iso);
 }
@@ -263,48 +633,375 @@ function formatDateSpan(
 	return null;
 }
 
-function renderSummaryInline(text: string): ReactNode[] {
+const SUMMARY_YEAR_TOKEN =
+	'(?:18|19|20)\\d{2}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|present|Present))?|\\d{4}-\\d{2}-\\d{2}|\\d{2}-\\d{2}-\\d{4}|\\d{2}-\\d{4}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|\\d{2}-\\d{4}|present|Present))?|\\d{4}-\\d{2}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|\\d{4}-\\d{2}|present|Present))?';
+const SUMMARY_YEAR_RE = new RegExp(`\\b(?:${SUMMARY_YEAR_TOKEN})\\b`, 'g');
+const SUMMARY_YEAR_CONNECTOR_RE = /(?:In|From|During|By|Until|Since|After|Before)\s+$/i;
+
+function renderSummaryInline(text: string, emphasizeClass = 'font-bold text-white'): ReactNode[] {
 	const nodes: ReactNode[] = [];
 	let last = 0;
 	let key = 0;
 	const src = String(text || '');
-	// Prefer explicit **bold** markers; also bold bare date tokens.
-	const tokenRe =
-		/(\*\*([^*]+)\*\*)|(\b(?:(?:18|19|20)\d{2}(?:\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present))?|\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4}|\d{2}-\d{4})\b)/g;
+	const tokenRe = new RegExp(`(\\*\\*([^*]+)\\*\\*)|(\\b(?:${SUMMARY_YEAR_TOKEN})\\b)`, 'g');
 	let m: RegExpExecArray | null;
 	while ((m = tokenRe.exec(src))) {
 		if (m.index > last) nodes.push(src.slice(last, m.index));
-		if (m[2] != null) {
-			nodes.push(
-				<strong key={`b-${key++}`} className="font-semibold text-[var(--app-fg)]">
-					{m[2]}
-				</strong>,
-			);
-		} else if (m[3] != null) {
-			nodes.push(
-				<strong key={`d-${key++}`} className="font-semibold text-[var(--app-fg)]">
-					{m[3]}
-				</strong>,
-			);
-		}
+		const content = m[2] != null ? m[2] : m[3];
+		const display =
+			m[2] != null && !new RegExp(`^(?:${SUMMARY_YEAR_TOKEN})$`).test(String(content || '').trim())
+				? content
+				: formatSummaryDateLabel(String(content || ''));
+		nodes.push(
+			<strong key={`s-${key++}`} className={emphasizeClass}>
+				{display}
+			</strong>,
+		);
 		last = m.index + m[0].length;
 	}
 	if (last < src.length) nodes.push(src.slice(last));
 	return nodes;
 }
 
-/** Profile overview summary: newlines become line items; dates (and **marked** spans) render bold. */
+/**
+ * Drop pronunciation / phonetic guides from overview summaries.
+ * Keeps birth/death parentheticals: "Name ( / tiːl /; born 1967)" → "Name (born 1967)".
+ * Slash pairs with `.` inside are left alone so URLs are not mangled.
+ */
+function stripPronunciationGuides(text: string): string {
+	return String(text || '')
+		// Labels only — do not drop the whole parenthetical (birth dates live there too).
+		.replace(/\b(?:pronounced|pronunciation|IPA)\s*[:–—-]?\s*/gi, '')
+		// Slash phonetics, including spaced letters: /tiːl/ or / t iː l /
+		.replace(/\s*\/\s*[^/\n.]{1,48}?\//g, '')
+		.replace(/\(\s*listen\s*\)/gi, ' ')
+		// After removing phonetics inside a paren: "( ; born …)" → "(born …)"
+		.replace(/\(\s*[;,:]\s*/g, '(')
+		.replace(/\(\s+/g, '(')
+		.replace(/\(\s*\)/g, ' ')
+		// Collapse horizontal runs only — keep newlines for labeled / year sections.
+		.replace(/[^\S\n]{2,}/g, ' ')
+		.replace(/[^\S\n]+([,.;:])/g, '$1')
+		.replace(/[^\S\n]+\n/g, '\n')
+		.trim();
+}
+
+const SUMMARY_LABEL_RE = /^(?:\*\*)?([^*:\n]{1,48})(?:\*\*)?\s*:\s*(.+)$/;
+const SUMMARY_DISCLAIMER_RE =
+	/(?:appearance in this curated|does not allege|does not imply|records public|disclaimer|appearing in .{0,40}does not)/i;
+
+type SummaryBlock =
+	| { kind: 'grid'; rows: Array<{ label: string; value: string }> }
+	| { kind: 'year'; year: string; text: string }
+	| { kind: 'prose'; text: string }
+	| { kind: 'disclaimer'; text: string };
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function yearSectionStart(src: string, yearIndex: number): number {
+	const before = src.slice(Math.max(0, yearIndex - 16), yearIndex);
+	const connector = before.match(SUMMARY_YEAR_CONNECTOR_RE);
+	return connector ? yearIndex - connector[0].length : yearIndex;
+}
+
+/**
+ * True when a year opens a real section (sentence start / labeled milestone),
+ * false for mid-sentence citations like "PayPal (1998)" or "sale … in 2002".
+ */
+function isYearSectionAnchor(src: string, yearIndex: number): boolean {
+	const beforeWindow = src.slice(Math.max(0, yearIndex - 20), yearIndex);
+	const connector = beforeWindow.match(SUMMARY_YEAR_CONNECTOR_RE);
+	const effectiveStart = connector ? yearIndex - connector[0].length : yearIndex;
+	const before = src.slice(0, effectiveStart);
+	const openParens = (before.match(/\(/g) || []).length;
+	const closeParens = (before.match(/\)/g) || []).length;
+	// Years inside parentheticals are citations, not section headers.
+	if (openParens > closeParens) return false;
+	if (effectiveStart === 0) return true;
+	// Must begin a sentence (or line), optionally after In/From/During…
+	if (/(?:^|[\n.!?])["'\u201c\u201d\s]*$/.test(before)) return true;
+	return false;
+}
+
+/** Split prose into lead + year cards only at sentence-starting year anchors. */
+function sectionProseByYears(text: string): SummaryBlock[] {
+	const src = String(text || '').trim();
+	if (!src) return [];
+
+	const allYears: Array<{ index: number; year: string }> = [];
+	SUMMARY_YEAR_RE.lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = SUMMARY_YEAR_RE.exec(src))) {
+		if (allYears.some((y) => Math.abs(y.index - m!.index) < 2)) continue;
+		allYears.push({ index: m.index, year: m[0] });
+	}
+	if (allYears.length === 0) return [{ kind: 'prose', text: src }];
+
+	const years = allYears.filter((y) => isYearSectionAnchor(src, y.index));
+
+	// Single trailing parenthetical range with no sentence anchors:
+	// e.g. "Secretary of State (Reagan administration, 1982–1989)."
+	if (years.length === 0 && allYears.length === 1) {
+		const y = allYears[0];
+		const open = src.lastIndexOf('(', y.index);
+		const close = src.indexOf(')', y.index);
+		if (open >= 0 && close > y.index && !src.slice(open + 1, y.index).includes(')')) {
+			const lead = src
+				.slice(0, open)
+				.trim()
+				.replace(/[,;:\-\u2013\u2014\s]+$/g, '')
+				.trim();
+			let paren = src.slice(open + 1, close).trim();
+			paren = paren
+				.replace(new RegExp(`(?:,\\s*)?${escapeRegExp(y.year)}`), '')
+				.replace(/^[,;\s]+|[,;\s]+$/g, '')
+				.trim();
+			const body = [lead, paren].filter(Boolean).join(' — ') || lead || paren || '—';
+			return [{ kind: 'year', year: y.year, text: body }];
+		}
+	}
+
+	if (years.length === 0) return [{ kind: 'prose', text: src }];
+
+	const sentenceEndAfter = (from: number): number => {
+		const slice = src.slice(from);
+		const sm = slice.match(/[.!?](?:["'\u201c\u201d])?(?:\s|$)/);
+		if (!sm || sm.index == null) return src.length;
+		return from + sm.index + 1;
+	};
+
+	const blocks: SummaryBlock[] = [];
+	let cursor = 0;
+	for (let i = 0; i < years.length; i++) {
+		const cur = years[i];
+		let start = yearSectionStart(src, cur.index);
+		if (start < cursor) start = cur.index;
+		const lead = src
+			.slice(cursor, start)
+			.trim()
+			.replace(/[,;:\-\u2013\u2014\s]+$/g, '')
+			.trim();
+		if (lead) blocks.push({ kind: 'prose', text: lead });
+
+		let end = sentenceEndAfter(Math.max(cur.index, start));
+		if (i + 1 < years.length) {
+			const nextStart = yearSectionStart(src, years[i + 1].index);
+			if (nextStart < end) end = nextStart;
+		}
+		if (end <= start) end = Math.min(src.length, cur.index + cur.year.length);
+
+		let body = src.slice(start, end).trim();
+		body = body.replace(/^(?:In|From|During|By|Until|Since|After|Before)\s+/i, '');
+		body = body.replace(new RegExp(`^${escapeRegExp(cur.year)}\\s*[–—:,.;\\-]*\\s*`), '');
+		body = body.replace(/^[,:;.\-\u2013\u2014\s]+/, '').trim();
+		body = body.replace(/^\)+[,.;]?$/, '').trim();
+		if (body && !/^[—–\-\s.]+$/.test(body)) {
+			blocks.push({ kind: 'year', year: cur.year, text: body });
+		}
+		cursor = Math.max(cursor, end);
+	}
+	const trailing = src.slice(cursor).trim().replace(/^[,;:\-\u2013\u2014\s]+/, '').trim();
+	if (trailing) blocks.push({ kind: 'prose', text: trailing });
+	if (!blocks.some((b) => b.kind === 'year')) return [{ kind: 'prose', text: src }];
+	return blocks;
+}
+
+function normalizeSummaryMarkup(text: string): string {
+	return String(text || '')
+		// Turn **1919**: / **1919–1920**: into plain year labels for sectioning.
+		.replace(new RegExp(`\\*\\*(${SUMMARY_YEAR_TOKEN})\\*\\*\\s*:`, 'g'), '$1:')
+		.replace(new RegExp(`\\*\\*(${SUMMARY_YEAR_TOKEN})\\*\\*`, 'g'), '$1')
+		// Drop orphan ** left after year unwraps; keep **phrase** markers for bolding.
+		.replace(/(^|\s)\*\*(?=\s|$)/gm, '$1')
+		.replace(/(?<=\s)\*\*(\s|$)/gm, '$1')
+		.trim();
+}
+
+function parseSummaryBlocks(text: string): SummaryBlock[] {
+	const cleaned = normalizeSummaryMarkup(stripPronunciationGuides(text));
+	const lines = cleaned
+		.split(/\n+/)
+		.map((l) => l.trim())
+		.filter(Boolean);
+	const blocks: SummaryBlock[] = [];
+	let gridRows: Array<{ label: string; value: string }> = [];
+
+	const flushGrid = () => {
+		if (gridRows.length === 0) return;
+		blocks.push({ kind: 'grid', rows: gridRows });
+		gridRows = [];
+	};
+
+	for (const rawLine of lines) {
+		let line = rawLine;
+		let trailingDisclaimer: string | null = null;
+		const discIdx = line.search(SUMMARY_DISCLAIMER_RE);
+		if (discIdx === 0) {
+			flushGrid();
+			blocks.push({ kind: 'disclaimer', text: line.replace(/^\*\*|\*\*$/g, '').trim() });
+			continue;
+		}
+		if (discIdx > 0) {
+			trailingDisclaimer = line.slice(discIdx).trim();
+			line = line
+				.slice(0, discIdx)
+				.trim()
+				.replace(/[,;.\-\u2013\u2014\s]+$/g, '')
+				.trim();
+		}
+		if (!line) {
+			if (trailingDisclaimer) {
+				flushGrid();
+				blocks.push({ kind: 'disclaimer', text: trailingDisclaimer });
+			}
+			continue;
+		}
+		const labeled = line.match(SUMMARY_LABEL_RE);
+		if (labeled) {
+			const label = labeled[1].replace(/^\*\*|\*\*$/g, '').trim();
+			const value = labeled[2].trim();
+			// Year-as-label lines become year sections for scanning.
+			if (new RegExp(`^(?:${SUMMARY_YEAR_TOKEN})$`).test(label.replace(/\*\*/g, ''))) {
+				flushGrid();
+				blocks.push({ kind: 'year', year: label.replace(/\*\*/g, ''), text: value });
+			} else {
+				gridRows.push({ label, value });
+			}
+		} else {
+			flushGrid();
+			// Wikipedia prose: only sentence-starting years become date cards
+			// (mid-sentence "(1998)" / "in 2002" stay inline). Explicit "YEAR: …" labels
+			// are handled above.
+			for (const part of sectionProseByYears(line)) blocks.push(part);
+		}
+		if (trailingDisclaimer) {
+			flushGrid();
+			blocks.push({ kind: 'disclaimer', text: trailingDisclaimer });
+		}
+	}
+	flushGrid();
+	return blocks;
+}
+
+function SummarySectionCard({
+	label,
+	children,
+	accent = false,
+}: {
+	label: string;
+	children: ReactNode;
+	accent?: boolean;
+}) {
+	return (
+		<div className="space-y-0.5">
+			<div
+				className={`text-[11px] font-semibold tracking-wide ${
+					accent ? 'text-[#FDBA74]' : 'text-[#F97316]'
+				}`}
+			>
+				{label}
+			</div>
+			<div className="text-[12px] leading-snug text-white">{children}</div>
+		</div>
+	);
+}
+
+/** Newest date wins. Prefers day/month precision; closed ranges use the later end; open “–present” uses the start so recent dated events stay above long-running roles. */
+function summaryYearSortKey(yearLabel: string): number {
+	const raw = String(yearLabel || '').trim();
+	if (/\bpresent\b/i.test(raw)) {
+		const startOnly = raw.replace(/\s*[–—-]\s*present\b/i, '').trim();
+		if (startOnly && startOnly !== raw) return summaryYearSortKey(startOnly);
+		return 9999_12_31;
+	}
+	const iso = raw.match(/\b((?:18|19|20)\d{2})-(\d{2})-(\d{2})\b/);
+	if (iso) return Number(iso[1]) * 10_000 + Number(iso[2]) * 100 + Number(iso[3]);
+	const us = raw.match(/\b(\d{2})-(\d{2})-((?:18|19|20)\d{2})\b/);
+	if (us) return Number(us[3]) * 10_000 + Number(us[1]) * 100 + Number(us[2]);
+	const yyyyMm = raw.match(/\b((?:18|19|20)\d{2})-(\d{2})\b/);
+	if (yyyyMm) return Number(yyyyMm[1]) * 10_000 + Number(yyyyMm[2]) * 100 + 99;
+	const mmYyyy = raw.match(/\b(\d{2})-((?:18|19|20)\d{2})\b/);
+	if (mmYyyy) return Number(mmYyyy[2]) * 10_000 + Number(mmYyyy[1]) * 100 + 99;
+	const nums = [...raw.matchAll(/\b((?:18|19|20)\d{2})\b/g)].map((m) => Number(m[1]));
+	if (nums.length === 0) return 0;
+	return Math.max(...nums) * 10_000;
+}
+
+/** All profile summaries: white text, year sections (newest first within runs), labeled grid, bold dates. */
 function ProfileSummaryText({ text }: { text: string }) {
 	const raw = String(text || '').trim();
 	if (!raw) return null;
-	const lines = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+	const blocks = parseSummaryBlocks(raw).filter((b) => {
+		if (b.kind !== 'year') return true;
+		const t = String(b.text || '')
+			.replace(/^[—–\-\s.]+$/, '')
+			.trim();
+		return t.length > 0;
+	});
+
+	// Keep document order for prose/grid; sort only contiguous year-card runs (newest first).
+	const renderItems: SummaryBlock[] = [];
+	for (let i = 0; i < blocks.length; ) {
+		const b = blocks[i];
+		if (b.kind === 'year') {
+			const run: Array<{ kind: 'year'; year: string; text: string }> = [];
+			while (i < blocks.length && blocks[i].kind === 'year') {
+				run.push(blocks[i] as { kind: 'year'; year: string; text: string });
+				i += 1;
+			}
+			run.sort((a, b2) => summaryYearSortKey(b2.year) - summaryYearSortKey(a.year));
+			renderItems.push(...run);
+			continue;
+		}
+		renderItems.push(b);
+		i += 1;
+	}
+
 	return (
-		<div className="m-0 max-w-3xl space-y-1.5 text-xs leading-relaxed opacity-85">
-			{lines.map((line, i) => (
-				<p key={i} className="m-0">
-					{renderSummaryInline(line)}
-				</p>
-			))}
+		<div className="mt-2 max-w-3xl rounded-lg border border-white/15 bg-[#0b1220] p-3 text-xs leading-relaxed text-white shadow-sm">
+			<div className="space-y-2.5">
+				{renderItems.map((block, idx) => {
+					if (block.kind === 'year') {
+						return (
+							<SummarySectionCard
+								key={`y-${idx}`}
+								label={formatSummaryDateLabel(block.year)}
+								accent
+							>
+								{renderSummaryInline(block.text, 'font-bold text-white')}
+							</SummarySectionCard>
+						);
+					}
+					if (block.kind === 'grid') {
+						// Labels duplicate Title / role chips — hide from overview summary UI.
+						const rows = block.rows.filter((row) => !/^labels$/i.test(String(row.label || '').trim()));
+						if (rows.length === 0) return null;
+						return (
+							<div key={`g-${idx}`} className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+								{rows.map((row, ri) => (
+									<SummarySectionCard key={`r-${idx}-${ri}`} label={row.label}>
+										{renderSummaryInline(row.value, 'font-bold text-white')}
+									</SummarySectionCard>
+								))}
+							</div>
+						);
+					}
+					if (block.kind === 'disclaimer') {
+						return (
+							<p key={`d-${idx}`} className="m-0 text-[10px] leading-snug text-white/55">
+								{block.text}
+							</p>
+						);
+					}
+					return (
+						<p key={`p-${idx}`} className="m-0 text-[12px] text-white">
+							{renderSummaryInline(block.text, 'font-bold text-white')}
+						</p>
+					);
+				})}
+			</div>
 		</div>
 	);
 }
@@ -343,6 +1040,9 @@ const ALIGNMENT_KINDS: Array<{ value: AlignmentKind | ''; label: string }> = [
 	{ value: 'angle_comparison', label: 'Multi-angle overlap' },
 	{ value: 'same_entity_alias', label: 'Alias / name overlap' },
 	{ value: 'co_occurrence_time_geo', label: 'Geo-temporal overlap' },
+	{ value: 'building_colocation', label: 'Same-building co-location' },
+	{ value: 'block_colocation', label: 'Same-block co-location' },
+	{ value: 'city_colocation', label: 'Same-city co-location' },
 	{ value: 'shared_affiliation', label: 'Shared affiliation' },
 	{ value: 'shared_identifier', label: 'Shared ID (CRD/CIK)' },
 ];
@@ -1422,7 +2122,9 @@ export default function ProfilesClient({
 										) : null}
 									</div>
 
-									<p className="my-1.5 leading-relaxed opacity-85">{al.rationale}</p>
+									<p className="my-1.5 leading-relaxed opacity-85">
+										{scrubEpsteinSourceLabels(al.rationale)}
+									</p>
 
 									{al.evidence.length > 0 ? (
 										<div className="flex flex-wrap gap-1.5">
@@ -1431,7 +2133,8 @@ export default function ProfilesClient({
 													key={idx}
 													className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[10px] opacity-85"
 												>
-													<strong>{ev.corpus}</strong>: {ev.label}
+													<strong>{formatSourceCorpusLabel(ev.corpus)}</strong>:{' '}
+													{scrubEpsteinSourceLabels(ev.label)}
 													{ev.date ? ` (${ev.date})` : ''}
 												</span>
 											))}
@@ -1894,6 +2597,13 @@ export default function ProfilesClient({
 										{(() => {
 											const meta = detail.profile.metadata || {};
 											const detailRows = ENRICHED_DETAIL_FIELDS.map(({ key, label }) => {
+												// Net worth / unstructured family / political party hidden from UI.
+												if (
+													key === 'netWorth' ||
+													key === 'familyAndRelatives' ||
+													key === 'politicalParty'
+												)
+													return null;
 												const raw = meta[key];
 												if (raw == null || raw === '') return null;
 												const text = Array.isArray(raw)
@@ -1902,78 +2612,304 @@ export default function ProfilesClient({
 												if (!text) return null;
 												return { key, label, text };
 											}).filter((x): x is { key: string; label: string; text: string } => x !== null);
-											// identifyingKeywords stay in metadata for identity/AI matching; hide from UI
-											if (!detailRows.length) return null;
+											const militaryRows = detailRows.filter((r) => MILITARY_DETAIL_KEYS.has(r.key));
+											const knownForRow = detailRows.find((r) => r.key === 'knownFor') || null;
+											const notableWorksRow = detailRows.find((r) => r.key === 'notableWorks') || null;
+											const titleRow = detailRows.find((r) => r.key === 'title') || null;
+											const occupationRow = detailRows.find((r) => r.key === 'occupation') || null;
+											const titleOccupationRow =
+												titleRow || occupationRow
+													? {
+															key: 'titleOccupation',
+															title: titleRow?.text || null,
+															occupation: occupationRow?.text || null,
+														}
+													: null;
+											const highlightParts = [knownForRow?.text, notableWorksRow?.text].filter(Boolean) as string[];
+											const highlightRow =
+												highlightParts.length > 0
+													? {
+															key: 'knownForNotableWorks',
+															label:
+																knownForRow && notableWorksRow
+																	? 'Known For / Notable Works'
+																	: knownForRow
+																		? 'Known For'
+																		: 'Notable Works',
+															text: highlightParts.join(' · '),
+														}
+													: null;
+											// Family only when linked profiles exist (clickable names) — never bare Wikipedia prose.
+											const familyPeers = detail.links
+												.map((l) => {
+													const outbound = l.fromProfileId === detail.profile.id;
+													const peerId = outbound ? l.toProfileId : l.fromProfileId;
+													const peerName = outbound ? l.toName : l.fromName;
+													const peerType = outbound ? l.toType : l.fromType;
+													if (l.relationType !== 'family_or_associate') return null;
+													if (peerType && peerType !== 'person') return null;
+													if (!peerId || !peerName) return null;
+													return {
+														id: peerId,
+														name: peerName,
+														role: l.roleLabel || null,
+													};
+												})
+												.filter(
+													(x): x is { id: string; name: string; role: string | null } => x !== null,
+												)
+												.filter(
+													(peer, i, arr) => arr.findIndex((p) => p.id === peer.id) === i,
+												);
+											const occupationOrgPeers = detail.links
+												.map((l) => {
+													if (!OCCUPATION_LINK_RELATIONS.has(l.relationType)) return null;
+													const outbound = l.fromProfileId === detail.profile.id;
+													const peerId = outbound ? l.toProfileId : l.fromProfileId;
+													const peerName = outbound ? l.toName : l.fromName;
+													const peerType = outbound ? l.toType : l.fromType;
+													if (!peerId || !peerName) return null;
+													if (
+														peerType &&
+														peerType !== 'firm' &&
+														peerType !== 'nonprofit' &&
+														peerType !== 'education' &&
+														peerType !== 'medical_hospital' &&
+														peerType !== 'government'
+													) {
+														return null;
+													}
+													return { id: peerId, name: peerName };
+												})
+												.filter((x): x is OccupationOrgPeer => x !== null)
+												.filter(
+													(peer, i, arr) => arr.findIndex((p) => p.id === peer.id) === i,
+												);
+											const generalRows = detailRows.filter(
+												(r) =>
+													!MILITARY_DETAIL_KEYS.has(r.key) &&
+													r.key !== 'knownFor' &&
+													r.key !== 'notableWorks' &&
+													r.key !== 'title' &&
+													r.key !== 'occupation',
+											);
+											const finraCrd = resolveProfileFinraCrd(
+												detail.profile.profileType,
+												meta,
+												detail.identifiers,
+											);
+											const finraLinks =
+												finraCrd &&
+												(detail.profile.profileType === 'person' ||
+													detail.profile.profileType === 'firm')
+													? finraSecSourceLinks({
+															profileType: detail.profile.profileType,
+															crd: finraCrd,
+															iaScope: meta.finraIaScope,
+														})
+													: [];
+											const sourceLinks = (
+												<>
+													{finraLinks.map((link) => (
+														<a
+															key={link.href}
+															href={link.href}
+															target="_blank"
+															rel="noreferrer"
+															className={link.className}
+														>
+															{link.label}
+														</a>
+													))}
+													{typeof meta.finraVisualizerUrl === 'string' ? (
+														<a
+															href={meta.finraVisualizerUrl}
+															target="_blank"
+															rel="noreferrer"
+															className="text-[11px] font-semibold text-[#F97316] underline"
+														>
+															FINRA Visualizer ↗
+														</a>
+													) : null}
+													{typeof meta.wikipediaUrl === 'string' ? (
+														<a
+															href={meta.wikipediaUrl}
+															target="_blank"
+															rel="noreferrer"
+															className="text-[11px] font-semibold text-[#F97316] underline"
+														>
+															Wikipedia ↗
+														</a>
+													) : null}
+												</>
+											);
+											const hasSourceLinks =
+												finraLinks.length > 0 ||
+												typeof meta.finraVisualizerUrl === 'string' ||
+												typeof meta.wikipediaUrl === 'string';
+											// identifyingKeywords / citizenship / netWorth / familyAndRelatives stay in metadata
+											if (
+												!generalRows.length &&
+												!militaryRows.length &&
+												!highlightRow &&
+												!titleOccupationRow &&
+												!familyPeers.length &&
+												!hasSourceLinks
+											) {
+												return null;
+											}
 											return (
-												<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-													<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-														<h3 className="m-0 text-xs font-semibold uppercase opacity-75">
-															Captured Entity Details ({detailRows.length})
-														</h3>
+												<div className="space-y-3">
+													{hasSourceLinks ? (
 														<div className="flex flex-wrap items-center gap-2.5">
-															{detail.profile.profileType === 'person' && meta.finraCrd ? (
-																<>
-																	<a
-																		href={`https://brokercheck.finra.org/individual/summary/${encodeURIComponent(String(meta.finraCrd))}`}
-																		target="_blank"
-																		rel="noreferrer"
-																		className="text-[11px] font-semibold text-sky-600 underline dark:text-sky-300"
-																	>
-																		FINRA Summary ↗
-																	</a>
-																	<a
-																		href={`https://files.brokercheck.finra.org/individual/individual_${encodeURIComponent(String(meta.finraCrd))}.pdf`}
-																		target="_blank"
-																		rel="noreferrer"
-																		className="text-[11px] font-semibold text-sky-600 underline dark:text-sky-300"
-																	>
-																		FINRA PDF ↗
-																	</a>
-																	<a
-																		href={`https://adviserinfo.sec.gov/individual/summary/${encodeURIComponent(String(meta.finraCrd))}`}
-																		target="_blank"
-																		rel="noreferrer"
-																		className="text-[11px] font-semibold text-emerald-600 underline dark:text-emerald-300"
-																	>
-																		SEC AdvisorInfo ↗
-																	</a>
-																</>
+															{finraCrd ? (
+																<span className="rounded border border-sky-500/35 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200">
+																	CRD {finraCrd}
+																</span>
 															) : null}
-															{typeof meta.finraVisualizerUrl === 'string' ? (
-																<a
-																	href={meta.finraVisualizerUrl}
-																	target="_blank"
-																	rel="noreferrer"
-																	className="text-[11px] font-semibold text-[#F97316] underline"
-																>
-																	FINRA Visualizer ↗
-																</a>
-															) : null}
-															{typeof meta.wikipediaUrl === 'string' ? (
-																<a
-																	href={meta.wikipediaUrl}
-																	target="_blank"
-																	rel="noreferrer"
-																	className="text-[11px] font-semibold text-[#F97316] underline"
-																>
-																	Wikipedia ↗
-																</a>
-															) : null}
+															{sourceLinks}
 														</div>
-													</div>
-													{detailRows.length > 0 ? (
-														<div className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
-															{detailRows.map((row) => (
-																<div
-																	key={row.key}
-																	className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5"
-																>
-																	<div className="text-[10px] font-semibold uppercase opacity-65">
-																		{row.label}
-																	</div>
-																	<div className="mt-0.5 break-words leading-snug">{row.text}</div>
+													) : null}
+													{generalRows.length > 0 ||
+													highlightRow ||
+													titleOccupationRow ||
+													familyPeers.length > 0 ? (
+														(() => {
+															const compactRows = generalRows.filter(
+																(r) => !isFullWidthDetailCard(r.key, r.text),
+															);
+															const wideRows = generalRows.filter((r) =>
+																isFullWidthDetailCard(r.key, r.text),
+															);
+															return (
+																<div className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
+																	{titleOccupationRow ? (
+																		<div
+																			className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass('title')}`}
+																		>
+																			{titleOccupationRow.title ? (
+																				<div>
+																					<div className="text-[10px] font-semibold uppercase opacity-65">
+																						Title
+																					</div>
+																					<div className="mt-0.5 break-words leading-snug">
+																						{titleOccupationRow.title}
+																					</div>
+																				</div>
+																			) : null}
+																			{titleOccupationRow.occupation ? (
+																				<div className={titleOccupationRow.title ? 'mt-2' : undefined}>
+																					<div className="text-[10px] font-semibold uppercase opacity-65">
+																						Occupation
+																					</div>
+																					<div className="mt-0.5 break-words leading-snug">
+																						{renderClickableOccupation(
+																							titleOccupationRow.occupation,
+																							occupationOrgPeers,
+																							jumpToProfile,
+																						)}
+																					</div>
+																				</div>
+																			) : null}
+																		</div>
+																	) : null}
+																	{compactRows.map((row) => (
+																		<div
+																			key={row.key}
+																			className={`rounded border px-2.5 py-1.5 ${enrichedDetailCardClass(row.key)}`}
+																		>
+																			<div className="text-[10px] font-semibold uppercase opacity-65">
+																				{row.label}
+																			</div>
+																			<div className="mt-0.5 break-words leading-snug">{row.text}</div>
+																		</div>
+																	))}
+																	{wideRows.map((row) => (
+																		<div
+																			key={row.key}
+																			className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass(row.key)}`}
+																		>
+																			<div className="text-[10px] font-semibold uppercase opacity-65">
+																				{row.label}
+																			</div>
+																			<div className="mt-0.5 break-words leading-snug">{row.text}</div>
+																		</div>
+																	))}
+																	{familyPeers.length > 0 ? (
+																		<div
+																			className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass('familyAndRelatives')}`}
+																		>
+																			<div className="text-[10px] font-semibold uppercase opacity-65">
+																				Family / Relatives
+																			</div>
+																			<div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 leading-snug">
+																				{familyPeers.map((peer) => (
+																					<span
+																						key={peer.id}
+																						className="inline-flex flex-wrap items-baseline gap-1"
+																					>
+																						<button
+																							type="button"
+																							onClick={() => jumpToProfile(peer.id)}
+																							className="cursor-pointer border-0 bg-transparent p-0 text-[11px] font-semibold text-[#F97316] underline"
+																						>
+																							{peer.name}
+																						</button>
+																						{peer.role ? (
+																							<span className="text-[10px] opacity-70">({peer.role})</span>
+																						) : null}
+																					</span>
+																				))}
+																			</div>
+																		</div>
+																	) : null}
+																	{highlightRow ? (
+																		<div
+																			key={highlightRow.key}
+																			className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass('knownFor')}`}
+																		>
+																			<div className="text-[10px] font-semibold uppercase opacity-65">
+																				{highlightRow.label}
+																			</div>
+																			<div className="mt-0.5 break-words leading-snug">
+																				{highlightRow.text}
+																			</div>
+																		</div>
+																	) : null}
 																</div>
-															))}
+															);
+														})()
+													) : null}
+
+													{militaryRows.length > 0 ? (
+														<div className="rounded-lg border border-emerald-700/45 bg-gradient-to-br from-emerald-950/50 via-slate-900/40 to-emerald-900/30 p-4 shadow-sm">
+															<div className="mb-2.5 flex flex-wrap items-center gap-2">
+																<span className="rounded bg-emerald-600/25 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-200">
+																	Military Service
+																</span>
+																<span className="text-[10px] opacity-60">
+																	{militaryRows.length} field{militaryRows.length === 1 ? '' : 's'}
+																</span>
+															</div>
+															<div className="grid gap-2.5 text-[12px] sm:grid-cols-2 lg:grid-cols-3">
+																{militaryRows.map((row) => (
+																	<div
+																		key={row.key}
+																		className={`rounded-md border px-3 py-2.5 ${
+																			row.key === 'battlesWars' || row.key === 'militaryCommands'
+																				? 'sm:col-span-2 lg:col-span-3'
+																				: ''
+																		} border-emerald-600/35 bg-emerald-950/40`}
+																	>
+																		<div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-300/80">
+																			{row.label}
+																		</div>
+																		<div className="mt-1 break-words leading-snug text-emerald-50">
+																			{row.text}
+																		</div>
+																	</div>
+																))}
+															</div>
 														</div>
 													) : null}
 												</div>
@@ -2013,23 +2949,31 @@ export default function ProfilesClient({
 											</div>
 
 											{/* Identifiers */}
-											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-												<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-													External Identifiers ({detail.identifiers.length})
-												</h3>
-												{detail.identifiers.length === 0 ? (
-													<p className="m-0 text-[11px] opacity-65">None recorded yet.</p>
-												) : (
-													<ul className="m-0 list-none space-y-1 p-0 text-[11px]">
-														{detail.identifiers.map((idItem) => (
-															<li key={idItem.id}>
-																<span className="opacity-70">{idItem.scheme}:</span>{' '}
-																<strong>{idItem.value}</strong>
-															</li>
-														))}
-													</ul>
-												)}
-											</div>
+											{(() => {
+												const visibleIds = detail.identifiers.filter(
+													(idItem) =>
+														!isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value),
+												);
+												return (
+													<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+														<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
+															External Identifiers ({visibleIds.length})
+														</h3>
+														{visibleIds.length === 0 ? (
+															<p className="m-0 text-[11px] opacity-65">None recorded yet.</p>
+														) : (
+															<ul className="m-0 list-none space-y-1 p-0 text-[11px]">
+																{visibleIds.map((idItem) => (
+																	<li key={idItem.id}>
+																		<span className="opacity-70">{idItem.scheme}:</span>{' '}
+																		<strong>{scrubEpsteinSourceLabels(idItem.value)}</strong>
+																	</li>
+																))}
+															</ul>
+														)}
+													</div>
+												);
+											})()}
 
 											{/* Locations */}
 											<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
@@ -2374,7 +3318,8 @@ export default function ProfilesClient({
 													const dbDate = b.startDate || b.peerStartDate || b.endDate || b.peerEndDate || '';
 													if (da && !dbDate) return -1;
 													if (!da && dbDate) return 1;
-													if (da !== dbDate) return da.localeCompare(dbDate);
+													// Newest historic events first on overview.
+													if (da !== dbDate) return dbDate.localeCompare(da);
 													const na =
 														(a.fromProfileId === detail.profile.id ? a.toName : a.fromName) || '';
 													const nb =
@@ -2668,26 +3613,6 @@ export default function ProfilesClient({
 											<p className="text-xs opacity-70">Building multi-source timeline &amp; scanning gaps…</p>
 										) : timeline ? (
 											<>
-												{/* Multi-Angle Overlapping Months */}
-												{timeline.overlappingWindows.length > 0 ? (
-													<div className="rounded-lg border border-sky-500/35 bg-sky-500/10 p-3 text-xs">
-														<div className="mb-1.5 font-semibold">
-															Multi-Angle Convergence Windows ({timeline.overlappingWindows.length} months
-															where ≥2 angles/sources overlap)
-														</div>
-														<div className="flex flex-wrap gap-1.5">
-															{timeline.overlappingWindows.slice(0, 14).map((w) => (
-																<span
-																	key={w.month}
-																	className="rounded border border-sky-500/30 bg-[var(--app-surface)] px-2 py-0.5 text-[11px]"
-																>
-																	<strong>{w.month}</strong>: {w.angles.join(' + ')} ({w.count})
-																</span>
-															))}
-														</div>
-													</div>
-												) : null}
-
 												{/* Detected Timeline Gaps + Cross-Source Fill Leads */}
 												{timeline.gaps.length > 0 ? (
 													<div className="space-y-2">
@@ -2708,10 +3633,16 @@ export default function ProfilesClient({
 																</summary>
 																<div className="mt-2 text-[11px] opacity-80">
 																	<div>
-																		<strong>Before ({g.beforeCorpus}):</strong> {g.beforeEntryTitle}
+																		<strong>
+																			Before ({formatSourceCorpusLabel(g.beforeCorpus)}):
+																		</strong>{' '}
+																		{g.beforeEntryTitle}
 																	</div>
 																	<div>
-																		<strong>After ({g.afterCorpus}):</strong> {g.afterEntryTitle}
+																		<strong>
+																			After ({formatSourceCorpusLabel(g.afterCorpus)}):
+																		</strong>{' '}
+																		{g.afterEntryTitle}
 																	</div>
 																</div>
 																{g.fillLeads.length > 0 ? (
@@ -2730,15 +3661,21 @@ export default function ProfilesClient({
 																					>
 																						{lead.angle}
 																					</span>
-																					<span className="opacity-70">{lead.corpus}</span>
+																					<span className="opacity-70">
+																						{formatSourceCorpusLabel(lead.corpus)}
+																					</span>
 																					{lead.geoLabel ? (
 																						<span className="opacity-65">· {lead.geoLabel}</span>
 																					) : null}
 																				</div>
 																				<div className="mt-0.5 font-semibold">{lead.title}</div>
-																				<div className="mt-0.5 opacity-80">{lead.reason}</div>
+																				<div className="mt-0.5 opacity-80">
+																					{scrubEpsteinSourceLabels(lead.reason)}
+																				</div>
 																				{lead.snippet ? (
-																					<div className="mt-0.5 opacity-75">{lead.snippet}</div>
+																					<div className="mt-0.5 opacity-75">
+																						{scrubEpsteinSourceLabels(lead.snippet)}
+																					</div>
 																				) : null}
 																			</div>
 																		))}
@@ -2749,10 +3686,14 @@ export default function ProfilesClient({
 													</div>
 												) : null}
 
-												{/* Chronological Entries */}
+												{/* Chronological Entries (multi-angle months marked inline) */}
 												<div>
 													<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-														Timeline Entries ({timeline.entries.length} of {timeline.totalEntries})
+														Timeline Entries ({timeline.entries.length} of {timeline.totalEntries}
+														{timeline.overlappingWindows.length > 0
+															? ` · ${timeline.overlappingWindows.length} multi-angle months`
+															: ''}
+														)
 													</h3>
 													{timeline.entries.length === 0 ? (
 														<p className="text-xs opacity-70">
@@ -2761,48 +3702,73 @@ export default function ProfilesClient({
 														</p>
 													) : (
 														<div className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
-															{timeline.entries.map((entry) => (
-																<div
-																	key={entry.id}
-																	className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 text-xs"
-																>
-																	<div className="flex flex-wrap items-center justify-between gap-2">
-																		<div className="flex flex-wrap items-center gap-1.5">
-																			<span className="font-mono font-semibold text-[#F97316]">
-																				{entry.eventDate
-																					? formatDisplayDate(entry.eventDate)
-																					: 'Undated'}
-																			</span>
-																			<span
-																				className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${ANGLE_BADGE[entry.angle] || ANGLE_BADGE.general}`}
-																			>
-																				{entry.angle.replace(/_/g, ' ')}
-																			</span>
-																			{entry.geoLabel ? (
-																				<span className="text-[10px] opacity-70">
-																					📍 {entry.geoLabel}
+															{timeline.entries.map((entry) => {
+																const entryMonth =
+																	entry.eventDate && entry.eventDate.length >= 7
+																		? entry.eventDate.slice(0, 7)
+																		: '';
+																const overlap = entryMonth
+																	? timeline.overlappingWindows.find((w) => w.month === entryMonth)
+																	: undefined;
+																return (
+																	<div
+																		key={entry.id}
+																		className={`rounded-md border bg-[var(--app-bg)] p-2.5 text-xs ${
+																			overlap
+																				? 'border-sky-500/45 bg-sky-500/5'
+																				: 'border-[var(--app-border)]'
+																		}`}
+																	>
+																		<div className="flex flex-wrap items-center justify-between gap-2">
+																			<div className="flex flex-wrap items-center gap-1.5">
+																				<span className="font-mono font-semibold text-[#F97316]">
+																					{entry.eventDate
+																						? formatDisplayDate(entry.eventDate)
+																						: 'Undated'}
 																				</span>
+																				<span
+																					className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${ANGLE_BADGE[entry.angle] || ANGLE_BADGE.general}`}
+																				>
+																					{entry.angle.replace(/_/g, ' ')}
+																				</span>
+																				{overlap ? (
+																					<span
+																						className="rounded border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200"
+																						title={`${overlap.month}: ${overlap.count} entries across ${overlap.angles.join(' + ')}${overlap.corpora.length ? ` · ${overlap.corpora.map(formatSourceCorpusLabel).join(', ')}` : ''}`}
+																					>
+																						multi-angle ·{' '}
+																						{overlap.angles
+																							.map((a) => a.replace(/_/g, ' '))
+																							.join(' + ')}{' '}
+																						({overlap.count})
+																					</span>
+																				) : null}
+																				{entry.geoLabel ? (
+																					<span className="text-[10px] opacity-70">
+																						📍 {entry.geoLabel}
+																					</span>
+																				) : null}
+																			</div>
+																			{entry.sourceUrl ? (
+																				<a
+																					href={entry.sourceUrl}
+																					target="_blank"
+																					rel="noreferrer"
+																					className="text-[10px] text-sky-600 underline dark:text-sky-300"
+																				>
+																					Source ↗
+																				</a>
 																			) : null}
 																		</div>
-																		{entry.sourceUrl ? (
-																			<a
-																				href={entry.sourceUrl}
-																				target="_blank"
-																				rel="noreferrer"
-																				className="text-[10px] text-sky-600 underline dark:text-sky-300"
-																			>
-																				Source ↗
-																			</a>
+																		<div className="mt-1 font-semibold leading-snug">{entry.title}</div>
+																		{entry.summary && entry.summary !== entry.title ? (
+																			<p className="m-0 mt-1 leading-relaxed opacity-80">
+																				{entry.summary}
+																			</p>
 																		) : null}
 																	</div>
-																	<div className="mt-1 font-semibold leading-snug">{entry.title}</div>
-																	{entry.summary && entry.summary !== entry.title ? (
-																		<p className="m-0 mt-1 leading-relaxed opacity-80">
-																			{entry.summary}
-																		</p>
-																	) : null}
-																</div>
-															))}
+																);
+															})}
 														</div>
 													)}
 												</div>
@@ -2969,7 +3935,9 @@ export default function ProfilesClient({
 															</div>
 														) : null}
 
-														<p className="my-1.5 leading-relaxed opacity-85">{al.rationale}</p>
+														<p className="my-1.5 leading-relaxed opacity-85">
+															{scrubEpsteinSourceLabels(al.rationale)}
+														</p>
 
 														{al.evidence.length > 0 ? (
 															<div className="flex flex-wrap gap-1.5">
@@ -2978,7 +3946,8 @@ export default function ProfilesClient({
 																		key={idx}
 																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[10px]"
 																	>
-																		<strong>{ev.corpus}</strong>: {ev.label}
+																		<strong>{formatSourceCorpusLabel(ev.corpus)}</strong>:{' '}
+																		{scrubEpsteinSourceLabels(ev.label)}
 																		{ev.date ? ` (${ev.date})` : ''}
 																	</span>
 																))}

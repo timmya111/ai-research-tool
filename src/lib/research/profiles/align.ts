@@ -2,6 +2,19 @@ import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { getProfilesDb, withProfilesTransaction } from '@/lib/research/profiles/db';
 import {
+	alignmentKindForProximity,
+	cautionForCityWeight,
+	cityColocationWeight,
+	EDGE_WEIGHT_PROFILE_TYPES,
+	EDGE_WEIGHT_TIERS,
+	extractAddressProximityKeys,
+	inferEdgeWeightSector,
+	isCityLevelGeoKey,
+	secondarySignalBoost,
+	type GeoProximity,
+} from '@/lib/research/profiles/edgeWeights';
+import { normalizeText } from '@/lib/research/profiles/normalize';
+import {
 	buildProfileIdentityContext,
 	buildSearchPhrasesForProfile,
 	evaluateIdentityMatch,
@@ -41,6 +54,9 @@ export type AlignmentPassReport = {
 	crossSourceMention: number;
 	sharedAffiliation: number;
 	geoTemporalCoOccurrence: number;
+	cityColocation: number;
+	blockColocation: number;
+	buildingColocation: number;
 	angleComparison: number;
 	countyFilingMatch: number;
 	possibleMatchNameOnly: number;
@@ -105,12 +121,17 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		crossSourceMention: 0,
 		sharedAffiliation: 0,
 		geoTemporalCoOccurrence: 0,
+		cityColocation: 0,
+		blockColocation: 0,
+		buildingColocation: 0,
 		angleComparison: 0,
 		countyFilingMatch: 0,
 		possibleMatchNameOnly: 0,
 		totalUpserted: 0,
 		durationMs: 0,
 	};
+
+	const actorTypeSql = EDGE_WEIGHT_PROFILE_TYPES.map((t) => `'${t}'`).join(', ');
 
 	const db = getProfilesDb();
 
@@ -427,6 +448,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		let geoAdded = 0;
 		for (const [geoKey, list] of byGeo.entries()) {
 			if (list.length < 2 || geoAdded >= 180) continue;
+			const nCity = list.length;
 			for (let i = 0; i < list.length && geoAdded < 180; i++) {
 				const a = list[i];
 				const dayA = dateToEpochDays(String(a.event_date));
@@ -442,7 +464,26 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 					const [left, right] =
 						String(a.profile_id) < String(b.profile_id) ? [a, b] : [b, a];
-					const score = Number((0.68 - (diff / (geoWindowDays + 1)) * 0.18).toFixed(3));
+					const sectorA = inferEdgeWeightSector({
+						profileType: String(left.profile_type) as ProfileType,
+						name: String(left.profile_name || ''),
+						summary: String(left.title || ''),
+					});
+					const sectorB = inferEdgeWeightSector({
+						profileType: String(right.profile_type) as ProfileType,
+						name: String(right.profile_name || ''),
+						summary: String(right.title || ''),
+					});
+					const wCity = isCityLevelGeoKey(geoKey)
+						? cityColocationWeight({ sectorA, sectorB, nCity })
+						: EDGE_WEIGHT_TIERS.sameCityDifferentSector.min;
+					const temporal = Number((0.55 - (diff / (geoWindowDays + 1)) * 0.18).toFixed(4));
+					const score = Number(
+						Math.min(
+							EDGE_WEIGHT_TIERS.sharedConferenceOrEvent.max + 0.15,
+							Math.max(0.12, temporal + wCity),
+						).toFixed(3),
+					);
 					upsertAlignmentCandidate(
 						{
 							dedupeKey: sha256Key([
@@ -456,8 +497,8 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 							leftProfileId: String(left.profile_id),
 							rightProfileId: String(right.profile_id),
 							score,
-							cautionTier: 'observation',
-							rationale: `Geo-temporal overlap (${diff}d apart) in ${String(left.geo_label || geoKey)} between ${String(left.source_corpus)} ("${String(left.title).slice(0, 70)}") and ${String(right.source_corpus)} ("${String(right.title).slice(0, 70)}").`,
+							cautionTier: cautionForCityWeight(wCity),
+							rationale: `Geo-temporal overlap (${diff}d apart) in ${String(left.geo_label || geoKey)} between ${String(left.source_corpus)} ("${String(left.title).slice(0, 70)}") and ${String(right.source_corpus)} ("${String(right.title).slice(0, 70)}"); city weight ${wCity} (N_city=${nCity}, sectors ${sectorA}/${sectorB}).`,
 							evidence: [
 								{
 									corpus: String(left.source_corpus),
@@ -477,6 +518,364 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					);
 					counts.geoTemporalCoOccurrence += 1;
 					geoAdded += 1;
+				}
+			}
+		}
+
+		// Commit (5b) Geo co-location: building > block > city across all main categories.
+		// Building/block matches also query shared firms, roles, and name tokens.
+		const cityLocRows = db
+			.prepare(
+				`SELECT pl.profile_id, pl.geo_key, pl.raw, pl.city, pl.role,
+                p.name, p.profile_type, p.summary, p.metadata_json
+         FROM profile_locations pl
+         JOIN profiles p ON p.id = pl.profile_id
+         WHERE p.profile_type IN (${actorTypeSql})
+           AND pl.geo_key IS NOT NULL
+           AND length(pl.geo_key) > 4`,
+			)
+			.all() as Array<Record<string, unknown>>;
+
+		type CityMember = {
+			profileId: string;
+			name: string;
+			profileType: ProfileType;
+			summary: string;
+			metadata: Record<string, unknown>;
+			raw: string;
+			role: string;
+			geoKey: string;
+			buildingKey: string | null;
+			blockKey: string | null;
+		};
+		const byCity = new Map<string, CityMember[]>();
+		const byBuilding = new Map<string, CityMember[]>();
+		const byBlock = new Map<string, CityMember[]>();
+
+		const NAME_STOP = new Set([
+			...STOP_ALIAS_WORDS,
+			'inc',
+			'llc',
+			'ltd',
+			'corp',
+			'the',
+			'and',
+			'of',
+			'company',
+			'group',
+		]);
+
+		function parseMetadata(raw: unknown): Record<string, unknown> {
+			try {
+				return raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+			} catch {
+				return {};
+			}
+		}
+
+		function sectorFor(m: CityMember) {
+			return inferEdgeWeightSector({
+				profileType: m.profileType,
+				name: m.name,
+				summary: m.summary,
+				metadata: m.metadata,
+				industry: typeof m.metadata.industry === 'string' ? m.metadata.industry : null,
+				categoryTags: Array.isArray(m.metadata.categoryTags)
+					? (m.metadata.categoryTags as string[])
+					: null,
+			});
+		}
+
+		function nameTokens(name: string): Set<string> {
+			return new Set(
+				normalizeText(name)
+					.split(/\s+/)
+					.filter((t) => t.length >= 3 && !NAME_STOP.has(t)),
+			);
+		}
+
+		const firmPeerStmt = db.prepare(
+			`SELECT CASE WHEN pl.from_profile_id = ? THEN pl.to_profile_id ELSE pl.from_profile_id END AS peer_id,
+              p.name AS peer_name,
+              pl.role_label
+       FROM profile_links pl
+       JOIN profiles p ON p.id = CASE WHEN pl.from_profile_id = ? THEN pl.to_profile_id ELSE pl.from_profile_id END
+       WHERE (pl.from_profile_id = ? OR pl.to_profile_id = ?)
+         AND p.profile_type IN ('firm', 'nonprofit', 'education', 'medical_hospital', 'government')
+         AND pl.relation_type IN (
+           'employed_by', 'affiliated_with', 'owned_by', 'business_tie',
+           'registered_at', 'alumni_or_faculty', 'funded_by'
+         )
+       LIMIT 40`,
+		);
+
+		const aliasStmt = db.prepare(
+			`SELECT alias FROM profile_aliases WHERE profile_id = ? LIMIT 24`,
+		);
+
+		function querySecondaryGeoSignals(leftId: string, rightId: string, leftName: string, rightName: string) {
+			const leftPeers = firmPeerStmt.all(leftId, leftId, leftId, leftId) as Array<Record<string, unknown>>;
+			const rightPeers = firmPeerStmt.all(rightId, rightId, rightId, rightId) as Array<
+				Record<string, unknown>
+			>;
+			const rightPeerById = new Map(rightPeers.map((p) => [String(p.peer_id), p]));
+			const sharedFirmNames: string[] = [];
+			const sharedRoles: string[] = [];
+			for (const lp of leftPeers) {
+				const id = String(lp.peer_id);
+				const rp = rightPeerById.get(id);
+				if (!rp) continue;
+				const peerName = String(lp.peer_name || rp.peer_name || id);
+				if (!sharedFirmNames.includes(peerName)) sharedFirmNames.push(peerName);
+				const roleL = String(lp.role_label || '').trim().toLowerCase();
+				const roleR = String(rp.role_label || '').trim().toLowerCase();
+				if (roleL && roleR && roleL === roleR && !sharedRoles.includes(roleL)) {
+					sharedRoles.push(roleL);
+				}
+			}
+
+			const leftAliases = (aliasStmt.all(leftId) as Array<{ alias?: string }>).map((a) =>
+				String(a.alias || ''),
+			);
+			const rightAliases = (aliasStmt.all(rightId) as Array<{ alias?: string }>).map((a) =>
+				String(a.alias || ''),
+			);
+			const leftTok = new Set<string>();
+			for (const n of [leftName, ...leftAliases]) {
+				for (const t of nameTokens(n)) leftTok.add(t);
+			}
+			const overlap: string[] = [];
+			for (const n of [rightName, ...rightAliases]) {
+				for (const t of nameTokens(n)) {
+					if (leftTok.has(t) && !overlap.includes(t)) overlap.push(t);
+				}
+			}
+
+			const boost = secondarySignalBoost({
+				sharedFirmCount: sharedFirmNames.length,
+				sharedRoleCount: sharedRoles.length,
+				nameTokenOverlapCount: overlap.length,
+			});
+			return { sharedFirmNames, sharedRoles, nameTokenOverlap: overlap, boost };
+		}
+
+		for (const r of cityLocRows) {
+			const geoKey = String(r.geo_key || '');
+			const role = String(r.role || '');
+			if (role && !/hq|registered|associated|branch|campus/i.test(role)) continue;
+			const raw = String(r.raw || '');
+			const keys = extractAddressProximityKeys(raw, geoKey);
+			const cityEligible = isCityLevelGeoKey(geoKey);
+			// Street-level raw addresses still participate in building/block even without city geo_key
+			if (!cityEligible && !keys.buildingKey && !keys.blockKey) continue;
+
+			const pid = String(r.profile_id);
+			const member: CityMember = {
+				profileId: pid,
+				name: String(r.name || ''),
+				profileType: String(r.profile_type) as ProfileType,
+				summary: String(r.summary || ''),
+				metadata: parseMetadata(r.metadata_json),
+				raw,
+				role,
+				geoKey,
+				buildingKey: keys.buildingKey,
+				blockKey: keys.blockKey,
+			};
+
+			if (cityEligible) {
+				const list = byCity.get(geoKey) || [];
+				if (!list.some((x) => x.profileId === pid)) {
+					list.push(member);
+					byCity.set(geoKey, list);
+				}
+			}
+			if (keys.buildingKey) {
+				const list = byBuilding.get(keys.buildingKey) || [];
+				if (!list.some((x) => x.profileId === pid)) {
+					list.push(member);
+					byBuilding.set(keys.buildingKey, list);
+				}
+			}
+			if (keys.blockKey) {
+				const list = byBlock.get(keys.blockKey) || [];
+				if (!list.some((x) => x.profileId === pid)) {
+					list.push(member);
+					byBlock.set(keys.blockKey, list);
+				}
+			}
+		}
+
+		const coveredPairs = new Set<string>();
+		function pairKey(a: string, b: string): string {
+			return a < b ? `${a}|${b}` : `${b}|${a}`;
+		}
+
+		function emitGeoPair(
+			a: CityMember,
+			b: CityMember,
+			proximity: GeoProximity,
+			clusterKey: string,
+			nCluster: number,
+			budget: { added: number; max: number },
+		): boolean {
+			if (budget.added >= budget.max) return false;
+			const pk = pairKey(a.profileId, b.profileId);
+			if (coveredPairs.has(pk)) return false;
+			coveredPairs.add(pk);
+
+			const sectorA = sectorFor(a);
+			const sectorB = sectorFor(b);
+			let wGeo = cityColocationWeight({
+				sectorA,
+				sectorB,
+				nCity: nCluster,
+				proximity,
+			});
+
+			const [left, right] = a.profileId < b.profileId ? [a, b] : [b, a];
+			const evidence: AlignmentEvidenceItem[] = [
+				{
+					corpus: 'profiles',
+					label: `${left.name} @ ${left.raw || left.geoKey}`,
+					geoKey: left.geoKey,
+				},
+				{
+					corpus: 'profiles',
+					label: `${right.name} @ ${right.raw || right.geoKey}`,
+					geoKey: right.geoKey,
+				},
+			];
+
+			let secondaryNote = '';
+			if (proximity === 'building' || proximity === 'block') {
+				const secondary = querySecondaryGeoSignals(
+					left.profileId,
+					right.profileId,
+					left.name,
+					right.name,
+				);
+				wGeo = Number(
+					Math.min(
+						proximity === 'building'
+							? EDGE_WEIGHT_TIERS.sameBuildingSameSector.max + 0.08
+							: EDGE_WEIGHT_TIERS.sameBlockSameSector.max + 0.06,
+						wGeo + secondary.boost,
+					).toFixed(4),
+				);
+				if (secondary.sharedFirmNames.length) {
+					evidence.push({
+						corpus: 'profiles',
+						label: `Shared org peers: ${secondary.sharedFirmNames.slice(0, 4).join('; ')}`,
+						snippet: secondary.sharedFirmNames.slice(0, 6).join(', '),
+						geoKey: clusterKey,
+					});
+				}
+				if (secondary.sharedRoles.length) {
+					evidence.push({
+						corpus: 'profiles',
+						label: `Shared roles: ${secondary.sharedRoles.slice(0, 4).join('; ')}`,
+						snippet: secondary.sharedRoles.join(', '),
+						geoKey: clusterKey,
+					});
+				}
+				if (secondary.nameTokenOverlap.length) {
+					evidence.push({
+						corpus: 'profiles',
+						label: `Name/alias token overlap: ${secondary.nameTokenOverlap.slice(0, 6).join(', ')}`,
+						snippet: secondary.nameTokenOverlap.join(', '),
+						geoKey: clusterKey,
+					});
+				}
+				if (secondary.boost > 0) {
+					secondaryNote = ` Secondary signals boost +${secondary.boost} (firms=${secondary.sharedFirmNames.length}, roles=${secondary.sharedRoles.length}, nameTokens=${secondary.nameTokenOverlap.length}).`;
+				} else {
+					secondaryNote = ' Secondary name/role/firm query ran with no shared peers.';
+				}
+			}
+
+			const kind = alignmentKindForProximity(proximity);
+			upsertAlignmentCandidate(
+				{
+					dedupeKey: sha256Key([kind, left.profileId, right.profileId, clusterKey]),
+					alignmentKind: kind,
+					leftProfileId: left.profileId,
+					rightProfileId: right.profileId,
+					score: wGeo,
+					cautionTier: cautionForCityWeight(wGeo, proximity),
+					rationale: `Same-${proximity} co-location (${clusterKey}) for "${left.name}" (${left.profileType}/${sectorA}) and "${right.name}" (${right.profileType}/${sectorB}); w_geo=${wGeo} (N=${nCluster}).${secondaryNote}`,
+					evidence,
+				},
+				tx,
+			);
+			if (proximity === 'building') counts.buildingColocation += 1;
+			else if (proximity === 'block') counts.blockColocation += 1;
+			else counts.cityColocation += 1;
+			budget.added += 1;
+			return true;
+		}
+
+		const buildingBudget = { added: 0, max: 260 };
+		const buildingClusters = [...byBuilding.entries()].sort((a, b) => a[1].length - b[1].length);
+		for (const [bKey, members] of buildingClusters) {
+			if (members.length < 2 || buildingBudget.added >= buildingBudget.max) continue;
+			const maxPairs = members.length > 30 ? 40 : 120;
+			let pairs = 0;
+			for (let i = 0; i < members.length && pairs < maxPairs && buildingBudget.added < buildingBudget.max; i++) {
+				for (let j = i + 1; j < members.length && pairs < maxPairs && buildingBudget.added < buildingBudget.max; j++) {
+					if (emitGeoPair(members[i], members[j], 'building', bKey, members.length, buildingBudget)) {
+						pairs += 1;
+					}
+				}
+			}
+		}
+
+		const blockBudget = { added: 0, max: 160 };
+		const blockClusters = [...byBlock.entries()].sort((a, b) => a[1].length - b[1].length);
+		for (const [blkKey, members] of blockClusters) {
+			if (members.length < 2 || blockBudget.added >= blockBudget.max) continue;
+			// Dense office corridors (many house numbers on one street+ZIP) need tight caps
+			if (members.length > 80) continue;
+			const maxPairs = members.length > 25 ? 20 : 60;
+			let pairs = 0;
+			for (let i = 0; i < members.length && pairs < maxPairs && blockBudget.added < blockBudget.max; i++) {
+				for (let j = i + 1; j < members.length && pairs < maxPairs && blockBudget.added < blockBudget.max; j++) {
+					const left = members[i];
+					const right = members[j];
+					// If building budget skipped a true same-building pair, upgrade here
+					if (left.buildingKey && left.buildingKey === right.buildingKey) {
+						if (
+							emitGeoPair(
+								left,
+								right,
+								'building',
+								left.buildingKey,
+								byBuilding.get(left.buildingKey)?.length || 2,
+								buildingBudget.added < buildingBudget.max ? buildingBudget : blockBudget,
+							)
+						) {
+							pairs += 1;
+						}
+						continue;
+					}
+					if (emitGeoPair(left, right, 'block', blkKey, members.length, blockBudget)) {
+						pairs += 1;
+					}
+				}
+			}
+		}
+
+		const cityBudget = { added: 0, max: 220 };
+		for (const [geoKey, members] of byCity.entries()) {
+			if (members.length < 2 || cityBudget.added >= cityBudget.max) continue;
+			const nCity = members.length;
+			const maxPairs = nCity > 40 ? 12 : nCity > 20 ? 30 : 80;
+			let pairs = 0;
+			for (let i = 0; i < members.length && pairs < maxPairs && cityBudget.added < cityBudget.max; i++) {
+				for (let j = i + 1; j < members.length && pairs < maxPairs && cityBudget.added < cityBudget.max; j++) {
+					if (emitGeoPair(members[i], members[j], 'city', geoKey, nCity, cityBudget)) {
+						pairs += 1;
+					}
 				}
 			}
 		}
@@ -750,6 +1149,9 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		counts.crossSourceMention +
 		counts.sharedAffiliation +
 		counts.geoTemporalCoOccurrence +
+		counts.cityColocation +
+		counts.blockColocation +
+		counts.buildingColocation +
 		counts.angleComparison +
 		counts.countyFilingMatch +
 		counts.possibleMatchNameOnly;

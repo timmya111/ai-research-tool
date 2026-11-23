@@ -6,6 +6,10 @@ import {
 } from '@/lib/research/profiles/countries';
 import { getProfilesDb } from '@/lib/research/profiles/db';
 import {
+	defaultConfidenceForRelation,
+	relationPriority,
+} from '@/lib/research/profiles/edgeWeights';
+import {
 	buildSafeFtsQuery,
 	deduplicateLocations,
 	isTooGenericLocation,
@@ -597,7 +601,7 @@ export function upsertProfileLink(
            updated_at = ?
        WHERE id = ?`,
 		).run(
-			input.confidence ?? 0.8,
+			input.confidence ?? defaultConfidenceForRelation(input.relationType),
 			input.startDate || null,
 			input.endDate || null,
 			String(input.evidenceNote || ''),
@@ -625,7 +629,7 @@ export function upsertProfileLink(
 		input.startDate || null,
 		input.endDate || null,
 		input.status || 'observed',
-		input.confidence ?? 0.8,
+		input.confidence ?? defaultConfidenceForRelation(input.relationType),
 		input.angle || 'general',
 		input.sourceCorpus,
 		input.sourceRecordId || null,
@@ -1123,7 +1127,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
        FROM timeline_entries te
        LEFT JOIN source_records sr ON sr.id = te.source_record_id
        WHERE te.profile_id = ?
-       ORDER BY COALESCE(te.event_date, '9999') ASC, te.created_at ASC
+       ORDER BY te.event_date IS NULL ASC, te.event_date DESC, te.created_at DESC
        LIMIT 50`,
 		)
 		.all(profile.id) as Array<Record<string, unknown>>;
@@ -1184,24 +1188,12 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		'government',
 	]);
 
-	const REL_PRIORITY: Record<string, number> = {
-		owned_by: 11,
-		employed_by: 10,
-		registered_at: 9,
-		alumni_or_faculty: 9,
-		affiliated_with: 7,
-		funded_by: 7,
-		regulator_of: 7,
-		family_or_associate: 6,
-		participated_in: 6,
-		authored_or_spoke: 6,
-		part_of_subject: 5,
-		business_tie: 4,
-		location_overlap: 3,
-		temporal_overlap: 3,
-		mentioned_in: 2,
-		possible_alignment: 1,
-	};
+	const REL_PRIORITY: Record<string, number> = new Proxy(
+		{} as Record<string, number>,
+		{
+			get: (_t, prop: string) => relationPriority(prop as ProfileRelationType),
+		},
+	);
 
 	function mergeRoleLabels(existingRole: string | null, incomingRole: string | null): string | null {
 		const rawParts = [existingRole, incomingRole]
@@ -1424,7 +1416,14 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		>();
 		const peerLocsById = new Map<
 			string,
-			Array<{ raw: string; city: string | null; state: string | null; country: string | null; geoKey: string }>
+			Array<{
+				raw: string;
+				city: string | null;
+				state: string | null;
+				country: string | null;
+				geoKey: string;
+				role: string | null;
+			}>
 		>();
 		const peerIdentsById = new Map<string, Array<{ scheme: string; value: string }>>();
 
@@ -1450,7 +1449,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 
 			const peerLocRows = db
 				.prepare(
-					`SELECT profile_id, raw, city, state, country, geo_key FROM profile_locations WHERE profile_id IN (${placeholders})`,
+					`SELECT profile_id, raw, city, state, country, geo_key, role FROM profile_locations WHERE profile_id IN (${placeholders})`,
 				)
 				.all(...chunkIds) as Array<Record<string, unknown>>;
 			for (const lr of peerLocRows) {
@@ -1462,6 +1461,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 					state: lr.state != null ? String(lr.state) : null,
 					country: lr.country != null ? String(lr.country) : null,
 					geoKey: String(lr.geo_key || ''),
+					role: lr.role != null ? String(lr.role) : null,
 				});
 				peerLocsById.set(pid, list);
 			}
@@ -1496,6 +1496,14 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 
 		for (const emp of employmentHistory) {
 			if (emp.orgProfileId) {
+				if (!emp.location) {
+					const peerLocs = peerLocsById.get(emp.orgProfileId) || [];
+					const hq = peerLocs.find((loc) => loc.role === 'hq' && loc.raw.trim());
+					const byAddressy = [...peerLocs]
+						.filter((loc) => loc.raw && loc.raw.trim())
+						.sort((a, b) => b.raw.length - a.raw.length);
+					emp.location = hq?.raw || byAddressy[0]?.raw || null;
+				}
 				emp.orgCountryCodes = getPeerFlags(emp.orgProfileId, emp.location);
 				const peerMeta = peerInfoById.get(emp.orgProfileId)?.metadata || {};
 				if (!emp.firmCrd) {

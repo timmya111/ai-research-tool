@@ -94,7 +94,8 @@
     "physics-congress:pages": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --pages-only",
     "physics-congress:assets": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --assets-only",
     "physics-congress:all": ".venv-monitors/bin/python scripts/physics-congress-corpus.py",
-    "physics-congress:ingest": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --ingest-only"
+    "physics-congress:ingest": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --ingest-only",
+    "profiles:import-lippe-biesterfeld": "node scripts/import-lippe-biesterfeld-dutch-royals.mjs"
   },
   "dependencies": {
     "next": "16.4.6",

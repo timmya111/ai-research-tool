@@ -193,7 +193,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'find_profile_alignments',
 			description:
-				'Query cross-source alignment candidates discovered across all corpora: shared identifiers (CRD/CIK/ticker), alias overlaps, multi-corpus mentions, shared affiliations, geo-temporal co-occurrences, multi-angle overlaps, and county-filing FTS matches from knowledge.sqlite. Results carry caution tiers (observation | closer_look | stronger_indicator) and user triage status (proposed | confirmed | dismissed).',
+				'Query cross-source alignment candidates discovered across all corpora: shared identifiers (CRD/CIK/ticker), alias overlaps, multi-corpus mentions, shared affiliations, geo-temporal co-occurrences, same-building / same-block / same-city co-location (building/block trigger secondary name/role/firm queries; city uses density-penalized weak ties), multi-angle overlaps, and county-filing FTS matches from knowledge.sqlite. Results carry caution tiers (observation | closer_look | stronger_indicator) and user triage status (proposed | confirmed | dismissed).',
 			parameters: {
 				type: 'object',
 				properties: {
@@ -201,7 +201,7 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 					kind: {
 						type: 'string',
 						description:
-							'Optional: same_entity_alias | shared_identifier | cross_source_mention | timeline_gap_bridge | co_occurrence_time_geo | shared_affiliation | county_filing_match | angle_comparison | possible_match_name_only',
+							'Optional: same_entity_alias | shared_identifier | cross_source_mention | timeline_gap_bridge | co_occurrence_time_geo | building_colocation | block_colocation | city_colocation | shared_affiliation | county_filing_match | angle_comparison | possible_match_name_only',
 					},
 					status: { type: 'string', description: 'Optional: proposed | confirmed | dismissed' },
 					cautionTier: { type: 'string', description: 'Optional: observation | closer_look | stronger_indicator' },

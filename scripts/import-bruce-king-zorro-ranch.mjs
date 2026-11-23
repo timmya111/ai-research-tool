@@ -254,12 +254,20 @@ withProfilesTransaction((tx) => {
 			.filter(Boolean)
 			.join(' ');
 
+		const birthYear = p.birthYear != null ? Number(p.birthYear) : null;
+		const startDate =
+			(p.startDate ? String(p.startDate).trim() : '') ||
+			(p.birthDate ? String(p.birthDate).trim() : '') ||
+			(Number.isFinite(birthYear) && birthYear >= 1000 ? String(birthYear) : '') ||
+			undefined;
+
 		const prof = upsertProfile(
 			{
 				profileType: 'person',
 				name: existing?.name || name,
 				slug,
 				status: 'pinned',
+				startDate: startDate || undefined,
 				endDate: p.deceased ? p.endDate || undefined : p.endDate || undefined,
 				summary,
 				metadata: {
@@ -273,7 +281,7 @@ withProfilesTransaction((tx) => {
 					],
 					network,
 					role: role || undefined,
-					birthYear: p.birthYear || undefined,
+					birthYear: birthYear || undefined,
 					deceased: p.deceased ? true : undefined,
 					disclaimer: DISCLAIMER,
 					sourceRecordId: srId,
