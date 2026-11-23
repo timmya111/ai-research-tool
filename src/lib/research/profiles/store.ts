@@ -9,6 +9,7 @@ import {
 	defaultConfidenceForRelation,
 	relationPriority,
 } from '@/lib/research/profiles/edgeWeights';
+import { detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
 import {
 	buildSafeFtsQuery,
 	deduplicateLocations,
@@ -1258,14 +1259,18 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		}
 
 		for (const prof of profiles) {
+			const idents = idByPid.get(prof.id) || [];
 			prof.countryCodes = detectProfileCountryCodes({
 				name: prof.name,
 				profileType: prof.profileType,
 				summary: prof.summary,
 				locations: locByPid.get(prof.id) || [],
-				identifiers: idByPid.get(prof.id) || [],
+				identifiers: idents,
 				metadata: prof.metadata,
 			});
+			if (prof.profileType === 'firm') {
+				prof.hasLiveSourceUrl = detectFirmLiveSourceUrl(prof.metadata, idents);
+			}
 			const canonLow = prof.name.trim().toLowerCase().replace(/\s+/g, ' ');
 			const seen = new Set<string>([canonLow]);
 			prof.alternateNames = (aliasByPid.get(prof.id) || [])
@@ -1313,6 +1318,9 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		normalizedValue: String(r.normalized_value),
 		sourceCorpus: r.source_corpus != null ? String(r.source_corpus) : null,
 	}));
+	if (profile.profileType === 'firm') {
+		profile.hasLiveSourceUrl = detectFirmLiveSourceUrl(profile.metadata, identifiers);
+	}
 
 	const locRows = db
 		.prepare('SELECT * FROM profile_locations WHERE profile_id = ? ORDER BY role ASC, raw ASC')

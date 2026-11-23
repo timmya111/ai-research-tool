@@ -245,6 +245,11 @@ export type Profile = {
 	countryCodes?: string[];
 	/** Distinct alternate / full name variations (excluding the primary canonical name) */
 	alternateNames?: string[];
+	/**
+	 * Firm is linked to an external live listing URL (e.g. MineralAnswers producer page,
+	 * BrokerCheck). Used for green “Active firm” treatment when start/end dates are missing.
+	 */
+	hasLiveSourceUrl?: boolean;
 };
 
 export type PersonEmploymentEntry = {

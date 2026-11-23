@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import AlignmentEvidenceList from '@/components/AlignmentEvidenceList';
 import ThemeToggle from '@/components/ThemeToggle';
+import { detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
 import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import type {
 	AlignmentCandidate,
@@ -99,18 +100,37 @@ function profileHasStartDate(p: Pick<Profile, 'startDate'>): boolean {
 	return Boolean(p.startDate && String(p.startDate).trim());
 }
 
+function firmHasLiveSourceUrl(
+	p: Pick<Profile, 'metadata' | 'hasLiveSourceUrl'>,
+	identifiers?: Array<{ scheme: string; value: string }> | null,
+): boolean {
+	if (p.hasLiveSourceUrl === true) return true;
+	return detectFirmLiveSourceUrl(p.metadata, identifiers);
+}
+
 /**
  * Soft green “current” tint:
  * - people: living (no endDate)
- * - firms: inactive by default until a startDate is confirmed, and not ended
+ * - firms: not ended, and either a confirmed startDate or a live external listing URL
  */
 function isCurrentPersonOrFirm(
-	p: Pick<Profile, 'profileType' | 'startDate' | 'endDate'>,
+	p: Pick<Profile, 'profileType' | 'startDate' | 'endDate' | 'metadata' | 'hasLiveSourceUrl'>,
+	identifiers?: Array<{ scheme: string; value: string }> | null,
 ): boolean {
 	if (profileHasEnded(p)) return false;
 	if (p.profileType === 'person') return true;
-	if (p.profileType === 'firm') return profileHasStartDate(p);
+	if (p.profileType === 'firm') {
+		return profileHasStartDate(p) || firmHasLiveSourceUrl(p, identifiers);
+	}
 	return false;
+}
+
+function firmTypeBadgeLabel(
+	p: Pick<Profile, 'profileType' | 'startDate' | 'endDate' | 'metadata' | 'hasLiveSourceUrl'>,
+	identifiers?: Array<{ scheme: string; value: string }> | null,
+): string {
+	if (p.profileType === 'firm' && isCurrentPersonOrFirm(p, identifiers)) return 'Active firm';
+	return TYPE_META[p.profileType]?.label || 'Firm';
 }
 
 const CURRENT_ACTOR_BADGE =
@@ -2953,6 +2973,8 @@ export default function ProfilesClient({
 											? 'border-l-2 border-l-[#F97316] bg-[#F97316]/14'
 											: 'bg-transparent hover:bg-[var(--app-surface-hover)]';
 									const badgeTone = current ? CURRENT_ACTOR_BADGE : tm.badge;
+									const typeLabel =
+										p.profileType === 'firm' ? firmTypeBadgeLabel(p) : tm.label;
 									return (
 										<button
 											key={p.id}
@@ -2972,7 +2994,7 @@ export default function ProfilesClient({
 														<span
 															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${badgeTone}`}
 														>
-															{tm.label}
+															{typeLabel}
 														</span>
 													</div>
 													<div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-semibold leading-snug">
@@ -3001,7 +3023,7 @@ export default function ProfilesClient({
 					{/* Right Workspace: fills the flex-1 grid cell (min-h-full) so short dossiers still reach the viewport bottom */}
 					<section
 						className={`min-h-full min-w-0 rounded-lg border bg-[var(--app-surface)] p-4 ${
-							detail && isCurrentPersonOrFirm(detail.profile)
+							detail && isCurrentPersonOrFirm(detail.profile, detail.identifiers)
 								? CURRENT_ACTOR_DETAIL_OUTLINE
 								: 'border-[var(--app-border)]'
 						}`}
@@ -3016,11 +3038,26 @@ export default function ProfilesClient({
 								<div className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--app-border)] pb-3">
 									<div>
 										<div className="flex flex-wrap items-center gap-1.5">
-											<span
-												className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${TYPE_META[detail.profile.profileType].badge}`}
-											>
-												{TYPE_META[detail.profile.profileType].label}
-											</span>
+											{(() => {
+												const detailCurrent = isCurrentPersonOrFirm(
+													detail.profile,
+													detail.identifiers,
+												);
+												const typeBadgeClass = detailCurrent
+													? CURRENT_ACTOR_BADGE
+													: TYPE_META[detail.profile.profileType].badge;
+												const typeLabel =
+													detail.profile.profileType === 'firm'
+														? firmTypeBadgeLabel(detail.profile, detail.identifiers)
+														: TYPE_META[detail.profile.profileType].label;
+												return (
+													<span
+														className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${typeBadgeClass}`}
+													>
+														{typeLabel}
+													</span>
+												);
+											})()}
 											<code className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px] opacity-75">
 												{detail.profile.slug}
 											</code>
@@ -3080,6 +3117,14 @@ export default function ProfilesClient({
 																: detail.profile.profileType === 'person'
 																	? ''
 																	: ''}
+														</span>
+													) : detail.profile.profileType === 'firm' &&
+													  isCurrentPersonOrFirm(detail.profile, detail.identifiers) ? (
+														<span
+															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide opacity-100 ${CURRENT_ACTOR_BADGE}`}
+															title="Listed on a live external source with no start/end dates set"
+														>
+															Active firm
 														</span>
 													) : (
 														<span className="italic opacity-60">
