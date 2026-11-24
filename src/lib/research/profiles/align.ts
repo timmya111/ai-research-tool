@@ -32,6 +32,9 @@ import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
 import {
 	getProfileDetail,
 	mergeProfiles,
+	profilesHaveConflictingMajorIds,
+	profilesShareMajorIdentity,
+	getMajorIdentityMap,
 	rowToAlignment,
 	upsertAlignmentCandidate,
 	upsertSourceRecord,
@@ -595,7 +598,11 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 					// FINRA identity is CRD from the visualizer merged API / dashboard,
 					// not the local `finra-visualizer` corpus label or short alias overlap.
+					// Also block when any major IDs (CRD/CIK/ticker/EIN/CUSIP) conflict.
 					{
+						if (profilesHaveConflictingMajorIds(left.profileId, right.profileId, tx)) {
+							continue;
+						}
 						const crdsL = crdsById.get(left.profileId);
 						const crdsR = crdsById.get(right.profileId);
 						if (crdsL?.size && crdsR?.size) {
@@ -694,7 +701,10 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					aliasPairSeen.add(pairKey);
 
 					// Exact duplicate cards (same type + identical display name) — e.g. repeated
-					// authority-timelines lines. Auto-merge; do not queue for triage.
+					// authority-timelines lines. Auto-merge only when safe:
+					// - historic_event / people without conflicting IDs, or
+					// - orgs that share a major ID (CRD/CIK/ticker/EIN/CUSIP).
+					// Never auto-merge two orgs that each have a different major ID.
 					const leftNameNorm = normalizeText(left.name);
 					const rightNameNorm = normalizeText(right.name);
 					if (
@@ -702,10 +712,50 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 						leftNameNorm &&
 						leftNameNorm === rightNameNorm
 					) {
-						mergeProfiles(left.profileId, right.profileId, tx);
-						counts.sameEntityAlias += 1;
-						aliasCount += 1;
-						continue;
+						const orgTypes = new Set([
+							'firm',
+							'nonprofit',
+							'education',
+							'medical_hospital',
+							'government',
+						]);
+						const bothOrgs =
+							orgTypes.has(left.profileType) && orgTypes.has(right.profileType);
+						if (bothOrgs) {
+							const leftIds = getMajorIdentityMap(left.profileId, tx);
+							const rightIds = getMajorIdentityMap(right.profileId, tx);
+							const leftHas = [...leftIds.values()].some((s) => s.size > 0);
+							const rightHas = [...rightIds.values()].some((s) => s.size > 0);
+							// Require a shared major ID when either side is ID-keyed.
+							if (
+								(leftHas || rightHas) &&
+								!profilesShareMajorIdentity(left.profileId, right.profileId, tx)
+							) {
+								// Surface as proposed alias instead of silent merge.
+							} else if (
+								!leftHas &&
+								!rightHas
+							) {
+								mergeProfiles(left.profileId, right.profileId, tx);
+								counts.sameEntityAlias += 1;
+								aliasCount += 1;
+								continue;
+							} else if (
+								profilesShareMajorIdentity(left.profileId, right.profileId, tx)
+							) {
+								mergeProfiles(left.profileId, right.profileId, tx);
+								counts.sameEntityAlias += 1;
+								aliasCount += 1;
+								continue;
+							}
+						} else if (
+							!profilesHaveConflictingMajorIds(left.profileId, right.profileId, tx)
+						) {
+							mergeProfiles(left.profileId, right.profileId, tx);
+							counts.sameEntityAlias += 1;
+							aliasCount += 1;
+							continue;
+						}
 					}
 
 					const score = (sameType ? 0.78 : 0.62) + (crossCorpus ? 0.1 : 0);

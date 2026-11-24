@@ -10,6 +10,7 @@ import {
 } from '@/lib/research/profiles/liveListing';
 import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import type {
+	AliasKind,
 	AlignmentCandidate,
 	AlignmentKind,
 	AlignmentStatus,
@@ -362,7 +363,7 @@ const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
 	{ key: 'finraExams', label: 'FINRA Exams' },
 	{ key: 'finraRegisteredStates', label: 'Registered States' },
 	{ key: 'finraRegisteredSROs', label: 'Registered SROs' },
-	{ key: 'website', label: 'Website' },
+	// website omitted — shown as Website ↗ in Sources & Identifiers when present
 ];
 
 const MILITARY_DETAIL_KEYS = new Set([
@@ -1522,7 +1523,10 @@ export default function ProfilesClient({
 	const viewHistoryRef = useRef<ViewHistoryEntry[]>([]);
 
 	// Filters
+	/** Committed list search term (applied only via Search button / Enter). */
 	const [query, setQuery] = useState('');
+	/** Draft text in the header search box — does not hit the API until submitted. */
+	const [queryDraft, setQueryDraft] = useState('');
 	const [typeFilter, setTypeFilter] = useState<string>('all');
 	const [countryCode, setCountryCode] = useState<string>('');
 	const [countryQuery, setCountryQuery] = useState('');
@@ -1553,6 +1557,7 @@ export default function ProfilesClient({
 	const [alignStatusFilter, setAlignStatusFilter] = useState<string>('proposed');
 	const [alignOffset, setAlignOffset] = useState(0);
 	const [loadingGlobalAlign, setLoadingGlobalAlign] = useState(false);
+	const [bulkAlignBusy, setBulkAlignBusy] = useState(false);
 	const ALIGN_PAGE_SIZE = 80;
 
 	// Sync, Enrich & Create states
@@ -1573,10 +1578,36 @@ export default function ProfilesClient({
 	const [newEmployerCategory, setNewEmployerCategory] = useState<ProfileType>('firm');
 	const [newEmployerRole, setNewEmployerRole] = useState('');
 	const [creating, setCreating] = useState(false);
-	const [editingLifeDates, setEditingLifeDates] = useState(false);
+	const [profileEditing, setProfileEditing] = useState(false);
 	const [lifeStartDraft, setLifeStartDraft] = useState('');
 	const [lifeEndDraft, setLifeEndDraft] = useState('');
-	const [savingLifeDates, setSavingLifeDates] = useState(false);
+	const [nameDraft, setNameDraft] = useState('');
+	const [altNamesDraft, setAltNamesDraft] = useState('');
+	const [summaryDraft, setSummaryDraft] = useState('');
+	const [savingCore, setSavingCore] = useState(false);
+	const [aliasRowsDraft, setAliasRowsDraft] = useState<
+		Array<{
+			key: string;
+			id: string | null;
+			alias: string;
+			aliasKind: AliasKind;
+			deleted: boolean;
+		}>
+	>([]);
+	const [locationRowsDraft, setLocationRowsDraft] = useState<
+		Array<{
+			key: string;
+			id: string | null;
+			raw: string;
+			role: LocationRole;
+			confirmed: boolean;
+			deleted: boolean;
+		}>
+	>([]);
+	const [pendingDeleteIdentIds, setPendingDeleteIdentIds] = useState<string[]>([]);
+	const [pendingNewIdents, setPendingNewIdents] = useState<
+		Array<{ key: string; scheme: string; value: string }>
+	>([]);
 
 	// Manual timeline observation form
 	const [obsDate, setObsDate] = useState('');
@@ -1589,6 +1620,14 @@ export default function ProfilesClient({
 
 	// Manual alias, location, and employment forms
 	const [aliasDraft, setAliasDraft] = useState('');
+	const [aliasKindDraft, setAliasKindDraft] = useState<AliasKind>('other_name');
+	const [editingAliasId, setEditingAliasId] = useState<string | null>(null);
+	const [editAliasText, setEditAliasText] = useState('');
+	const [editAliasKind, setEditAliasKind] = useState<AliasKind>('name');
+	const [savingAlias, setSavingAlias] = useState(false);
+	const [identSchemeDraft, setIdentSchemeDraft] = useState('ticker');
+	const [identValueDraft, setIdentValueDraft] = useState('');
+	const [savingIdent, setSavingIdent] = useState(false);
 	const [locationDraft, setLocationDraft] = useState('');
 	const [locationRoleDraft, setLocationRoleDraft] = useState<LocationRole>('residence');
 	const [locationConfirmDraft, setLocationConfirmDraft] = useState(false);
@@ -1658,13 +1697,30 @@ export default function ProfilesClient({
 				const q = query.trim().toLowerCase();
 				let entries = viewHistoryRef.current;
 				if (q) {
-					entries = entries.filter(
-						(e) =>
-							e.name.toLowerCase().includes(q) ||
-							e.slug.toLowerCase().includes(q) ||
-							(e.alternateNames || []).some((a) => a.toLowerCase().includes(q)) ||
-							(e.primaryLocation || '').toLowerCase().includes(q),
-					);
+					entries = entries
+						.filter(
+							(e) =>
+								e.name.toLowerCase().includes(q) ||
+								e.slug.toLowerCase().includes(q) ||
+								(e.alternateNames || []).some((a) => a.toLowerCase().includes(q)) ||
+								(e.primaryLocation || '').toLowerCase().includes(q),
+						)
+						.map((e) => {
+							const name = e.name.toLowerCase();
+							const slug = e.slug.toLowerCase();
+							const aliases = (e.alternateNames || []).map((a) => a.toLowerCase());
+							let rank = 8;
+							if (name === q) rank = 0;
+							else if (aliases.includes(q)) rank = 1;
+							else if (name.startsWith(q)) rank = 2;
+							else if (aliases.some((a) => a.startsWith(q))) rank = 3;
+							else if (name.includes(q)) rank = 4;
+							else if (aliases.some((a) => a.includes(q))) rank = 5;
+							else if (slug.includes(q)) rank = 6;
+							return { e, rank, len: name.length };
+						})
+						.sort((a, b) => a.rank - b.rank || a.len - b.len || a.e.name.localeCompare(b.e.name))
+						.map((x) => x.e);
 				}
 				if (countryCode) {
 					const cc = countryCode.toLowerCase();
@@ -1722,7 +1778,11 @@ export default function ProfilesClient({
 				if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
 				const loaded = data as ProfileDetail;
 				setDetail(loaded);
-				setEditingLifeDates(false);
+				setProfileEditing(false);
+				setEditingLocationId(null);
+				setEditingAliasId(null);
+				setPendingDeleteIdentIds([]);
+				setPendingNewIdents([]);
 				// Keep URL canonicalized to the readable slug (e.g. /profiles?profile=person:alex-karp)
 				const mode = skipNextPushRef.current ? 'replace' : 'push';
 				skipNextPushRef.current = false;
@@ -2074,36 +2134,276 @@ export default function ProfilesClient({
 		}
 	}
 
-	function beginEditLifeDates() {
-		if (!detail) return;
-		setLifeStartDraft(detail.profile.startDate || '');
-		setLifeEndDraft(detail.profile.endDate || '');
-		setEditingLifeDates(true);
+	function collectAltNamesForEdit(d: ProfileDetail): string[] {
+		const canonicalLow = d.profile.name.trim().toLowerCase().replace(/\s+/g, ' ');
+		const seen = new Set<string>([canonicalLow]);
+		const out: string[] = [];
+		const push = (raw: string) => {
+			const cleaned = raw.replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim();
+			const low = cleaned.toLowerCase();
+			if (!low || seen.has(low)) return;
+			seen.add(low);
+			out.push(cleaned);
+		};
+		for (const a of d.aliases) {
+			if (a.aliasKind === 'other_name') push(a.alias);
+		}
+		if (out.length === 0) {
+			for (const a of d.aliases) {
+				if (a.aliasKind !== 'former_name' && a.aliasKind !== 'name') continue;
+				push(a.alias);
+				if (out.length >= 4) break;
+			}
+		}
+		return out;
 	}
 
-	async function handleSaveLifeDates() {
+	function beginProfileEdit() {
+		if (!detail) return;
+		setNameDraft(detail.profile.name);
+		setAltNamesDraft(collectAltNamesForEdit(detail).join(' · '));
+		setSummaryDraft(detail.profile.summary || '');
+		setLifeStartDraft(detail.profile.startDate || '');
+		setLifeEndDraft(detail.profile.endDate || '');
+		setAliasRowsDraft(
+			detail.aliases
+				// other_name is edited under the title (altNamesDraft → replaceOtherNames)
+				.filter((a) => a.aliasKind !== 'slug' && a.aliasKind !== 'other_name')
+				.map((a) => ({
+					key: a.id,
+					id: a.id,
+					alias: a.alias,
+					aliasKind:
+						a.aliasKind === 'former_name' || a.aliasKind === 'acronym'
+							? a.aliasKind
+							: ('name' as AliasKind),
+					deleted: false,
+				})),
+		);
+		setLocationRowsDraft(
+			detail.locations.map((loc) => ({
+				key: loc.id,
+				id: loc.id,
+				raw: loc.raw,
+				role: loc.role,
+				confirmed: Boolean(loc.confirmed),
+				deleted: false,
+			})),
+		);
+		setPendingDeleteIdentIds([]);
+		setPendingNewIdents([]);
+		setAliasDraft('');
+		setIdentValueDraft('');
+		setLocationDraft('');
+		setEditingAliasId(null);
+		setEditingLocationId(null);
+		setProfileEditing(true);
+	}
+
+	function cancelProfileEdit() {
+		setProfileEditing(false);
+		setEditingAliasId(null);
+		setEditingLocationId(null);
+		setPendingDeleteIdentIds([]);
+		setPendingNewIdents([]);
+		setAliasDraft('');
+		setIdentValueDraft('');
+		setLocationDraft('');
+	}
+
+	async function patchProfile(
+		profileKey: string,
+		body: Record<string, unknown>,
+	): Promise<ProfileDetail> {
+		const res = await fetch(`/api/profiles/${encodeURIComponent(profileKey)}`, {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		});
+		const data = await res.json();
+		if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to save profile');
+		return data as ProfileDetail;
+	}
+
+	async function handleApplyProfileEdit() {
 		if (!selectedId || !detail) return;
-		setSavingLifeDates(true);
+		if (!nameDraft.trim()) {
+			setError('Name cannot be empty.');
+			return;
+		}
+		setSavingCore(true);
 		setError(null);
+		const prevSlug = detail.profile.slug || selectedId;
+		let profileKey = selectedId;
 		try {
-			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					startDate: lifeStartDraft.trim() || null,
-					endDate: lifeEndDraft.trim() || null,
-				}),
+			let latest = detail;
+
+			const nameChanged = nameDraft.trim() !== detail.profile.name;
+			const summaryChanged = summaryDraft !== (detail.profile.summary || '');
+			const startChanged =
+				(lifeStartDraft.trim() || null) !== (detail.profile.startDate || null);
+			const endChanged = (lifeEndDraft.trim() || null) !== (detail.profile.endDate || null);
+			if (nameChanged || summaryChanged || startChanged || endChanged) {
+				latest = await patchProfile(profileKey, {
+					...(nameChanged ? { name: nameDraft.trim() } : {}),
+					...(summaryChanged ? { summary: summaryDraft } : {}),
+					...(startChanged || endChanged
+						? {
+								startDate: lifeStartDraft.trim() || null,
+								endDate: lifeEndDraft.trim() || null,
+							}
+						: {}),
+				});
+				profileKey = latest.profile.slug || latest.profile.id;
+			}
+
+			const sep = /[·•|]/.test(altNamesDraft) ? /[·•|]+/ : /[,;]+/;
+			const nextOtherNames = altNamesDraft
+				.split(sep)
+				.map((s) => s.replace(/\s+/g, ' ').trim())
+				.filter(Boolean);
+			const prevOther = detail.aliases
+				.filter((a) => a.aliasKind === 'other_name')
+				.map((a) => a.alias.trim())
+				.sort();
+			const nextOtherSorted = [...nextOtherNames].sort();
+			const otherChanged =
+				prevOther.length !== nextOtherSorted.length ||
+				prevOther.some((v, i) => v !== nextOtherSorted[i]);
+			if (otherChanged) {
+				latest = await patchProfile(profileKey, { replaceOtherNames: nextOtherNames });
+				profileKey = latest.profile.slug || latest.profile.id;
+			}
+
+			// Under-title altNamesDraft owns other_name via replaceOtherNames above.
+			const originalAliases = new Map(
+				detail.aliases
+					.filter((a) => a.aliasKind !== 'slug' && a.aliasKind !== 'other_name')
+					.map((a) => [a.id, a]),
+			);
+			for (const row of aliasRowsDraft) {
+				if (row.aliasKind === 'other_name') continue;
+				if (row.deleted && row.id) {
+					latest = await patchProfile(profileKey, { deleteAlias: row.id });
+					profileKey = latest.profile.slug || latest.profile.id;
+					continue;
+				}
+				if (row.deleted || !row.alias.trim()) continue;
+				if (!row.id) {
+					latest = await patchProfile(profileKey, {
+						addAlias: { alias: row.alias.trim(), aliasKind: row.aliasKind },
+					});
+					profileKey = latest.profile.slug || latest.profile.id;
+					continue;
+				}
+				const orig = originalAliases.get(row.id);
+				if (
+					orig &&
+					(orig.alias !== row.alias.trim() ||
+						(orig.aliasKind || 'name') !== row.aliasKind)
+				) {
+					latest = await patchProfile(profileKey, {
+						updateAlias: {
+							id: row.id,
+							alias: row.alias.trim(),
+							aliasKind: row.aliasKind,
+						},
+					});
+					profileKey = latest.profile.slug || latest.profile.id;
+				}
+			}
+
+			const originalLocs = new Map(detail.locations.map((l) => [l.id, l]));
+			for (const row of locationRowsDraft) {
+				if (row.deleted && row.id) {
+					latest = await patchProfile(profileKey, { deleteLocation: row.id });
+					profileKey = latest.profile.slug || latest.profile.id;
+					continue;
+				}
+				if (row.deleted || !row.raw.trim()) continue;
+				if (!row.id) {
+					latest = await patchProfile(profileKey, {
+						addLocation: {
+							raw: row.raw.trim(),
+							role: row.role,
+							confirmed: row.confirmed,
+						},
+					});
+					profileKey = latest.profile.slug || latest.profile.id;
+					continue;
+				}
+				const orig = originalLocs.get(row.id);
+				if (
+					orig &&
+					(orig.raw !== row.raw.trim() ||
+						orig.role !== row.role ||
+						Boolean(orig.confirmed) !== row.confirmed)
+				) {
+					latest = await patchProfile(profileKey, {
+						updateLocation: {
+							id: row.id,
+							raw: row.raw.trim(),
+							role: row.role,
+							confirmed: row.confirmed,
+						},
+					});
+					profileKey = latest.profile.slug || latest.profile.id;
+				}
+			}
+
+			for (const identId of pendingDeleteIdentIds) {
+				latest = await patchProfile(profileKey, { deleteIdentifier: identId });
+				profileKey = latest.profile.slug || latest.profile.id;
+			}
+			for (const ident of pendingNewIdents) {
+				if (!ident.value.trim()) continue;
+				latest = await patchProfile(profileKey, {
+					addIdentifier: { scheme: ident.scheme, value: ident.value.trim() },
+				});
+				profileKey = latest.profile.slug || latest.profile.id;
+			}
+
+			// Ensure userTouchedAt is bumped even if only drafts matched with no field PATCH.
+			latest = await patchProfile(profileKey, { userTouch: true });
+			profileKey = latest.profile.slug || latest.profile.id;
+
+			setDetail(latest);
+			setProfileEditing(false);
+			setPendingDeleteIdentIds([]);
+			setPendingNewIdents([]);
+			const nextSlug = latest.profile.slug;
+			if (nextSlug && nextSlug !== prevSlug) {
+				setSelectedId(nextSlug);
+				syncUrl({ profile: nextSlug, view: 'profile' }, 'replace');
+				setBanner(`Applied changes — URL is now /profiles/${nextSlug.replace(':', '/')}.`);
+			} else {
+				setBanner('Applied profile edits.');
+			}
+			// Float edited profile to the top of the left cards (userTouchedAt sort).
+			setOffset(0);
+			const listParams = new URLSearchParams();
+			if (typeFilter === HISTORY_FILTER) listParams.set('type', 'historic_event');
+			else if (typeFilter && typeFilter !== 'all') listParams.set('type', typeFilter);
+			if (query.trim()) listParams.set('q', query.trim());
+			if (countryCode) listParams.set('country', countryCode);
+			listParams.set('limit', '60');
+			listParams.set('offset', '0');
+			listParams.set('stats', '1');
+			const listRes = await fetch(`/api/profiles?${listParams.toString()}`, {
+				cache: 'no-store',
 			});
-			const data = await res.json();
-			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to save dates');
-			setEditingLifeDates(false);
-			setDetail(data as ProfileDetail);
-			await loadList();
-			setBanner('Saved birth/death (start/end) dates.');
+			const listData = await listRes.json();
+			if (listRes.ok && listData?.ok) {
+				setProfiles(Array.isArray(listData.profiles) ? listData.profiles : []);
+				setTotalProfiles(Number(listData.total || 0));
+				if (listData.stats) setStats(listData.stats as ProfileStats);
+			} else {
+				await loadList();
+			}
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
 		} finally {
-			setSavingLifeDates(false);
+			setSavingCore(false);
 		}
 	}
 
@@ -2143,18 +2443,152 @@ export default function ProfilesClient({
 		}
 	}
 
+
+
 	async function handleAddAlias() {
 		if (!selectedId || !aliasDraft.trim()) return;
+		setSavingAlias(true);
+		setError(null);
 		try {
 			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ addAlias: aliasDraft.trim() }),
+				body: JSON.stringify({
+					addAlias: { alias: aliasDraft.trim(), aliasKind: aliasKindDraft },
+				}),
 			});
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed');
 			setAliasDraft('');
 			setDetail(data as ProfileDetail);
+			setBanner(
+				aliasKindDraft === 'other_name'
+					? 'Added other name.'
+					: aliasKindDraft === 'former_name'
+						? 'Added former name.'
+						: 'Added alias.',
+			);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingAlias(false);
+		}
+	}
+
+	function beginEditAlias(a: ProfileDetail['aliases'][number]) {
+		setEditingAliasId(a.id);
+		setEditAliasText(a.alias);
+		setEditAliasKind(
+			a.aliasKind === 'other_name' || a.aliasKind === 'former_name' || a.aliasKind === 'acronym'
+				? a.aliasKind
+				: 'name',
+		);
+	}
+
+	async function handleSaveAliasEdit() {
+		if (!selectedId || !editingAliasId || !editAliasText.trim()) return;
+		setSavingAlias(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					updateAlias: {
+						id: editingAliasId,
+						alias: editAliasText.trim(),
+						aliasKind: editAliasKind,
+					},
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to update name');
+			setDetail(data as ProfileDetail);
+			setEditingAliasId(null);
+			setBanner('Updated other name / alias.');
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingAlias(false);
+		}
+	}
+
+	async function handleDeleteAlias(aliasId: string, aliasLabel: string) {
+		if (!selectedId) return;
+		if (
+			typeof window !== 'undefined' &&
+			!window.confirm(`Remove alias "${aliasLabel}"?`)
+		) {
+			return;
+		}
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ deleteAlias: aliasId }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to remove alias');
+			if (editingAliasId === aliasId) setEditingAliasId(null);
+			setDetail(data as ProfileDetail);
+			setBanner(`Removed alias "${aliasLabel}".`);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	async function handleAddIdentifier() {
+		if (!selectedId || !identValueDraft.trim()) return;
+		setSavingIdent(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					addIdentifier: {
+						scheme: identSchemeDraft,
+						value: identValueDraft.trim(),
+					},
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to add identifier');
+			setIdentValueDraft('');
+			setDetail(data as ProfileDetail);
+			setBanner('Added identifier.');
+			await loadList();
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingIdent(false);
+		}
+	}
+
+	async function handleDeleteIdentifier(identId: string, scheme: string, value: string) {
+		if (!selectedId) return;
+		const label = `${IDENTIFIER_SCHEME_LABELS[scheme] || scheme}: ${value}`;
+		const warnCrd =
+			scheme === 'finra_crd'
+				? '\n\nRemoving CRD will clear FINRA header chips until the profile is re-synced.'
+				: '';
+		if (
+			typeof window !== 'undefined' &&
+			!window.confirm(`Remove identifier ${label}?${warnCrd}`)
+		) {
+			return;
+		}
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(selectedId)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ deleteIdentifier: identId }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to remove identifier');
+			setDetail(data as ProfileDetail);
+			setBanner(`Removed ${label}.`);
+			await loadList();
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
 		}
@@ -2300,6 +2734,7 @@ export default function ProfilesClient({
 			keepType === 'historic_event' ? HISTORY_FILTER : keepType ? keepType : 'all';
 		setPendingCategorySync(true);
 		setQuery('');
+		setQueryDraft('');
 		setCountryCode('');
 		setCountryQuery('');
 		setCountryMenuOpen(false);
@@ -2324,7 +2759,11 @@ export default function ProfilesClient({
 		await loadDetail(opts.profileKey);
 	}
 
-	async function handleTriageAlignment(id: string, status: AlignmentStatus) {
+	async function handleTriageAlignment(
+		id: string,
+		status: AlignmentStatus,
+		opts?: { skipAutoMerge?: boolean; quiet?: boolean },
+	) {
 		setSavingAlignmentId(id);
 		setError(null);
 		const target =
@@ -2350,11 +2789,14 @@ export default function ProfilesClient({
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to update alignment');
 			const al = (data.alignment || target) as AlignmentCandidate | null;
-			// Accept on same-entity alias / shared-id pairs means Merge (Poly / PTT pattern).
+			// Accept auto-Merges only on shared major IDs (CRD/CIK/…).
+			// same_entity_alias (name overlap) confirms only — Merge must be explicit so
+			// similarly named banks/firms with different IDs stay separate.
 			const shouldAutoMerge =
+				!opts?.skipAutoMerge &&
 				status === 'confirmed' &&
 				al?.rightProfileId &&
-				(al.alignmentKind === 'same_entity_alias' || al.alignmentKind === 'shared_identifier');
+				al.alignmentKind === 'shared_identifier';
 			if (shouldAutoMerge && al) {
 				const mergeTarget = pickCanonicalMergeTarget(al);
 				if (mergeTarget) {
@@ -2374,17 +2816,22 @@ export default function ProfilesClient({
 						| { id?: string; slug?: string; profileType?: string; name?: string }
 						| undefined;
 					const keepKey = String(kept?.slug || kept?.id || mergeTarget.keepId);
-					setBanner(
-						`Accepted & merged "${mergeTarget.mergeLabel}" into "${kept?.name || mergeTarget.keepLabel}".`,
-					);
-					setLastEnrichReport(null);
-					await refreshLeftListForProfile({
-						profileKey: keepKey,
-						profileType: kept?.profileType || al.leftType || null,
-					});
-					await loadGlobalAlignments();
-					return;
+					if (!opts?.quiet) {
+						setBanner(
+							`Accepted & merged "${mergeTarget.mergeLabel}" into "${kept?.name || mergeTarget.keepLabel}".`,
+						);
+						setLastEnrichReport(null);
+						await refreshLeftListForProfile({
+							profileKey: keepKey,
+							profileType: kept?.profileType || al.leftType || null,
+						});
+						await loadGlobalAlignments();
+					}
+					return { ok: true as const, merged: true as const, keepKey };
 				}
+			}
+			if (opts?.quiet) {
+				return { ok: true as const, merged: false as const };
 			}
 			if (status === 'confirmed' && al?.leftProfileId) {
 				const keepKey = String(al.leftSlug || al.leftProfileId);
@@ -2396,10 +2843,14 @@ export default function ProfilesClient({
 				if (selectedId && mainView === 'profile') await loadDetail(selectedId);
 				if (mainView === 'alignments') await loadGlobalAlignments();
 			}
+			return { ok: true as const, merged: false as const };
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
-			if (selectedId && mainView === 'profile') await loadDetail(selectedId);
-			if (mainView === 'alignments') await loadGlobalAlignments();
+			if (!opts?.quiet) {
+				if (selectedId && mainView === 'profile') await loadDetail(selectedId);
+				if (mainView === 'alignments') await loadGlobalAlignments();
+			}
+			return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
 		} finally {
 			setSavingAlignmentId(null);
 		}
@@ -2478,14 +2929,21 @@ export default function ProfilesClient({
 		};
 	}
 
-	async function handleMergeProfiles(keepId: string, mergeId: string, keepLabel: string, mergeLabel: string) {
+	async function handleMergeProfiles(
+		keepId: string,
+		mergeId: string,
+		keepLabel: string,
+		mergeLabel: string,
+		opts?: { skipConfirm?: boolean; quiet?: boolean },
+	) {
 		if (
+			!opts?.skipConfirm &&
 			typeof window !== 'undefined' &&
 			!window.confirm(
 				`Merge "${mergeLabel}" into "${keepLabel}"? All aliases, identifiers, locations, links, and timeline entries will be consolidated onto "${keepLabel}".`,
 			)
 		) {
-			return;
+			return { ok: false as const, cancelled: true as const };
 		}
 		setError(null);
 		try {
@@ -2500,12 +2958,159 @@ export default function ProfilesClient({
 			const keepKey = String(kept?.slug || kept?.id || keepId);
 			const keepType = String(kept?.profileType || '');
 			const keepName = String(kept?.name || keepLabel);
-			setBanner(`Merged "${mergeLabel}" into "${keepName}".`);
-			setLastEnrichReport(null);
-			await refreshLeftListForProfile({ profileKey: keepKey, profileType: keepType || null });
-			await loadGlobalAlignments();
+			if (!opts?.quiet) {
+				setBanner(`Merged "${mergeLabel}" into "${keepName}".`);
+				setLastEnrichReport(null);
+				await refreshLeftListForProfile({ profileKey: keepKey, profileType: keepType || null });
+				await loadGlobalAlignments();
+			}
+			return { ok: true as const, keepKey, keepType, keepName };
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
+			return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+		}
+	}
+
+	function isMergeableAlignment(al: AlignmentCandidate): boolean {
+		return Boolean(
+			al.rightProfileId &&
+				(al.alignmentKind === 'same_entity_alias' || al.alignmentKind === 'shared_identifier'),
+		);
+	}
+
+	async function handleBulkAlignments(action: 'accept' | 'merge' | 'dismiss') {
+		const rows = globalAlignments;
+		if (!rows.length) return;
+
+		if (action === 'accept') {
+			const targets = rows.filter((a) => a.status !== 'confirmed');
+			if (!targets.length) {
+				setBanner('Nothing to accept on this page — all rows are already accepted.');
+				return;
+			}
+			if (
+				typeof window !== 'undefined' &&
+				!window.confirm(
+					`Accept ${targets.length} alignment(s) on this page?\n\nConfirm only — does not merge profiles. Use Merge all for alias / shared-ID pairs.`,
+				)
+			) {
+				return;
+			}
+			setBulkAlignBusy(true);
+			setError(null);
+			let okCount = 0;
+			let failCount = 0;
+			try {
+				for (const al of targets) {
+					const res = await handleTriageAlignment(al.id, 'confirmed', {
+						skipAutoMerge: true,
+						quiet: true,
+					});
+					if (res?.ok) okCount += 1;
+					else failCount += 1;
+				}
+				setBanner(
+					`Accepted ${okCount} alignment(s) on this page (confirm only, no merge).${failCount ? ` ${failCount} failed.` : ''}`,
+				);
+				await loadGlobalAlignments();
+				await loadList();
+			} finally {
+				setBulkAlignBusy(false);
+			}
+			return;
+		}
+
+		if (action === 'dismiss') {
+			const targets = rows.filter((a) => a.status !== 'dismissed');
+			if (!targets.length) {
+				setBanner('Nothing to dismiss on this page — all rows are already dismissed.');
+				return;
+			}
+			if (
+				typeof window !== 'undefined' &&
+				!window.confirm(`Dismiss ${targets.length} alignment(s) on this page?`)
+			) {
+				return;
+			}
+			setBulkAlignBusy(true);
+			setError(null);
+			let okCount = 0;
+			let failCount = 0;
+			try {
+				for (const al of targets) {
+					const res = await handleTriageAlignment(al.id, 'dismissed', { quiet: true });
+					if (res?.ok) okCount += 1;
+					else failCount += 1;
+				}
+				setBanner(
+					`Dismissed ${okCount} alignment(s) on this page.${failCount ? ` ${failCount} failed.` : ''}`,
+				);
+				await loadGlobalAlignments();
+			} finally {
+				setBulkAlignBusy(false);
+			}
+			return;
+		}
+
+		// merge
+		const targets = rows.filter(isMergeableAlignment);
+		if (!targets.length) {
+			setBanner(
+				'No mergeable rows on this page — Merge all only applies to same-entity alias / shared-identifier pairs.',
+			);
+			return;
+		}
+		if (
+			typeof window !== 'undefined' &&
+			!window.confirm(
+				`Merge ${targets.length} same-entity pair(s) on this page?\n\nEach duplicate profile card will be deleted into its canonical twin. This cannot be undone from the UI.`,
+			)
+		) {
+			return;
+		}
+		setBulkAlignBusy(true);
+		setError(null);
+		let okCount = 0;
+		let failCount = 0;
+		let lastKeep: { key: string; type: string | null } | null = null;
+		try {
+			for (const al of targets) {
+				const mergeTarget = pickCanonicalMergeTarget(al);
+				if (!mergeTarget) {
+					failCount += 1;
+					continue;
+				}
+				// Mark accepted first (no single-row auto-merge), then merge.
+				await handleTriageAlignment(al.id, 'confirmed', { skipAutoMerge: true, quiet: true });
+				const res = await handleMergeProfiles(
+					mergeTarget.keepId,
+					mergeTarget.mergeId,
+					mergeTarget.keepLabel,
+					mergeTarget.mergeLabel,
+					{ skipConfirm: true, quiet: true },
+				);
+				if (res?.ok) {
+					okCount += 1;
+					lastKeep = { key: res.keepKey || mergeTarget.keepId, type: res.keepType || null };
+				} else if (!res?.cancelled) {
+					failCount += 1;
+				}
+			}
+			setBanner(
+				`Merged ${okCount} pair(s) on this page.${failCount ? ` ${failCount} failed.` : ''}`,
+			);
+			setLastEnrichReport(null);
+			if (lastKeep) {
+				await refreshLeftListForProfile({
+					profileKey: lastKeep.key,
+					profileType: lastKeep.type,
+				});
+			} else {
+				await loadGlobalAlignments();
+				await loadList();
+			}
+		} finally {
+			setBulkAlignBusy(false);
 		}
 	}
 
@@ -2581,6 +3186,7 @@ export default function ProfilesClient({
 	const jumpToProfile = useCallback((id: string) => {
 		setPendingCategorySync(true);
 		setQuery('');
+		setQueryDraft('');
 		setCountryCode('');
 		setCountryQuery('');
 		setCountryMenuOpen(false);
@@ -2651,6 +3257,152 @@ export default function ProfilesClient({
 					>
 						{syncing ? 'Syncing & Aligning…' : 'Sync & Align All Data'}
 					</button>
+					<form
+						className="flex min-w-[14rem] max-w-md flex-1 items-center gap-1.5 sm:min-w-[18rem]"
+						onSubmit={(e) => {
+							e.preventDefault();
+							const next = queryDraft.trim();
+							setOffset(0);
+							setQuery(next);
+							setQueryDraft(next);
+							if (mainView === 'alignments') {
+								setMainView('profile');
+								syncUrl({ view: 'profile', profile: detail?.profile.slug || selectedId });
+							}
+						}}
+					>
+						<input
+							value={queryDraft}
+							onChange={(e) => setQueryDraft(e.target.value)}
+							placeholder="Search name, alias, CRD, ticker…"
+							className="min-w-0 flex-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs"
+							aria-label="Profile search"
+						/>
+						<button
+							type="submit"
+							className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-semibold hover:bg-[var(--app-surface-hover)]"
+						>
+							Search
+						</button>
+						{query || queryDraft ? (
+							<button
+								type="button"
+								aria-label="Clear search"
+								onClick={() => {
+									setQueryDraft('');
+									setQuery('');
+									setOffset(0);
+								}}
+								className="cursor-pointer rounded-md border border-[var(--app-border)] bg-transparent px-2 py-1.5 text-xs opacity-70 hover:opacity-100"
+							>
+								✕
+							</button>
+						) : null}
+					</form>
+					<div ref={countryBoxRef} className="relative min-w-[10rem] max-w-[14rem] shrink-0">
+						{countryCode ? (
+							<div className="flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1.5">
+								{/* eslint-disable-next-line @next/next/no-img-element */}
+								<img
+									src={`/flags/4x3/${encodeURIComponent(countryCode)}.svg`}
+									alt={getFlagLabel(countryCode)}
+									title={getFlagLabel(countryCode)}
+									className="h-3.5 w-[18px] rounded-[2px] border border-black/15 object-cover dark:border-white/15"
+								/>
+								<span className="min-w-0 flex-1 truncate text-[11px]">
+									{countryOptions.find((o) => o.code === countryCode)?.name ||
+										getFlagLabel(countryCode)}
+								</span>
+								<button
+									type="button"
+									aria-label="Clear country filter"
+									onClick={() => {
+										setCountryCode('');
+										setCountryQuery('');
+										setOffset(0);
+										setCountryMenuOpen(false);
+									}}
+									className="cursor-pointer rounded border-0 bg-transparent px-1 text-[11px] opacity-70 hover:opacity-100"
+								>
+									✕
+								</button>
+							</div>
+						) : (
+							<input
+								value={countryQuery}
+								onChange={(e) => {
+									setCountryQuery(e.target.value);
+									setCountryMenuOpen(true);
+								}}
+								onFocus={() => setCountryMenuOpen(true)}
+								placeholder="Flag / country…"
+								aria-label="Filter by country"
+								className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs"
+								autoComplete="off"
+							/>
+						)}
+						{countryMenuOpen && !countryCode ? (
+							<ul className="absolute right-0 z-30 mt-1 max-h-56 w-full min-w-[14rem] overflow-y-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] py-1 shadow-lg">
+								{(countryQuery.trim()
+									? countryOptions.filter((o) => {
+											const q = countryQuery.trim().toLowerCase();
+											return (
+												o.name.toLowerCase().includes(q) ||
+												o.code.includes(q) ||
+												getFlagLabel(o.code).toLowerCase().includes(q)
+											);
+										})
+									: countryOptions
+								)
+									.slice(0, 40)
+									.map((o) => (
+										<li key={o.code}>
+											<button
+												type="button"
+												onClick={() => {
+													setCountryCode(o.code);
+													setCountryQuery(o.name);
+													setCountryMenuOpen(false);
+													setOffset(0);
+													if (mainView === 'alignments') {
+														setMainView('profile');
+														syncUrl({
+															view: 'profile',
+															profile: detail?.profile.slug || selectedId,
+														});
+													}
+												}}
+												className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left text-xs hover:bg-[var(--app-surface-hover)]"
+											>
+												{/* eslint-disable-next-line @next/next/no-img-element */}
+												<img
+													src={`/flags/4x3/${encodeURIComponent(o.code)}.svg`}
+													alt=""
+													className="h-3.5 w-[18px] rounded-[2px] border border-black/15 object-cover dark:border-white/15"
+												/>
+												<span className="min-w-0 flex-1 truncate">{o.name}</span>
+												<span className="shrink-0 text-[10px] uppercase opacity-50">
+													{o.code}
+												</span>
+											</button>
+										</li>
+									))}
+								{(countryQuery.trim()
+									? countryOptions.filter((o) => {
+											const q = countryQuery.trim().toLowerCase();
+											return (
+												o.name.toLowerCase().includes(q) ||
+												o.code.includes(q) ||
+												getFlagLabel(o.code).toLowerCase().includes(q)
+											);
+										})
+									: countryOptions
+								).length === 0 ? (
+									<li className="px-2.5 py-2 text-[11px] opacity-60">No matches</li>
+								) : null}
+							</ul>
+						) : null}
+					</div>
 					<ThemeToggle />
 				</div>
 			</header>
@@ -2959,36 +3711,75 @@ export default function ProfilesClient({
 						</div>
 					</div>
 
-					{globalAlignTotal > 0 ? (
-						<div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs opacity-80">
-							<span>
-								Showing {Math.min(alignOffset + 1, globalAlignTotal)}–
-								{Math.min(alignOffset + globalAlignments.length, globalAlignTotal)} of{' '}
-								{globalAlignTotal.toLocaleString()}
-								{alignStatusFilter ? ` (${alignStatusFilter})` : ''}
-							</span>
-							<div className="flex items-center gap-1.5">
-								<button
-									type="button"
-									disabled={alignOffset <= 0 || loadingGlobalAlign}
-									onClick={() => setAlignOffset((o) => Math.max(0, o - ALIGN_PAGE_SIZE))}
-									className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[11px] font-semibold disabled:opacity-40"
-								>
-									Prev
-								</button>
-								<button
-									type="button"
-									disabled={
-										alignOffset + ALIGN_PAGE_SIZE >= globalAlignTotal || loadingGlobalAlign
-									}
-									onClick={() => setAlignOffset((o) => o + ALIGN_PAGE_SIZE)}
-									className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[11px] font-semibold disabled:opacity-40"
-								>
-									Next
-								</button>
-							</div>
+					<div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+						<span className="opacity-80">
+							{globalAlignTotal > 0
+								? `Showing ${Math.min(alignOffset + 1, globalAlignTotal)}–${Math.min(alignOffset + globalAlignments.length, globalAlignTotal)} of ${globalAlignTotal.toLocaleString()}${alignStatusFilter ? ` (${alignStatusFilter})` : ''}`
+								: `No rows for current filters${alignStatusFilter ? ` (${alignStatusFilter})` : ''}`}
+						</span>
+						<div className="flex flex-wrap items-center gap-1.5">
+							<span className="text-[10px] font-semibold uppercase opacity-60">This page:</span>
+							<button
+								type="button"
+								disabled={bulkAlignBusy || loadingGlobalAlign || globalAlignments.length === 0}
+								onClick={() => void handleBulkAlignments('accept')}
+								title="Confirm all visible rows without merging profiles"
+								className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 disabled:opacity-40 dark:text-emerald-200"
+							>
+								{bulkAlignBusy
+									? 'Working…'
+									: `Accept all (${globalAlignments.filter((a) => a.status !== 'confirmed').length})`}
+							</button>
+							<button
+								type="button"
+								disabled={
+									bulkAlignBusy ||
+									loadingGlobalAlign ||
+									globalAlignments.filter(isMergeableAlignment).length === 0
+								}
+								onClick={() => void handleBulkAlignments('merge')}
+								title="Merge same-entity alias / shared-identifier pairs on this page"
+								className="cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/15 px-2 py-0.5 text-[11px] font-semibold text-[#F97316] disabled:opacity-40"
+							>
+								{bulkAlignBusy
+									? 'Working…'
+									: `Merge all (${globalAlignments.filter(isMergeableAlignment).length})`}
+							</button>
+							<button
+								type="button"
+								disabled={bulkAlignBusy || loadingGlobalAlign || globalAlignments.length === 0}
+								onClick={() => void handleBulkAlignments('dismiss')}
+								title="Dismiss all visible rows"
+								className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[11px] font-semibold opacity-80 hover:opacity-100 disabled:opacity-40"
+							>
+								{bulkAlignBusy
+									? 'Working…'
+									: `Dismiss all (${globalAlignments.filter((a) => a.status !== 'dismissed').length})`}
+							</button>
+							<span className="mx-0.5 opacity-30">|</span>
+							<button
+								type="button"
+								disabled={alignOffset <= 0 || loadingGlobalAlign || bulkAlignBusy}
+								onClick={() => setAlignOffset((o) => Math.max(0, o - ALIGN_PAGE_SIZE))}
+								className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[11px] font-semibold disabled:opacity-40"
+							>
+								Prev
+							</button>
+							<button
+								type="button"
+								disabled={
+									alignOffset + ALIGN_PAGE_SIZE >= globalAlignTotal ||
+									loadingGlobalAlign ||
+									bulkAlignBusy ||
+									globalAlignTotal === 0
+								}
+								onClick={() => setAlignOffset((o) => o + ALIGN_PAGE_SIZE)}
+								className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[11px] font-semibold disabled:opacity-40"
+							>
+								Next
+							</button>
 						</div>
-					) : null}
+					</div>
 
 					{loadingGlobalAlign ? (
 						<p className="text-xs opacity-70">Loading alignments…</p>
@@ -3135,136 +3926,31 @@ export default function ProfilesClient({
 				<div className="grid min-h-0 flex-1 items-stretch gap-4 lg:grid-cols-[360px_1fr]">
 					{/* Left Sidebar: tracks detail column; lg:h-0 lg:min-h-full keeps list from inflating the row; scrolls inside */}
 					<aside className="flex min-h-0 min-w-0 flex-col self-stretch overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] lg:h-0 lg:min-h-full">
-						<div className="shrink-0 space-y-2 border-b border-[var(--app-border)] p-3">
-							<div className="flex items-start gap-2">
-								<input
-									value={query}
-									onChange={(e) => {
-										setQuery(e.target.value);
-										setOffset(0);
-									}}
-									placeholder="Search name, alias, CRD, ticker, topic…"
-									className="min-w-0 flex-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs"
-								/>
-								<div ref={countryBoxRef} className="relative w-[42%] min-w-[7.5rem] shrink-0">
-									{countryCode ? (
-										<div className="flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1">
-											{/* eslint-disable-next-line @next/next/no-img-element */}
-											<img
-												src={`/flags/4x3/${encodeURIComponent(countryCode)}.svg`}
-												alt={getFlagLabel(countryCode)}
-												title={getFlagLabel(countryCode)}
-												className="h-3.5 w-[18px] rounded-[2px] border border-black/15 object-cover dark:border-white/15"
-											/>
-											<span className="min-w-0 flex-1 truncate text-[11px]">
-												{countryOptions.find((o) => o.code === countryCode)?.name ||
-													getFlagLabel(countryCode)}
-											</span>
-											<button
-												type="button"
-												aria-label="Clear country filter"
-												onClick={() => {
-													setCountryCode('');
-													setCountryQuery('');
-													setOffset(0);
-													setCountryMenuOpen(false);
-												}}
-												className="cursor-pointer rounded border-0 bg-transparent px-1 text-[11px] opacity-70 hover:opacity-100"
-											>
-												✕
-											</button>
-										</div>
-									) : (
-										<input
-											value={countryQuery}
-											onChange={(e) => {
-												setCountryQuery(e.target.value);
-												setCountryMenuOpen(true);
-											}}
-											onFocus={() => setCountryMenuOpen(true)}
-											placeholder="Flag / country…"
-											className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs"
-											autoComplete="off"
-										/>
-									)}
-									{countryMenuOpen && !countryCode ? (
-										<ul className="absolute right-0 z-30 mt-1 max-h-56 w-[16rem] overflow-y-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] py-1 shadow-lg">
-											{(countryQuery.trim()
-												? countryOptions.filter((o) => {
-														const q = countryQuery.trim().toLowerCase();
-														return (
-															o.name.toLowerCase().includes(q) ||
-															o.code.includes(q) ||
-															getFlagLabel(o.code).toLowerCase().includes(q)
-														);
-													})
-												: countryOptions
-											)
-												.slice(0, 40)
-												.map((o) => (
-													<li key={o.code}>
-														<button
-															type="button"
-															onClick={() => {
-																setCountryCode(o.code);
-																setCountryQuery(o.name);
-																setCountryMenuOpen(false);
-																setOffset(0);
-															}}
-															className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left text-xs hover:bg-[var(--app-surface-hover)]"
-														>
-															{/* eslint-disable-next-line @next/next/no-img-element */}
-															<img
-																src={`/flags/4x3/${encodeURIComponent(o.code)}.svg`}
-																alt=""
-																className="h-3.5 w-[18px] rounded-[2px] border border-black/15 object-cover dark:border-white/15"
-															/>
-															<span className="min-w-0 flex-1 truncate">{o.name}</span>
-															<span className="shrink-0 text-[10px] uppercase opacity-50">
-																{o.code}
-															</span>
-														</button>
-													</li>
-												))}
-											{(countryQuery.trim()
-												? countryOptions.filter((o) => {
-														const q = countryQuery.trim().toLowerCase();
-														return (
-															o.name.toLowerCase().includes(q) ||
-															o.code.includes(q) ||
-															getFlagLabel(o.code).toLowerCase().includes(q)
-														);
-													})
-												: countryOptions
-											).length === 0 ? (
-												<li className="px-2.5 py-2 text-[11px] opacity-60">No matches</li>
-											) : null}
-										</ul>
-									) : null}
-								</div>
-							</div>
-							<div className="flex items-center justify-between text-[11px] opacity-70">
-								<span>
-									{loadingList ? 'Searching…' : `${totalProfiles.toLocaleString()} matching`}
-								</span>
-								<div className="flex gap-1.5">
-									<button
-										type="button"
-										disabled={offset === 0}
-										onClick={() => setOffset((o) => Math.max(0, o - 60))}
-										className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[10px] disabled:opacity-40"
-									>
-										Prev
-									</button>
-									<button
-										type="button"
-										disabled={offset + 60 >= totalProfiles}
-										onClick={() => setOffset((o) => o + 60)}
-										className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[10px] disabled:opacity-40"
-									>
-										Next
-									</button>
-								</div>
+						<div className="flex shrink-0 items-center justify-between border-b border-[var(--app-border)] px-3 py-2 text-[11px] opacity-70">
+							<span>
+								{loadingList
+									? 'Loading…'
+									: query
+										? `${totalProfiles.toLocaleString()} matching “${query}”`
+										: `${totalProfiles.toLocaleString()} matching`}
+							</span>
+							<div className="flex gap-1.5">
+								<button
+									type="button"
+									disabled={offset === 0}
+									onClick={() => setOffset((o) => Math.max(0, o - 60))}
+									className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+								>
+									Prev
+								</button>
+								<button
+									type="button"
+									disabled={offset + 60 >= totalProfiles}
+									onClick={() => setOffset((o) => o + 60)}
+									className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+								>
+									Next
+								</button>
 							</div>
 						</div>
 
@@ -3432,7 +4118,7 @@ export default function ProfilesClient({
 											<code className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px] opacity-75">
 												{detail.profile.slug}
 											</code>
-											{editingLifeDates ? (
+											{profileEditing ? (
 												<span className="flex flex-wrap items-center gap-1.5 text-[11px]">
 													<input
 														value={lifeStartDraft}
@@ -3459,22 +4145,6 @@ export default function ProfilesClient({
 														}
 														className="w-[11.5rem] rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px]"
 													/>
-													<button
-														type="button"
-														disabled={savingLifeDates}
-														onClick={() => void handleSaveLifeDates()}
-														className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 disabled:opacity-50 dark:text-emerald-200"
-													>
-														{savingLifeDates ? 'Saving…' : 'Save'}
-													</button>
-													<button
-														type="button"
-														disabled={savingLifeDates}
-														onClick={() => setEditingLifeDates(false)}
-														className="cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px]"
-													>
-														Cancel
-													</button>
 												</span>
 											) : (
 												<span className="inline-flex flex-wrap items-center gap-1.5 text-[11px] opacity-70">
@@ -3512,18 +4182,6 @@ export default function ProfilesClient({
 																: 'No start/end dates'}
 														</span>
 													)}
-													<button
-														type="button"
-														onClick={beginEditLifeDates}
-														className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold opacity-100"
-														title={
-															detail.profile.profileType === 'person'
-																? 'Edit birth and death dates'
-																: 'Edit start and end dates'
-														}
-													>
-														Edit dates
-													</button>
 												</span>
 											)}
 										</div>
@@ -3556,25 +4214,36 @@ export default function ProfilesClient({
 															: null
 													: null;
 
-											// Alternate / full name variation(s) underneath the name
-											const canonicalLow = detail.profile.name.trim().toLowerCase().replace(/\s+/g, ' ');
+											// Alternate names under the title — prefer explicit other_name
+											// (editable); fall back to former/name for display only.
+											const canonicalLow = detail.profile.name
+												.trim()
+												.toLowerCase()
+												.replace(/\s+/g, ' ');
 											const seenAlt = new Set<string>([canonicalLow]);
-											const altNames = detail.aliases
-												.filter(
-													(a) =>
-														a.aliasKind === 'name' ||
-														a.aliasKind === 'former_name' ||
-														a.aliasKind === 'other_name',
-												)
-												.map((a) => a.alias.replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim())
-												.filter((raw) => {
-													const low = raw.toLowerCase().replace(/\s+/g, ' ');
-													if (!low || seenAlt.has(low)) return false;
-													seenAlt.add(low);
-													return true;
-												})
-												.sort((a, b) => b.length - a.length)
-												.slice(0, 2);
+											const pushUnique = (raw: string, into: string[]) => {
+												const cleaned = raw
+													.replace(/[\[\]]+/g, '')
+													.replace(/\s+/g, ' ')
+													.trim();
+												const low = cleaned.toLowerCase();
+												if (!low || seenAlt.has(low)) return;
+												seenAlt.add(low);
+												into.push(cleaned);
+											};
+											const altNames: string[] = [];
+											for (const a of detail.aliases) {
+												if (a.aliasKind === 'other_name') pushUnique(a.alias, altNames);
+											}
+											if (altNames.length === 0) {
+												for (const a of detail.aliases) {
+													if (a.aliasKind !== 'former_name' && a.aliasKind !== 'name') {
+														continue;
+													}
+													pushUnique(a.alias, altNames);
+													if (altNames.length >= 4) break;
+												}
+											}
 
 											const headerCrd = resolveProfileFinraCrd(
 												detail.profile.profileType,
@@ -3617,41 +4286,70 @@ export default function ProfilesClient({
 														</div>
 													) : null}
 													<h2 className="mt-0.5 mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-lg font-semibold">
-														<span className="inline-flex items-center gap-2">
-															<span>{detail.profile.name}</span>
-															<CountryFlags codes={detail.profile.countryCodes} size="md" />
-														</span>
-														{activeOrgs.length > 0 ? (
-															<span className="text-xs font-normal opacity-80">
-																—{' '}
-																{activeOrgs.map((org, idx) => (
-																	<span key={org.id}>
-																		{idx > 0 ? ' · ' : ''}
-																		{org.role ? <span>{org.role}, </span> : null}
-																		{org.orgProfileId ? (
-																			<button
-																				type="button"
-																				onClick={() => jumpToProfile(org.orgProfileId!)}
-																				className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
-																			>
-																				{org.orgName}
-																			</button>
-																		) : (
-																			<span className="font-semibold">{org.orgName}</span>
-																		)}
-																	</span>
-																))}
+														{profileEditing ? (
+															<span className="inline-flex flex-wrap items-center gap-1.5">
+																<input
+																	value={nameDraft}
+																	onChange={(e) => setNameDraft(e.target.value)}
+																	className="min-w-[14rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-base font-semibold"
+																	autoFocus
+																/>
+																<CountryFlags codes={detail.profile.countryCodes} size="md" />
 															</span>
-														) : fallbackTitle ? (
-															<span className="text-xs font-normal opacity-80">— {fallbackTitle}</span>
-														) : null}
+														) : (
+															<span className="inline-flex flex-wrap items-center gap-2">
+																<span className="inline-flex items-center gap-2">
+																	<span>{detail.profile.name}</span>
+																	<CountryFlags codes={detail.profile.countryCodes} size="md" />
+																</span>
+																{activeOrgs.length > 0 ? (
+																	<span className="text-xs font-normal opacity-80">
+																		—{' '}
+																		{activeOrgs.map((org, idx) => (
+																			<span key={org.id}>
+																				{idx > 0 ? ' · ' : ''}
+																				{org.role ? <span>{org.role}, </span> : null}
+																				{org.orgProfileId ? (
+																					<button
+																						type="button"
+																						onClick={() => jumpToProfile(org.orgProfileId!)}
+																						className="cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline"
+																					>
+																						{org.orgName}
+																					</button>
+																				) : (
+																					<span className="font-semibold">{org.orgName}</span>
+																				)}
+																			</span>
+																		))}
+																	</span>
+																) : fallbackTitle ? (
+																	<span className="text-xs font-normal opacity-80">
+																		— {fallbackTitle}
+																	</span>
+																) : null}
+															</span>
+														)}
 													</h2>
-													{altNames.length > 0 ? (
-														<div className="mb-1.5 text-xs italic opacity-75">
-															{altNames.join(' · ')}
+													{profileEditing ? (
+														<div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+															<input
+																value={altNamesDraft}
+																onChange={(e) => setAltNamesDraft(e.target.value)}
+																placeholder="Other names · separated by · or comma"
+																className="min-w-[16rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs italic"
+															/>
 														</div>
 													) : (
-														<div className="mb-1" />
+														<div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+															{altNames.length > 0 ? (
+																<span className="italic opacity-75">
+																	{altNames.join(' · ')}
+																</span>
+															) : (
+																<span className="italic opacity-50">No other names</span>
+															)}
+														</div>
 													)}
 												</>
 											);
@@ -3695,12 +4393,59 @@ export default function ProfilesClient({
 												);
 											})()
 										) : null}
-										{detail.profile.summary ? <ProfileSummaryText text={detail.profile.summary} /> : null}
+										{profileEditing ? (
+											<div className="mt-2">
+												<textarea
+													value={summaryDraft}
+													onChange={(e) => setSummaryDraft(e.target.value)}
+													rows={10}
+													placeholder="Profile summary / research notes…"
+													className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs leading-relaxed"
+												/>
+											</div>
+										) : (
+											<div className="mt-1">
+												{detail.profile.summary ? (
+													<ProfileSummaryText text={detail.profile.summary} />
+												) : (
+													<p className="m-0 text-xs italic opacity-60">No summary yet.</p>
+												)}
+											</div>
+										)}
 									</div>
 									<div className="flex flex-wrap items-center gap-2">
+										{profileEditing ? (
+											<>
+												<button
+													type="button"
+													disabled={savingCore || !nameDraft.trim()}
+													onClick={() => void handleApplyProfileEdit()}
+													className="cursor-pointer rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-500/25 disabled:opacity-50 dark:text-emerald-200"
+												>
+													{savingCore ? 'Applying…' : 'Apply'}
+												</button>
+												<button
+													type="button"
+													disabled={savingCore}
+													onClick={cancelProfileEdit}
+													className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+												>
+													Cancel
+												</button>
+											</>
+										) : (
+											<button
+												type="button"
+												onClick={beginProfileEdit}
+												className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs font-semibold hover:bg-[var(--app-surface-hover)]"
+												title="Edit name, other names, summary, dates, aliases, identifiers, and locations"
+											>
+												Edit
+											</button>
+										)}
 										<button
 											type="button"
-											disabled={enriching}
+											disabled={enriching || profileEditing}
 											onClick={() => void handleEnrichProfile()}
 											title="Search local offline Wikipedia, BrokerCheck (if CRD), county deeds, and UCC filings. Only merges validated matches (identifier or name/initials + address, firm, military base, or institution); name-only matches are held as review notes."
 											className="cursor-pointer rounded-md border border-[#F97316]/50 bg-[#F97316]/15 px-2.5 py-1.5 text-xs font-semibold text-[#F97316] hover:bg-[#F97316]/25 disabled:opacity-50"
@@ -4121,70 +4866,230 @@ export default function ProfilesClient({
 												typeof meta.finraVisualizerUrl === 'string' ||
 												typeof meta.wikipediaUrl === 'string' ||
 												Boolean(preferredWebsite);
-											const showAliases = detail.aliases.length > 0;
+											const showAliases = true;
 											const hasSicMeta =
 												(meta.sic != null && String(meta.sic).trim() !== '') ||
 												(typeof meta.sicDescription === 'string' &&
 													meta.sicDescription.trim() !== '');
-											const showCombinedSources =
-												publicIds.length > 0 ||
-												sourceLabels.length > 0 ||
-												urlIds.length > 0 ||
-												hasRegistryLinks ||
-												Boolean(finraCrd) ||
-												hasSicMeta;
-											const showLocations = detail.locations.length > 0;
-											if (!showAliases && !showCombinedSources && !showLocations) return null;
-											const cardCount =
-												Number(showAliases) + Number(showCombinedSources) + Number(showLocations);
-											const gridCols =
-												cardCount >= 3
-													? 'md:grid-cols-3'
-													: cardCount === 2
-														? 'md:grid-cols-2'
-														: 'md:grid-cols-1';
+											const showCombinedSources = true;
+											const showLocations = true;
+											const cardCount = 3;
+											const gridCols = 'md:grid-cols-3';
+											const editableIdentSchemes = [
+												'ticker',
+												'finra_crd',
+												'sec_cik',
+												'parent_sec_cik',
+												'irs_ein',
+												'cusip',
+												'url',
+												'orcid',
+												'ror',
+												'wikidata',
+											] as const;
 											return (
 												<div className={`grid gap-3 ${gridCols}`}>
 													{showAliases ? (
 														<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
 															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-																Aliases / other names ({detail.aliases.length})
+																Aliases / other names (
+																{profileEditing
+																	? aliasRowsDraft.filter((r) => !r.deleted).length
+																	: detail.aliases.filter((a) => a.aliasKind !== 'slug')
+																			.length}
+																)
 															</h3>
-															<div className="mb-2 flex flex-wrap gap-1">
-																{detail.aliases.slice(0, 16).map((a) => (
-																	<span
-																		key={a.id}
-																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 text-[11px]"
-																		title={
-																			a.aliasKind === 'other_name'
-																				? 'Other name (shorter / alternate form from merge)'
-																				: a.aliasKind === 'former_name'
-																					? 'Former name'
-																					: undefined
+															<ul className="m-0 mb-2 list-none space-y-1.5 p-0">
+																{profileEditing ? (
+																	aliasRowsDraft.filter((r) => !r.deleted).length ===
+																	0 ? (
+																		<li className="text-[11px] italic opacity-60">
+																			No other names yet.
+																		</li>
+																	) : (
+																		aliasRowsDraft
+																			.filter((r) => !r.deleted)
+																			.slice(0, 32)
+																			.map((row) => (
+																				<li
+																					key={row.key}
+																					className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5 text-[11px]"
+																				>
+																					<div className="flex flex-wrap items-center gap-1.5">
+																						<input
+																							value={row.alias}
+																							onChange={(e) =>
+																								setAliasRowsDraft((rows) =>
+																									rows.map((r) =>
+																										r.key === row.key
+																											? { ...r, alias: e.target.value }
+																											: r,
+																									),
+																								)
+																							}
+																							className="min-w-[8rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]"
+																						/>
+																						<select
+																							value={row.aliasKind}
+																							onChange={(e) =>
+																								setAliasRowsDraft((rows) =>
+																									rows.map((r) =>
+																										r.key === row.key
+																											? {
+																													...r,
+																													aliasKind: e.target
+																														.value as AliasKind,
+																												}
+																											: r,
+																									),
+																								)
+																							}
+																							className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]"
+																						>
+																							<option value="other_name">
+																								Other name
+																							</option>
+																							<option value="name">Alias</option>
+																							<option value="former_name">
+																								Former name
+																							</option>
+																							<option value="acronym">Acronym</option>
+																						</select>
+																						<button
+																							type="button"
+																							onClick={() =>
+																								setAliasRowsDraft((rows) =>
+																									rows.map((r) =>
+																										r.key === row.key
+																											? { ...r, deleted: true }
+																											: r,
+																									),
+																								)
+																							}
+																							className="cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px]"
+																							title={`Remove ${row.alias}`}
+																						>
+																							×
+																						</button>
+																					</div>
+																				</li>
+																			))
+																	)
+																) : detail.aliases.filter((a) => a.aliasKind !== 'slug')
+																		.length === 0 ? (
+																	<li className="text-[11px] italic opacity-60">
+																		No other names yet.
+																	</li>
+																) : (
+																	detail.aliases
+																		.filter((a) => a.aliasKind !== 'slug')
+																		.slice(0, 32)
+																		.map((a) => {
+																			const kindLabel =
+																				a.aliasKind === 'other_name'
+																					? 'other'
+																					: a.aliasKind === 'former_name'
+																						? 'former'
+																						: a.aliasKind === 'acronym'
+																							? 'acronym'
+																							: 'alias';
+																			return (
+																				<li
+																					key={a.id}
+																					className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5 text-[11px]"
+																				>
+																					<span>
+																						{a.alias}{' '}
+																						<span className="text-[10px] opacity-55">
+																							· {kindLabel}
+																						</span>
+																					</span>
+																				</li>
+																			);
+																		})
+																)}
+															</ul>
+															{profileEditing ? (
+																<div className="flex flex-wrap gap-1">
+																	<input
+																		value={aliasDraft}
+																		onChange={(e) => setAliasDraft(e.target.value)}
+																		placeholder="Append other name…"
+																		className="min-w-[8rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
+																		onKeyDown={(e) => {
+																			if (e.key === 'Enter') {
+																				e.preventDefault();
+																				if (!aliasDraft.trim()) return;
+																				const next = aliasDraft.trim();
+																				if (aliasKindDraft === 'other_name') {
+																					setAltNamesDraft((cur) =>
+																						cur.trim()
+																							? `${cur.trim()} · ${next}`
+																							: next,
+																					);
+																				} else {
+																					const key = `new-${crypto.randomUUID()}`;
+																					setAliasRowsDraft((rows) => [
+																						...rows,
+																						{
+																							key,
+																							id: null,
+																							alias: next,
+																							aliasKind: aliasKindDraft,
+																							deleted: false,
+																						},
+																					]);
+																				}
+																				setAliasDraft('');
+																			}
+																		}}
+																	/>
+																	<select
+																		value={aliasKindDraft}
+																		onChange={(e) =>
+																			setAliasKindDraft(e.target.value as AliasKind)
 																		}
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-[11px]"
+																		title="Name type"
 																	>
-																		{a.alias}
-																		{a.aliasKind === 'other_name' ? (
-																			<span className="ml-1 opacity-55">· other</span>
-																		) : null}
-																	</span>
-																))}
-															</div>
-															<div className="flex gap-1">
-																<input
-																	value={aliasDraft}
-																	onChange={(e) => setAliasDraft(e.target.value)}
-																	placeholder="Add alias…"
-																	className="flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
-																/>
-																<button
-																	type="button"
-																	onClick={() => void handleAddAlias()}
-																	className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
-																>
-																	Add
-																</button>
-															</div>
+																		<option value="other_name">Other name</option>
+																		<option value="name">Alias</option>
+																		<option value="former_name">Former name</option>
+																		<option value="acronym">Acronym</option>
+																	</select>
+																	<button
+																		type="button"
+																		disabled={!aliasDraft.trim()}
+																		onClick={() => {
+																			if (!aliasDraft.trim()) return;
+																			const next = aliasDraft.trim();
+																			if (aliasKindDraft === 'other_name') {
+																				setAltNamesDraft((cur) =>
+																					cur.trim()
+																						? `${cur.trim()} · ${next}`
+																						: next,
+																				);
+																			} else {
+																				const key = `new-${crypto.randomUUID()}`;
+																				setAliasRowsDraft((rows) => [
+																					...rows,
+																					{
+																						key,
+																						id: null,
+																						alias: next,
+																						aliasKind: aliasKindDraft,
+																						deleted: false,
+																					},
+																				]);
+																			}
+																			setAliasDraft('');
+																		}}
+																		className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+																	>
+																		Add
+																	</button>
+																</div>
+															) : null}
 														</div>
 													) : null}
 
@@ -4241,11 +5146,19 @@ export default function ProfilesClient({
 																	) : null}
 																</div>
 															) : null}
-															{publicIds.length > 0 ||
+															{publicIds.filter(
+																(idItem) => !pendingDeleteIdentIds.includes(idItem.id),
+															).length > 0 ||
+															pendingNewIdents.length > 0 ||
 															meta.sic != null ||
 															meta.sicDescription != null ? (
 																<ul className="m-0 list-none space-y-1 p-0 text-[11px]">
-																	{publicIds.map((idItem) => {
+																	{publicIds
+																		.filter(
+																			(idItem) =>
+																				!pendingDeleteIdentIds.includes(idItem.id),
+																		)
+																		.map((idItem) => {
 																		const scheme = String(idItem.scheme || '').toLowerCase();
 																		const label =
 																			IDENTIFIER_SCHEME_LABELS[scheme] ||
@@ -4259,12 +5172,62 @@ export default function ProfilesClient({
 																			display = `${display} (${meta.exchange.trim()})`;
 																		}
 																		return (
-																			<li key={idItem.id}>
-																				<span className="opacity-70">{label}:</span>{' '}
-																				<strong>{display}</strong>
+																			<li
+																				key={idItem.id}
+																				className="flex flex-wrap items-center gap-1.5"
+																			>
+																				<span>
+																					<span className="opacity-70">{label}:</span>{' '}
+																					<strong>{display}</strong>
+																				</span>
+																				{profileEditing ? (
+																					<button
+																						type="button"
+																						onClick={() =>
+																							setPendingDeleteIdentIds((ids) =>
+																								ids.includes(idItem.id)
+																									? ids
+																									: [...ids, idItem.id],
+																							)
+																						}
+																						className="cursor-pointer rounded border border-[var(--app-border)] px-1 py-0 text-[10px] opacity-70 hover:opacity-100"
+																						title={`Remove ${label}`}
+																					>
+																						Remove
+																					</button>
+																				) : null}
 																			</li>
 																		);
 																	})}
+																	{pendingNewIdents.map((ident) => (
+																		<li
+																			key={ident.key}
+																			className="flex flex-wrap items-center gap-1.5 opacity-80"
+																		>
+																			<span>
+																				<span className="opacity-70">
+																					{IDENTIFIER_SCHEME_LABELS[ident.scheme] ||
+																						ident.scheme}
+																					:
+																				</span>{' '}
+																				<strong>{ident.value}</strong>{' '}
+																				<span className="text-[10px] italic opacity-60">
+																					(pending)
+																				</span>
+																			</span>
+																			<button
+																				type="button"
+																				onClick={() =>
+																					setPendingNewIdents((rows) =>
+																						rows.filter((r) => r.key !== ident.key),
+																					)
+																				}
+																				className="cursor-pointer rounded border border-[var(--app-border)] px-1 py-0 text-[10px]"
+																			>
+																				Remove
+																			</button>
+																		</li>
+																	))}
 																	{meta.sic != null && String(meta.sic).trim() ? (
 																		<li key="meta-sic">
 																			<span className="opacity-70">SIC:</span>{' '}
@@ -4278,6 +5241,50 @@ export default function ProfilesClient({
 																		</li>
 																	) : null}
 																</ul>
+															) : (
+																<p className="m-0 mb-2 text-[11px] italic opacity-60">
+																	No public identifiers yet.
+																</p>
+															)}
+															{profileEditing ? (
+																<div className="mt-2 flex flex-wrap gap-1 border-t border-[var(--app-border)] pt-2">
+																	<select
+																		value={identSchemeDraft}
+																		onChange={(e) => setIdentSchemeDraft(e.target.value)}
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-[11px]"
+																	>
+																		{editableIdentSchemes.map((s) => (
+																			<option key={s} value={s}>
+																				{IDENTIFIER_SCHEME_LABELS[s] || s}
+																			</option>
+																		))}
+																	</select>
+																	<input
+																		value={identValueDraft}
+																		onChange={(e) => setIdentValueDraft(e.target.value)}
+																		placeholder="Value…"
+																		className="min-w-[8rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
+																	/>
+																	<button
+																		type="button"
+																		disabled={!identValueDraft.trim()}
+																		onClick={() => {
+																			if (!identValueDraft.trim()) return;
+																			setPendingNewIdents((rows) => [
+																				...rows,
+																				{
+																					key: `new-${crypto.randomUUID()}`,
+																					scheme: identSchemeDraft,
+																					value: identValueDraft.trim(),
+																				},
+																			]);
+																			setIdentValueDraft('');
+																		}}
+																		className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+																	>
+																		Add
+																	</button>
+																</div>
 															) : null}
 															{sourceLabels.length > 0 || urlIds.length > 0 ? (
 																(() => {
@@ -4322,7 +5329,13 @@ export default function ProfilesClient({
 																						extraLabels.length > 0 ? 'mt-1.5' : ''
 																					}`}
 																				>
-																					{urlIds.slice(0, 8).map((idItem, urlIdx) => {
+																					{urlIds
+																						.filter(
+																							(idItem) =>
+																								!pendingDeleteIdentIds.includes(idItem.id),
+																						)
+																						.slice(0, 8)
+																						.map((idItem, urlIdx) => {
 																						const href = String(idItem.value || '').trim();
 																						const preferredNorm = preferredWebsite
 																							? normalizeHref(preferredWebsite)
@@ -4339,7 +5352,10 @@ export default function ProfilesClient({
 																							? href
 																							: `https://${href}`;
 																						return (
-																							<li key={idItem.id}>
+																							<li
+																								key={idItem.id}
+																								className="flex flex-wrap items-center gap-1.5"
+																							>
 																								<a
 																									href={withProto}
 																									target="_blank"
@@ -4348,6 +5364,21 @@ export default function ProfilesClient({
 																								>
 																									{label} ↗
 																								</a>
+																								{profileEditing ? (
+																									<button
+																										type="button"
+																										onClick={() =>
+																											setPendingDeleteIdentIds((ids) =>
+																												ids.includes(idItem.id)
+																													? ids
+																													: [...ids, idItem.id],
+																											)
+																										}
+																										className="cursor-pointer rounded border border-[var(--app-border)] px-1 py-0 text-[10px] opacity-70 hover:opacity-100"
+																									>
+																										Remove
+																									</button>
+																								) : null}
 																							</li>
 																						);
 																					})}
@@ -4363,178 +5394,196 @@ export default function ProfilesClient({
 													{showLocations ? (
 														<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
 															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-																Locations ({detail.locations.length})
+																Locations (
+																{profileEditing
+																	? locationRowsDraft.filter((r) => !r.deleted).length
+																	: detail.locations.length}
+																)
 															</h3>
+															{profileEditing ? (
+																locationRowsDraft.filter((r) => !r.deleted).length ===
+																0 ? (
+																	<p className="m-0 mb-2 text-[11px] italic opacity-60">
+																		No locations yet.
+																	</p>
+																) : null
+															) : detail.locations.length === 0 ? (
+																<p className="m-0 mb-2 text-[11px] italic opacity-60">
+																	No locations yet.
+																</p>
+															) : null}
 															<ul className="m-0 mb-2 list-none space-y-2 p-0 text-[11px]">
-																{detail.locations.slice(0, 20).map((loc) => {
-																	const editing = editingLocationId === loc.id;
-																	return (
-																		<li
-																			key={loc.id}
-																			className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5"
-																		>
-																			{editing ? (
-																				<div className="space-y-1.5">
-																					<input
-																						value={editLocationRaw}
-																						onChange={(e) => setEditLocationRaw(e.target.value)}
-																						className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]"
-																						placeholder="Address…"
-																					/>
-																					<div className="flex flex-wrap items-center gap-1.5">
-																						<select
-																							value={editLocationRole}
+																{profileEditing
+																	? locationRowsDraft
+																			.filter((r) => !r.deleted)
+																			.slice(0, 20)
+																			.map((row) => (
+																				<li
+																					key={row.key}
+																					className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5"
+																				>
+																					<div className="space-y-1.5">
+																						<input
+																							value={row.raw}
 																							onChange={(e) =>
-																								setEditLocationRole(e.target.value as LocationRole)
+																								setLocationRowsDraft((rows) =>
+																									rows.map((r) =>
+																										r.key === row.key
+																											? { ...r, raw: e.target.value }
+																											: r,
+																									),
+																								)
 																							}
-																							className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]"
-																						>
-																							{LOCATION_ROLES.map((r) => (
-																								<option key={r} value={r}>
-																									{r.replace(/_/g, ' ')}
-																								</option>
-																							))}
-																						</select>
-																						<label className="flex items-center gap-1 text-[10px]">
-																							<input
-																								type="checkbox"
-																								checked={editLocationConfirmed}
+																							className="w-full rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]"
+																							placeholder="Address…"
+																						/>
+																						<div className="flex flex-wrap items-center gap-1.5">
+																							<select
+																								value={row.role}
 																								onChange={(e) =>
-																									setEditLocationConfirmed(e.target.checked)
+																									setLocationRowsDraft((rows) =>
+																										rows.map((r) =>
+																											r.key === row.key
+																												? {
+																														...r,
+																														role: e.target
+																															.value as LocationRole,
+																													}
+																												: r,
+																										),
+																									)
 																								}
-																							/>
-																							Confirmed
-																						</label>
-																						<button
-																							type="button"
-																							disabled={savingLocation || !editLocationRaw.trim()}
-																							onClick={() => void handleSaveLocationEdit()}
-																							className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 disabled:opacity-50 dark:text-emerald-200"
-																						>
-																							Save
-																						</button>
-																						<button
-																							type="button"
-																							disabled={savingLocation}
-																							onClick={() => setEditingLocationId(null)}
-																							className="cursor-pointer rounded border border-[var(--app-border)] px-2 py-0.5 text-[10px]"
-																						>
-																							Cancel
-																						</button>
-																					</div>
-																				</div>
-																			) : (
-																				<div className="flex flex-wrap items-start justify-between gap-2">
-																					<div className="min-w-0 flex-1">
-																						<div>
-																							📍 {loc.raw}{' '}
-																							<span className="text-[10px] opacity-60">
-																								({loc.role.replace(/_/g, ' ')})
-																							</span>
-																							{loc.confirmed ? (
-																								<span className="ml-1 rounded border border-emerald-500/40 bg-emerald-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-emerald-800 dark:text-emerald-200">
-																									confirmed
-																								</span>
-																							) : loc.role === 'residence' ? (
-																								<span
-																									className="ml-1 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-800 dark:text-amber-200"
-																									title="Residence is not shown as primary until confirmed"
-																								>
-																									unconfirmed
-																								</span>
-																							) : null}
+																								className="rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]"
+																							>
+																								{LOCATION_ROLES.map((r) => (
+																									<option key={r} value={r}>
+																										{r.replace(/_/g, ' ')}
+																									</option>
+																								))}
+																							</select>
+																							<label className="flex items-center gap-1 text-[10px]">
+																								<input
+																									type="checkbox"
+																									checked={row.confirmed}
+																									onChange={(e) =>
+																										setLocationRowsDraft((rows) =>
+																											rows.map((r) =>
+																												r.key === row.key
+																													? {
+																															...r,
+																															confirmed:
+																																e.target.checked,
+																														}
+																													: r,
+																											),
+																										)
+																									}
+																								/>
+																								Confirmed
+																							</label>
+																							<button
+																								type="button"
+																								onClick={() =>
+																									setLocationRowsDraft((rows) =>
+																										rows.map((r) =>
+																											r.key === row.key
+																												? { ...r, deleted: true }
+																												: r,
+																										),
+																									)
+																								}
+																								className="cursor-pointer rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200"
+																							>
+																								Delete
+																							</button>
 																						</div>
 																					</div>
-																					<div className="flex shrink-0 flex-wrap gap-1">
-																						<button
-																							type="button"
-																							disabled={savingLocation}
-																							onClick={() => beginEditLocation(loc)}
-																							className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[10px] font-semibold"
+																				</li>
+																			))
+																	: detail.locations.slice(0, 20).map((loc) => (
+																			<li
+																				key={loc.id}
+																				className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5"
+																			>
+																				<div>
+																					📍 {loc.raw}{' '}
+																					<span className="text-[10px] opacity-60">
+																						({loc.role.replace(/_/g, ' ')})
+																					</span>
+																					{loc.confirmed ? (
+																						<span className="ml-1 rounded border border-emerald-500/40 bg-emerald-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-emerald-800 dark:text-emerald-200">
+																							confirmed
+																						</span>
+																					) : loc.role === 'residence' ? (
+																						<span
+																							className="ml-1 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-800 dark:text-amber-200"
+																							title="Residence is not shown as primary until confirmed"
 																						>
-																							Edit
-																						</button>
-																						{loc.role === 'residence' && !loc.confirmed ? (
-																							<button
-																								type="button"
-																								disabled={savingLocation}
-																								onClick={() =>
-																									void handleUpdateLocation(loc.id, {
-																										confirmed: true,
-																									})
-																								}
-																								className="cursor-pointer rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200"
-																								title="Mark residence as strongly confirmed"
-																							>
-																								Confirm
-																							</button>
-																						) : null}
-																						{loc.confirmed ? (
-																							<button
-																								type="button"
-																								disabled={savingLocation}
-																								onClick={() =>
-																									void handleUpdateLocation(loc.id, {
-																										confirmed: false,
-																									})
-																								}
-																								className="cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px]"
-																							>
-																								Unconfirm
-																							</button>
-																						) : null}
-																						<button
-																							type="button"
-																							disabled={savingLocation}
-																							onClick={() => void handleDeleteLocation(loc.id)}
-																							className="cursor-pointer rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200"
-																						>
-																							Delete
-																						</button>
-																					</div>
+																							unconfirmed
+																						</span>
+																					) : null}
 																				</div>
-																			)}
-																		</li>
-																	);
-																})}
+																			</li>
+																		))}
 															</ul>
-															<div className="flex flex-wrap gap-1">
-																<input
-																	value={locationDraft}
-																	onChange={(e) => setLocationDraft(e.target.value)}
-																	placeholder="Add location (e.g. 123 Main St, Dallas, TX)…"
-																	className="min-w-[12rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
-																/>
-																<select
-																	value={locationRoleDraft}
-																	onChange={(e) =>
-																		setLocationRoleDraft(e.target.value as LocationRole)
-																	}
-																	className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-[11px]"
-																>
-																	{LOCATION_ROLES.map((r) => (
-																		<option key={r} value={r}>
-																			{r.replace(/_/g, ' ')}
-																		</option>
-																	))}
-																</select>
-																<label className="flex items-center gap-1 px-1 text-[10px]">
+															{profileEditing ? (
+																<div className="flex flex-wrap gap-1">
 																	<input
-																		type="checkbox"
-																		checked={locationConfirmDraft}
-																		onChange={(e) => setLocationConfirmDraft(e.target.checked)}
+																		value={locationDraft}
+																		onChange={(e) => setLocationDraft(e.target.value)}
+																		placeholder="Add location (e.g. 123 Main St, Dallas, TX)…"
+																		className="min-w-[12rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]"
 																	/>
-																	Confirmed
-																</label>
-																<button
-																	type="button"
-																	disabled={savingLocation || !locationDraft.trim()}
-																	onClick={() => void handleAddLocation()}
-																	className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-																>
-																	Add
-																</button>
-															</div>
+																	<select
+																		value={locationRoleDraft}
+																		onChange={(e) =>
+																			setLocationRoleDraft(
+																				e.target.value as LocationRole,
+																			)
+																		}
+																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-[11px]"
+																	>
+																		{LOCATION_ROLES.map((r) => (
+																			<option key={r} value={r}>
+																				{r.replace(/_/g, ' ')}
+																			</option>
+																		))}
+																	</select>
+																	<label className="flex items-center gap-1 px-1 text-[10px]">
+																		<input
+																			type="checkbox"
+																			checked={locationConfirmDraft}
+																			onChange={(e) =>
+																				setLocationConfirmDraft(e.target.checked)
+																			}
+																		/>
+																		Confirmed
+																	</label>
+																	<button
+																		type="button"
+																		disabled={!locationDraft.trim()}
+																		onClick={() => {
+																			if (!locationDraft.trim()) return;
+																			setLocationRowsDraft((rows) => [
+																				...rows,
+																				{
+																					key: `new-${crypto.randomUUID()}`,
+																					id: null,
+																					raw: locationDraft.trim(),
+																					role: locationRoleDraft,
+																					confirmed: locationConfirmDraft,
+																					deleted: false,
+																				},
+																			]);
+																			setLocationDraft('');
+																			setLocationConfirmDraft(false);
+																		}}
+																		className="cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+																	>
+																		Add
+																	</button>
+																</div>
+															) : null}
 														</div>
 													) : null}
 												</div>

@@ -255,6 +255,47 @@ def process_file(src: Path) -> dict:
         "",
     ]
     digest.write_text("\n".join(body))
+    # Auto Thai→English when OCR text is substantially Thai (replace body with EN).
+    translated = False
+    thai_chars = len(re.findall(r"[\u0E00-\u0E7F]", ocr_text or ""))
+    if (
+        os.environ.get("RD_OCR_TRANSLATE_THAI", "1").strip() not in ("0", "false", "no")
+        and thai_chars >= int(os.environ.get("RD_TRANSLATE_MIN_THAI", "20"))
+        and error is None
+        and ocr_text
+    ):
+        try:
+            import importlib.util
+
+            th_path = Path(__file__).resolve().parent / "research-drive-translate-thai.py"
+            spec = importlib.util.spec_from_file_location("rd_th_en", th_path)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                en = mod.translate_long(ocr_text)
+                th_model = getattr(mod, "TRANSLATE_MODEL", "qwen2.5:14b")
+                if en.strip():
+                    md = digest.read_text(errors="replace")
+                    md2 = re.sub(
+                        r"(## Extracted text\s*\n)(.*?)(\n---\s*\n)",
+                        lambda m: m.group(1) + en.strip() + "\n\n" + m.group(3),
+                        md,
+                        count=1,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    )
+                    if "**Translated:**" not in md2:
+                        md2 = md2.replace(
+                            "**OCR at:**",
+                            f"**Translated:** Thai→English via `{th_model}`  \n**OCR at:**",
+                            1,
+                        )
+                    digest.write_text(md2)
+                    translated = True
+                    ocr_text = en
+                    method = f"{method}+th-en"
+        except Exception as te:
+            log(f"thai translate skip {rel}: {te}")
+
     return {
         "rel": rel,
         "digest": str(digest.relative_to(DRIVE)),
@@ -262,6 +303,7 @@ def process_file(src: Path) -> dict:
         "chars": len(ocr_text or ""),
         "error": error,
         "ok": error is None and bool(ocr_text),
+        "translatedThai": translated,
     }
 
 
@@ -302,22 +344,49 @@ def write_overview(state: dict, files: list[Path]):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="Max new files this run (0=all)")
+    ap.add_argument(
+        "--prefix",
+        action="append",
+        default=[],
+        help="Only process paths under these prefixes (repeatable), e.g. --prefix Family --prefix Personal",
+    )
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
     force = args.force or FORCE
+    prefixes = [p.rstrip("/") + "/" for p in (args.prefix or []) if p.strip()]
 
     ensure_dirs()
     if not DRIVE.exists():
         raise SystemExit(f"missing {DRIVE}")
 
     files = list_source_files()
+    if prefixes:
+        files = [
+            p
+            for p in files
+            if any(
+                str(p.relative_to(DRIVE)) == pref[:-1]
+                or str(p.relative_to(DRIVE)).startswith(pref)
+                for pref in prefixes
+            )
+        ]
     state = load_state()
-    log(f"discovered={len(files)} model={OCR_MODEL} force={force}")
+    log(
+        f"discovered={len(files)} model={OCR_MODEL} force={force}"
+        + (f" prefixes={prefixes}" if prefixes else "")
+    )
 
     processed = 0
     for src in files:
         rel = str(src.relative_to(DRIVE))
-        st = src.stat()
+        if not src.exists():
+            log(f"skip missing {rel}")
+            continue
+        try:
+            st = src.stat()
+        except FileNotFoundError:
+            log(f"skip missing {rel}")
+            continue
         key = file_key(rel, st.st_mtime, st.st_size)
         prev = (state.get("files") or {}).get(rel)
         digest = digest_path_for(src)

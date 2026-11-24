@@ -2,16 +2,24 @@ import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
 import {
 	addAlias,
+	addIdentifier,
 	addLocation,
+	deleteAlias,
+	deleteIdentifier,
 	deleteLocation,
 	deleteProfile,
 	getProfileDetail,
+	replaceOtherNames,
+	touchProfilesForUserAction,
+	updateAlias,
 	updateLocation,
 	updateProfileFields,
 } from '@/lib/research/profiles/store';
 import {
 	LOCATION_ROLES,
 	PROFILE_TYPES,
+	type AliasKind,
+	type IdentifierScheme,
 	type LocationRole,
 	type ProfileStatus,
 	type ProfileType,
@@ -67,6 +75,53 @@ export async function PATCH(request: Request, context: Ctx) {
 
 		if (typeof body.addAlias === 'string' && body.addAlias.trim()) {
 			addAlias({ profileId: updated.id, alias: body.addAlias.trim(), sourceCorpus: 'manual' });
+		} else if (body.addAlias && typeof body.addAlias === 'object') {
+			const a = body.addAlias as Record<string, unknown>;
+			const alias = String(a.alias || '').trim();
+			const kindRaw = a.aliasKind != null ? String(a.aliasKind) : 'name';
+			const aliasKind = (
+				['name', 'other_name', 'former_name', 'acronym', 'slug'].includes(kindRaw)
+					? kindRaw
+					: 'name'
+			) as AliasKind;
+			if (alias) {
+				addAlias({
+					profileId: updated.id,
+					alias,
+					aliasKind,
+					sourceCorpus: 'manual',
+				});
+			}
+		}
+		if (body.updateAlias && typeof body.updateAlias === 'object') {
+			const a = body.updateAlias as Record<string, unknown>;
+			const aliasId = a.id != null ? String(a.id).trim() : '';
+			if (!aliasId) {
+				return NextResponse.json({ ok: false, error: 'updateAlias.id is required' }, { status: 400 });
+			}
+			const kindRaw = a.aliasKind != null ? String(a.aliasKind) : undefined;
+			const aliasKind =
+				kindRaw && ['name', 'other_name', 'former_name', 'acronym', 'slug'].includes(kindRaw)
+					? (kindRaw as AliasKind)
+					: undefined;
+			const ok = updateAlias({
+				id: aliasId,
+				profileId: updated.id,
+				alias: a.alias != null ? String(a.alias) : undefined,
+				aliasKind,
+			});
+			if (!ok) {
+				return NextResponse.json(
+					{ ok: false, error: 'Alias not found or conflicts with an existing name' },
+					{ status: 404 },
+				);
+			}
+		}
+		if (Array.isArray(body.replaceOtherNames)) {
+			replaceOtherNames({
+				profileId: updated.id,
+				names: body.replaceOtherNames.map((n) => String(n ?? '')),
+			});
 		}
 		if (body.addLocation && typeof body.addLocation === 'object') {
 			const loc = body.addLocation as Record<string, unknown>;
@@ -126,6 +181,93 @@ export async function PATCH(request: Request, context: Ctx) {
 			if (!ok) {
 				return NextResponse.json({ ok: false, error: 'Location not found' }, { status: 404 });
 			}
+		}
+		if (body.deleteAlias != null) {
+			const aliasId =
+				typeof body.deleteAlias === 'object' && body.deleteAlias !== null
+					? String((body.deleteAlias as Record<string, unknown>).id || '').trim()
+					: String(body.deleteAlias).trim();
+			if (!aliasId) {
+				return NextResponse.json({ ok: false, error: 'deleteAlias id is required' }, { status: 400 });
+			}
+			const ok = deleteAlias({ id: aliasId, profileId: updated.id });
+			if (!ok) {
+				return NextResponse.json({ ok: false, error: 'Alias not found' }, { status: 404 });
+			}
+		}
+		if (body.addIdentifier && typeof body.addIdentifier === 'object') {
+			const ident = body.addIdentifier as Record<string, unknown>;
+			const scheme = String(ident.scheme || '').trim() as IdentifierScheme;
+			const value = String(ident.value || '').trim();
+			const allowed: IdentifierScheme[] = [
+				'finra_crd',
+				'sec_cik',
+				'parent_sec_cik',
+				'ticker',
+				'irs_ein',
+				'cusip',
+				'ror',
+				'orcid',
+				'wikidata',
+				'usgs_event',
+				'spc_om',
+				'dossier_slug',
+				'okcr_instrument',
+				'source_id',
+				'url',
+			];
+			if (!value || !allowed.includes(scheme)) {
+				return NextResponse.json(
+					{ ok: false, error: 'addIdentifier requires a valid scheme and value' },
+					{ status: 400 },
+				);
+			}
+			addIdentifier({
+				profileId: updated.id,
+				scheme,
+				value,
+				sourceCorpus: 'manual',
+			});
+		}
+		if (body.deleteIdentifier != null) {
+			const identId =
+				typeof body.deleteIdentifier === 'object' && body.deleteIdentifier !== null
+					? String((body.deleteIdentifier as Record<string, unknown>).id || '').trim()
+					: String(body.deleteIdentifier).trim();
+			if (!identId) {
+				return NextResponse.json(
+					{ ok: false, error: 'deleteIdentifier id is required' },
+					{ status: 400 },
+				);
+			}
+			const ok = deleteIdentifier({ id: identId, profileId: updated.id });
+			if (!ok) {
+				return NextResponse.json({ ok: false, error: 'Identifier not found' }, { status: 404 });
+			}
+		}
+
+		const userTouch =
+			body.userTouch === true ||
+			body.userTouch === 1 ||
+			body.userTouch === '1' ||
+			body.userTouch === 'true';
+		const manualEdit =
+			userTouch ||
+			body.name != null ||
+			body.summary != null ||
+			body.startDate !== undefined ||
+			body.endDate !== undefined ||
+			body.addAlias != null ||
+			body.updateAlias != null ||
+			body.replaceOtherNames != null ||
+			body.deleteAlias != null ||
+			body.addLocation != null ||
+			body.updateLocation != null ||
+			body.deleteLocation != null ||
+			body.addIdentifier != null ||
+			body.deleteIdentifier != null;
+		if (manualEdit) {
+			touchProfilesForUserAction([updated.id]);
 		}
 
 		const detail = getProfileDetail(updated.id);

@@ -34,6 +34,11 @@ import {
 } from '@/lib/research/profiles/normalize';
 import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
 import {
+	isPlausibleStreetHq,
+	lookupOrgFreeEnrich,
+	looksLikeSecuritiesJunk,
+} from '@/lib/research/profiles/freeOrgEnrich';
+import {
 	addAlias,
 	addIdentifier,
 	addLocation,
@@ -57,6 +62,8 @@ export type EnrichProfileOptions = {
 	includeBrokercheck?: boolean;
 	includeKnowledge?: boolean;
 	includeBryanUcc?: boolean;
+	/** Free Wikidata + Nominatim + ProPublica address/date/status for org types. */
+	includeFreeOrgEnrich?: boolean;
 	kiwixBaseUrl?: string;
 };
 
@@ -2349,6 +2356,180 @@ function enrichFromBryanUcc(ctx: ProfileIdentityContext): EnrichSourceOutcome {
 	return { source: 'bryan_ucc', status: 'not_found', fieldsUpdated: [], countsAdded: counts };
 }
 
+const FREE_ORG_TYPES = new Set<ProfileType>([
+	'education',
+	'nonprofit',
+	'medical_hospital',
+	'government',
+]);
+
+/**
+ * Free Wikidata + Nominatim + ProPublica: fill missing street HQ and founding date
+ * for education / nonprofit / hospital / government profiles.
+ */
+async function enrichFromFreeOrgSources(
+	ctx: ProfileIdentityContext,
+): Promise<EnrichSourceOutcome> {
+	const counts = emptyCounts();
+	const fieldsUpdated: string[] = [];
+	if (!FREE_ORG_TYPES.has(ctx.profileType)) {
+		return {
+			source: 'free_org_enrich',
+			status: 'skipped',
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: 'Not an org type for free address/date enrich',
+		};
+	}
+	if (looksLikeSecuritiesJunk(ctx.name, ctx.profileType)) {
+		return {
+			source: 'free_org_enrich',
+			status: 'skipped',
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: 'Skipped securities-like government name',
+		};
+	}
+
+	const detail = getProfileDetail(ctx.profileId);
+	if (!detail) {
+		return {
+			source: 'free_org_enrich',
+			status: 'not_found',
+			fieldsUpdated: [],
+			countsAdded: counts,
+		};
+	}
+
+	const hasStreet = (detail.locations || []).some((l) => /\d/.test(String(l.raw || '')));
+	const hasStart = Boolean(detail.profile.startDate && String(detail.profile.startDate).trim());
+	if (hasStreet && hasStart) {
+		return {
+			source: 'free_org_enrich',
+			status: 'skipped',
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: 'Already has street HQ and start date',
+		};
+	}
+
+	const ein =
+		(detail.identifiers || []).find((id) => id.scheme === 'irs_ein')?.value || null;
+
+	try {
+		const hit = await lookupOrgFreeEnrich({
+			name: ctx.name,
+			profileType: ctx.profileType,
+			ein,
+			skipNominatim: hasStreet,
+			skipProPublica: ctx.profileType !== 'nonprofit',
+		});
+
+		if (!hit.address && !hit.startDate && !hit.endDate && !hit.wikidataQid && !hit.ein) {
+			return {
+				source: 'free_org_enrich',
+				status: 'not_found',
+				fieldsUpdated: [],
+				countsAdded: counts,
+			};
+		}
+
+		withProfilesTransaction((tx) => {
+			if (!hasStreet && hit.address && isPlausibleStreetHq(hit.address.raw)) {
+				const parts = parseAddressParts(hit.address.raw);
+				addLocation(
+					{
+						profileId: ctx.profileId,
+						raw: hit.address.raw,
+						city: hit.address.city ?? parts.city,
+						state: hit.address.state ?? parts.state,
+						country: hit.address.country ?? parts.country,
+						lat: hit.address.lat ?? null,
+						lon: hit.address.lon ?? null,
+						role: 'hq',
+						sourceCorpus: `free-${hit.address.source}`,
+					},
+					tx,
+				);
+				counts.locations += 1;
+				fieldsUpdated.push('locations');
+			}
+
+			const patch: {
+				startDate?: string | null;
+				endDate?: string | null;
+				status?: 'active' | 'archived';
+			} = {};
+			if (!hasStart && hit.startDate) {
+				patch.startDate = hit.startDate;
+				fieldsUpdated.push('startDate');
+			}
+			if (hit.endDate && !detail.profile.endDate) {
+				patch.endDate = hit.endDate;
+				fieldsUpdated.push('endDate');
+			}
+			if (
+				hit.status === 'archived' &&
+				detail.profile.status !== 'pinned' &&
+				detail.profile.status !== 'archived'
+			) {
+				patch.status = 'archived';
+				fieldsUpdated.push('status');
+			}
+			if (Object.keys(patch).length) {
+				updateProfileFields(ctx.profileId, patch, tx);
+			}
+
+			if (hit.wikidataQid) {
+				addIdentifier(
+					{
+						profileId: ctx.profileId,
+						scheme: 'wikidata',
+						value: hit.wikidataQid,
+						sourceCorpus: 'free-wikidata',
+					},
+					tx,
+				);
+				counts.identifiers += 1;
+				fieldsUpdated.push('identifiers');
+			}
+			if (hit.ein && ctx.profileType === 'nonprofit') {
+				addIdentifier(
+					{
+						profileId: ctx.profileId,
+						scheme: 'irs_ein',
+						value: hit.ein,
+						sourceCorpus: 'free-propublica',
+					},
+					tx,
+				);
+				counts.identifiers += 1;
+				fieldsUpdated.push('identifiers');
+			}
+		});
+
+		return {
+			source: 'free_org_enrich',
+			status: 'merged',
+			candidateTitle: ctx.name,
+			candidateUrl: hit.wikidataQid
+				? `https://www.wikidata.org/wiki/${hit.wikidataQid}`
+				: hit.address?.sourceUrl || null,
+			fieldsUpdated: [...new Set(fieldsUpdated)],
+			countsAdded: counts,
+			note: hit.evidence.map((e) => `${e.field}:${e.source}`).join(', '),
+		};
+	} catch (e) {
+		return {
+			source: 'free_org_enrich',
+			status: 'error',
+			fieldsUpdated: [],
+			countsAdded: counts,
+			note: e instanceof Error ? e.message : String(e),
+		};
+	}
+}
+
 /**
  * Research and enrich a single captured entity profile across local offline Wikipedia,
  * FINRA BrokerCheck (if CRD present), local knowledge.sqlite (county deeds / Research Drive),
@@ -2412,14 +2593,22 @@ export async function enrichProfile(
 	const detailAfterWiki = getProfileDetail(detail.profile.id) || detailAfterBc;
 	const ctxAfterWiki = buildProfileIdentityContext(detailAfterWiki);
 
+	// Step 2b: Free Wikidata / Nominatim / ProPublica for org street HQ + founding date
+	if (opts.includeFreeOrgEnrich !== false) {
+		outcomes.push(await enrichFromFreeOrgSources(ctxAfterWiki));
+	}
+
+	const detailAfterFree = getProfileDetail(detail.profile.id) || detailAfterWiki;
+	const ctxAfterFree = buildProfileIdentityContext(detailAfterFree);
+
 	// Step 3: Local knowledge.sqlite (County Deeds + Research Drive)
 	if (opts.includeKnowledge !== false) {
-		outcomes.push(enrichFromKnowledgeSqlite(ctxAfterWiki));
+		outcomes.push(enrichFromKnowledgeSqlite(ctxAfterFree));
 	}
 
 	// Step 4: Bryan County UCC filings
 	if (opts.includeBryanUcc !== false) {
-		outcomes.push(enrichFromBryanUcc(ctxAfterWiki));
+		outcomes.push(enrichFromBryanUcc(ctxAfterFree));
 	}
 
 	const totalsAdded = emptyCounts();

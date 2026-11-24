@@ -321,6 +321,29 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 	return rowToProfile(inserted);
 }
 
+/** Allocate `type:slug` unique against profiles.slug, allowing the current row to keep its slug. */
+function allocateUniqueProfileSlug(
+	db: DatabaseSync,
+	profileType: ProfileType,
+	nameOrSlug: string,
+	excludeProfileId?: string,
+): string {
+	const base = makeProfileSlug(profileType, nameOrSlug);
+	let candidate = base;
+	for (let n = 2; n < 80; n += 1) {
+		const row = db.prepare('SELECT id FROM profiles WHERE slug = ? LIMIT 1').get(candidate) as
+			| { id?: string }
+			| undefined;
+		if (!row?.id || (excludeProfileId && String(row.id) === excludeProfileId)) {
+			return candidate;
+		}
+		const bare = base.includes(':') ? base.slice(base.indexOf(':') + 1) : base;
+		candidate = `${profileType}:${bare}-${n}`;
+	}
+	const bare = base.includes(':') ? base.slice(base.indexOf(':') + 1) : base;
+	return `${profileType}:${bare}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
 export function updateProfileFields(
 	idOrSlug: string,
 	patch: {
@@ -363,10 +386,17 @@ export function updateProfileFields(
 	}
 	const now = new Date().toISOString();
 
+	const nameOrTypeChanged =
+		nextName !== current.name || nextType !== current.profileType;
+	let nextSlug = current.slug;
+	if (nameOrTypeChanged) {
+		nextSlug = allocateUniqueProfileSlug(db, nextType, nextName, current.id);
+	}
+
 	db.prepare(
 		`UPDATE profiles
      SET name = ?, normalized_name = ?, profile_type = ?, status = ?,
-         summary = ?, start_date = ?, end_date = ?, metadata_json = ?, updated_at = ?
+         summary = ?, start_date = ?, end_date = ?, metadata_json = ?, slug = ?, updated_at = ?
      WHERE id = ?`,
 	).run(
 		nextName,
@@ -377,9 +407,40 @@ export function updateProfileFields(
 		nextStart,
 		nextEnd,
 		JSON.stringify(nextMeta),
+		nextSlug,
 		now,
 		current.id,
 	);
+
+	// Keep old slug as alias so /profiles/{type}/{old-slug} still resolves.
+	if (nextSlug !== current.slug) {
+		addAlias(
+			{
+				profileId: current.id,
+				alias: current.slug,
+				aliasKind: 'slug',
+				confidence: 1,
+				sourceCorpus: 'manual',
+			},
+			db,
+		);
+		// Also keep the old bare slug part as a name alias when it differs from the new name.
+		const oldBare = current.slug.includes(':')
+			? current.slug.slice(current.slug.indexOf(':') + 1).replace(/-/g, ' ')
+			: current.slug;
+		if (oldBare && normalizeText(oldBare) !== normalizeText(nextName)) {
+			addAlias(
+				{
+					profileId: current.id,
+					alias: current.name,
+					aliasKind: 'former_name',
+					confidence: 0.95,
+					sourceCorpus: 'manual',
+				},
+				db,
+			);
+		}
+	}
 
 	return getProfile(current.id, db);
 }
@@ -399,7 +460,21 @@ export function getProfile(idOrSlug: string, dbOverride?: DatabaseSync): Profile
 	const row = db
 		.prepare('SELECT * FROM profiles WHERE id = ? OR slug = ? LIMIT 1')
 		.get(key, key) as Record<string, unknown> | undefined;
-	return row ? rowToProfile(row) : null;
+	if (row) return rowToProfile(row);
+
+	// Former slugs kept as alias_kind='slug' after rename (bookmarks / old URLs).
+	const viaSlugAlias = db
+		.prepare(
+			`SELECT p.*
+       FROM profile_aliases a
+       JOIN profiles p ON p.id = a.profile_id
+       WHERE a.alias_kind = 'slug' AND (a.alias = ? OR a.normalized_alias = ?)
+       LIMIT 1`,
+		)
+		.get(key, normalizeText(key)) as Record<string, unknown> | undefined;
+	if (viaSlugAlias) return rowToProfile(viaSlugAlias);
+
+	return null;
 }
 
 export function addAlias(
@@ -451,6 +526,113 @@ export function addIdentifier(
        id, profile_id, scheme, value, normalized_value, source_corpus
      ) VALUES (?, ?, ?, ?, ?, ?)`,
 	).run(id, input.profileId, input.scheme, clean, norm, input.sourceCorpus || null);
+}
+
+export function deleteAlias(
+	input: { id: string; profileId: string },
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride ?? getProfilesDb();
+	const id = String(input.id || '').trim();
+	const profileId = String(input.profileId || '').trim();
+	if (!id || !profileId) return false;
+	const info = db
+		.prepare('DELETE FROM profile_aliases WHERE id = ? AND profile_id = ?')
+		.run(id, profileId);
+	return Number(info.changes || 0) > 0;
+}
+
+export function updateAlias(
+	input: {
+		id: string;
+		profileId: string;
+		alias?: string;
+		aliasKind?: AliasKind;
+	},
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride ?? getProfilesDb();
+	const id = String(input.id || '').trim();
+	const profileId = String(input.profileId || '').trim();
+	if (!id || !profileId) return false;
+	const existing = db
+		.prepare('SELECT * FROM profile_aliases WHERE id = ? AND profile_id = ?')
+		.get(id, profileId) as Record<string, unknown> | undefined;
+	if (!existing) return false;
+
+	const nextAlias =
+		input.alias != null ? String(input.alias).trim() : String(existing.alias || '');
+	const nextNorm = normalizeText(nextAlias);
+	if (!nextAlias || nextNorm.length < 2) return false;
+	const nextKind = (input.aliasKind || String(existing.alias_kind || 'name')) as AliasKind;
+
+	try {
+		db.prepare(
+			`UPDATE profile_aliases
+       SET alias = ?, normalized_alias = ?, alias_kind = ?
+       WHERE id = ? AND profile_id = ?`,
+		).run(nextAlias, nextNorm, nextKind, id, profileId);
+		return true;
+	} catch {
+		// Unique (profile_id, normalized_alias, alias_kind) collision
+		return false;
+	}
+}
+
+/**
+ * Replace all `other_name` aliases for a profile with the given list.
+ * Used by the under-title “other names” editor. Leaves former_name / slug / etc.
+ */
+export function replaceOtherNames(
+	input: { profileId: string; names: string[] },
+	dbOverride?: DatabaseSync,
+): void {
+	const db = dbOverride ?? getProfilesDb();
+	const profileId = String(input.profileId || '').trim();
+	if (!profileId) return;
+	const profile = getProfile(profileId, db);
+	const canonical = normalizeText(profile?.name || '');
+
+	db.prepare(
+		`DELETE FROM profile_aliases WHERE profile_id = ? AND alias_kind = 'other_name'`,
+	).run(profileId);
+
+	const seen = new Set<string>();
+	for (const raw of input.names) {
+		const clean = String(raw || '')
+			.replace(/[\[\]]+/g, '')
+			.replace(/\s+/g, ' ')
+			.trim();
+		const norm = normalizeText(clean);
+		if (!clean || norm.length < 2) continue;
+		if (canonical && norm === canonical) continue;
+		if (seen.has(norm)) continue;
+		seen.add(norm);
+		addAlias(
+			{
+				profileId,
+				alias: clean,
+				aliasKind: 'other_name',
+				confidence: 1,
+				sourceCorpus: 'manual',
+			},
+			db,
+		);
+	}
+}
+
+export function deleteIdentifier(
+	input: { id: string; profileId: string },
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride ?? getProfilesDb();
+	const id = String(input.id || '').trim();
+	const profileId = String(input.profileId || '').trim();
+	if (!id || !profileId) return false;
+	const info = db
+		.prepare('DELETE FROM profile_identifiers WHERE id = ? AND profile_id = ?')
+		.run(id, profileId);
+	return Number(info.changes || 0) > 0;
 }
 
 export function addLocation(
@@ -955,11 +1137,13 @@ export function upsertAlignmentCandidate(
 }
 
 /** Mark profile(s) as user-touched so left-panel browse floats them above ingest churn. */
-function touchProfilesForUserAction(
+/** Bump metadata.userTouchedAt so the profile floats to the top of the left list. */
+export function touchProfilesForUserAction(
 	profileIds: Array<string | null | undefined>,
-	db: DatabaseSync,
+	db?: DatabaseSync,
 	atIso?: string,
 ): void {
+	db = db || getProfilesDb();
 	const now = atIso || new Date().toISOString();
 	const ids = [...new Set(profileIds.map((id) => String(id || '').trim()).filter(Boolean))];
 	if (!ids.length) return;
@@ -1176,7 +1360,7 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		.get(...params) as { c?: number } | undefined;
 	const total = Number(totalRow?.c || 0);
 
-	// Left-list browse: user Accept/Merge touches (`metadata.userTouchedAt`) float above
+	// Left-list browse: user Accept/Merge/Apply-edit touches (`metadata.userTouchedAt`) float above
 	// ingest churn (`updated_at` from FINRA sync). Then newest-changed, then name.
 	// Text search: rank name/alias matches above FTS summary hits, then the same recency keys.
 	const orderParams: Array<string | number> = [];
@@ -1189,6 +1373,8 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
            datetime(p.updated_at) DESC,
            p.name ASC`;
 	if (q) {
+		// Closest name matches first (exact → prefix → contains). Prefer primary name over
+		// alias; among prefix/contains hits, shorter names rank closer. Recency is secondary.
 		const normQ = normalizeText(q);
 		const like = `%${normQ}%`;
 		const prefix = `${normQ}%`;
@@ -1209,10 +1395,24 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
                WHERE pa.profile_id = p.id AND pa.normalized_alias LIKE ?
              ) THEN 5
              WHEN lower(p.slug) LIKE ? THEN 6
-             ELSE 7
+             WHEN EXISTS (
+               SELECT 1 FROM profile_identifiers pi
+               WHERE pi.profile_id = p.id AND pi.normalized_value LIKE ?
+             ) THEN 7
+             ELSE 8
            END ASC,
-           ${updatedThenName}`;
-		orderParams.push(normQ, normQ, prefix, prefix, like, like, like);
+           length(p.normalized_name) ASC,
+           p.name ASC`;
+		orderParams.push(
+			normQ,
+			normQ,
+			prefix,
+			prefix,
+			like,
+			like,
+			like,
+			`%${q.toLowerCase().replace(/\s+/g, '')}%`,
+		);
 	} else {
 		orderSql = updatedThenName;
 	}
@@ -2145,6 +2345,17 @@ export function addPersonEmployment(input: {
 	return { linkId, orgProfile };
 }
 
+/** Major firm/person identity schemes — shared value required to auto-merge distinct cards. */
+export const MAJOR_IDENTITY_SCHEMES = [
+	'finra_crd',
+	'sec_cik',
+	'ticker',
+	'irs_ein',
+	'cusip',
+] as const;
+
+export type MajorIdentityScheme = (typeof MAJOR_IDENTITY_SCHEMES)[number];
+
 function countOfficialNameIds(profileId: string, db: DatabaseSync): number {
 	const row = db
 		.prepare(
@@ -2154,6 +2365,79 @@ function countOfficialNameIds(profileId: string, db: DatabaseSync): number {
 		)
 		.get(profileId) as { n?: number } | undefined;
 	return Number(row?.n || 0);
+}
+
+/** Map of scheme → distinct identifier values for a profile. */
+export function getMajorIdentityMap(
+	profileId: string,
+	dbOverride?: DatabaseSync,
+): Map<string, Set<string>> {
+	const db = dbOverride || getProfilesDb();
+	const out = new Map<string, Set<string>>();
+	const rows = db
+		.prepare(
+			`SELECT lower(scheme) AS scheme, value
+       FROM profile_identifiers
+       WHERE profile_id = ?
+         AND lower(scheme) IN ('finra_crd','sec_cik','ticker','irs_ein','cusip')`,
+		)
+		.all(profileId) as Array<{ scheme?: string; value?: string }>;
+	for (const r of rows) {
+		const scheme = String(r.scheme || '').trim();
+		const value = String(r.value || '').trim().toLowerCase();
+		if (!scheme || !value) continue;
+		const set = out.get(scheme) || new Set<string>();
+		set.add(value);
+		out.set(scheme, set);
+	}
+	return out;
+}
+
+/** True when both profiles share at least one major-ID value on the same scheme. */
+export function profilesShareMajorIdentity(
+	aId: string,
+	bId: string,
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride || getProfilesDb();
+	const a = getMajorIdentityMap(aId, db);
+	const b = getMajorIdentityMap(bId, db);
+	for (const [scheme, vals] of a) {
+		const other = b.get(scheme);
+		if (!other) continue;
+		for (const v of vals) {
+			if (other.has(v)) return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * True when both sides carry major IDs on the same scheme with no overlapping value
+ * (e.g. two different FINRA CRDs / CIKs) — must stay separate profiles.
+ */
+export function profilesHaveConflictingMajorIds(
+	aId: string,
+	bId: string,
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride || getProfilesDb();
+	const a = getMajorIdentityMap(aId, db);
+	const b = getMajorIdentityMap(bId, db);
+	for (const scheme of MAJOR_IDENTITY_SCHEMES) {
+		const av = a.get(scheme);
+		const bv = b.get(scheme);
+		if (!av?.size || !bv?.size) continue;
+		let shared = false;
+		for (const v of av) {
+			if (bv.has(v)) {
+				shared = true;
+				break;
+			}
+		}
+		if (!shared) return true;
+	}
+	return false;
 }
 
 /**
@@ -2202,6 +2486,12 @@ export function mergeProfiles(
 	let keep = getProfile(keepIdOrSlug, db);
 	let merge = getProfile(mergeIdOrSlug, db);
 	if (!keep || !merge || keep.id === merge.id) return null;
+
+	// Never collapse two entities that each have a distinct major ID (CRD/CIK/ticker/EIN/CUSIP).
+	// One profile per ID — same/similar names alone are not enough.
+	if (profilesHaveConflictingMajorIds(keep.id, merge.id, db)) {
+		return null;
+	}
 
 	// Swap keep/merge only when the merge target has more official IDs.
 	// Display-name length is applied below via pickMergeCanonicalName — do not swap

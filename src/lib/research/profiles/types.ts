@@ -177,7 +177,7 @@ export type IdentityEvaluation = {
 };
 
 export type EnrichSourceOutcome = {
-	source: 'wikipedia_local' | 'brokercheck' | 'knowledge_sqlite' | 'bryan_ucc';
+	source: 'wikipedia_local' | 'brokercheck' | 'knowledge_sqlite' | 'bryan_ucc' | 'free_org_enrich';
 	status: 'merged' | 'name_only_note' | 'skipped' | 'not_found' | 'error';
 	candidateTitle?: string;
 	candidateUrl?: string | null;

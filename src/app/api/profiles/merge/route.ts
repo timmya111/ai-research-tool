@@ -30,8 +30,12 @@ export async function POST(request: Request) {
 		const merged = mergeProfiles(keepId, mergeId);
 		if (!merged) {
 			return NextResponse.json(
-				{ ok: false, error: 'One or both profiles were not found' },
-				{ status: 404 },
+				{
+					ok: false,
+					error:
+						'Merge blocked: profiles not found, or they have conflicting major IDs (CRD/CIK/ticker/EIN/CUSIP). Each ID must stay on its own profile.',
+				},
+				{ status: 409 },
 			);
 		}
 		const detail = getProfileDetail(merged.kept.id);

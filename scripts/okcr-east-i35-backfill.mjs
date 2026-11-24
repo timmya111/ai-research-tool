@@ -104,6 +104,44 @@ async function main() {
 			await runRange(county, range);
 		}
 		log(`=== COUNTY COMPLETE ${county.site} ===`);
+		// Exact Grantor/Grantee → profile name match after each county finishes downloading.
+		// Detached: do not block the next county on profiles.sqlite locks (CRD backfill, etc.).
+		try {
+			const { spawn } = await import('node:child_process');
+			const projectHint = String(county.name || county.label || county.site || '').trim();
+			const args = [
+				path.join(ROOT, 'scripts', 'associate-deeds-to-profiles.mjs'),
+				...(projectHint ? ['--project', projectHint] : []),
+				'--limit',
+				'8000',
+			];
+			const child = spawn(process.execPath, args, {
+				cwd: ROOT,
+				env: process.env,
+				detached: true,
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+			let out = '';
+			let err = '';
+			child.stdout?.on('data', (b) => {
+				out += String(b);
+			});
+			child.stderr?.on('data', (b) => {
+				err += String(b);
+			});
+			child.on('close', (code) => {
+				if (out.trim()) log(`[deed-associate] ${out.trim().slice(0, 500)}`);
+				if (code !== 0) {
+					log(
+						`[deed-associate] non-zero exit ${code}: ${err.trim().slice(0, 300) || '(no stderr)'}`,
+					);
+				}
+			});
+			child.unref();
+			log(`[deed-associate] launched pid=${child.pid} project=${projectHint || '*'}`);
+		} catch (e) {
+			log(`[deed-associate] skipped: ${e instanceof Error ? e.message : String(e)}`);
+		}
 	}
 	log('orchestrator finished all counties and ranges');
 }

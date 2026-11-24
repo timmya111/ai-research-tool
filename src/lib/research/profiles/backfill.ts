@@ -16,7 +16,9 @@ import {
 	addAlias,
 	addIdentifier,
 	addLocation,
+	getMajorIdentityMap,
 	mergeProfiles,
+	profilesShareMajorIdentity,
 	upsertProfile,
 	upsertProfileLink,
 	upsertSourceRecord,
@@ -2215,6 +2217,15 @@ function deduplicateProfiles(tx: DatabaseSync): BackfillCorpusStats {
 
 		const keep = group[0];
 		for (const dup of group.slice(1)) {
+			// One profile per major ID: only merge when they share CRD/CIK/ticker/EIN/CUSIP,
+			// or when neither side has any major ID (thin identical name cards).
+			const keepIds = getMajorIdentityMap(keep.id, tx);
+			const dupIds = getMajorIdentityMap(dup.id, tx);
+			const keepHas = [...keepIds.values()].some((s) => s.size > 0);
+			const dupHas = [...dupIds.values()].some((s) => s.size > 0);
+			if (keepHas || dupHas) {
+				if (!profilesShareMajorIdentity(keep.id, dup.id, tx)) continue;
+			}
 			const res = mergeProfiles(keep.id, dup.id, tx);
 			if (res) mergedCount += 1;
 		}
@@ -2267,6 +2278,13 @@ function deduplicateProfiles(tx: DatabaseSync): BackfillCorpusStats {
 			const baseKeep = keep.normalized_name.replace(SUFFIX_TAIL_RE, '').trim();
 			const baseDup = dup.normalized_name.replace(SUFFIX_TAIL_RE, '').trim();
 			if (baseKeep !== baseDup) continue;
+			const keepIds = getMajorIdentityMap(keep.id, tx);
+			const dupIds = getMajorIdentityMap(dup.id, tx);
+			const keepHas = [...keepIds.values()].some((s) => s.size > 0);
+			const dupHas = [...dupIds.values()].some((s) => s.size > 0);
+			if (keepHas || dupHas) {
+				if (!profilesShareMajorIdentity(keep.id, dup.id, tx)) continue;
+			}
 			const res = mergeProfiles(keep.id, dup.id, tx);
 			if (res) mergedCount += 1;
 		}
