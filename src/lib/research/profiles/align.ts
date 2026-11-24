@@ -31,6 +31,7 @@ import {
 import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
 import {
 	getProfileDetail,
+	mergeProfiles,
 	rowToAlignment,
 	upsertAlignmentCandidate,
 	upsertSourceRecord,
@@ -60,6 +61,8 @@ export type AlignmentPassReport = {
 	cityColocation: number;
 	blockColocation: number;
 	buildingColocation: number;
+	/** Proposed geo colo auto-dismissed: both sides have FINRA CRDs with no overlap. */
+	disjointCrdColocationDismissed: number;
 	angleComparison: number;
 	countyFilingMatch: number;
 	knowledgeStoreMatch: number;
@@ -175,9 +178,15 @@ function aliasRawTokens(normKey: string): string[] {
 		.filter((t) => t.length >= 2);
 }
 
-/** FINRA person corpora that frequently collide with public-figure cards on common names. */
+/**
+ * Local ingest tags for FINRA BrokerCheck / visualizer API data.
+ * Display as "FINRA API"; identity is CRD from
+ * https://finra-sec-data-visualizer-canvas.vercel.app/dashboard?disable_analytics=1
+ * (merged/firm|individual) — never treat the canvas itself as a merge source.
+ */
 const FINRA_PERSON_CORPORA = new Set([
 	'finra-visualizer',
+	'finra-api',
 	'finra-brokercheck',
 	'finra-rosters',
 ]);
@@ -279,6 +288,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		cityColocation: 0,
 		blockColocation: 0,
 		buildingColocation: 0,
+		disjointCrdColocationDismissed: 0,
 		angleComparison: 0,
 		countyFilingMatch: 0,
 		knowledgeStoreMatch: 0,
@@ -294,7 +304,10 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 	// 1. Shared Identifiers (exact CRD / CIK / Ticker / EIN / URL across different profiles)
 	// parent_sec_cik / url are relational or locators, not same-entity identity keys
 	// finra_crd is a shared numeric namespace for Firm CRDs and Individual CRDs — never treat
-	// person↔firm finra_crd collisions as same-entity (e.g. firm 288811 ≠ individual 288811).
+	// person↔org finra_crd collisions as same-entity (e.g. firm 288811 ≠ individual 288811).
+	// Same-kind matches are mergeable: firm↔firm (incl. mistyped education/gov org cards)
+	// or person↔person. Org↔org same Firm CRD → Merge into firm:; person↔person same
+	// Individual CRD → Merge. Verify kind via visualizer merged/firm vs merged/individual.
 	const sharedIdentRows = db
 		.prepare(
 			`SELECT a.profile_id AS p1, b.profile_id AS p2, a.scheme, a.value,
@@ -309,8 +322,8 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
          AND NOT (
            a.scheme = 'finra_crd'
            AND (
-             (p1.profile_type = 'person' AND p2.profile_type = 'firm')
-             OR (p1.profile_type = 'firm' AND p2.profile_type = 'person')
+             (p1.profile_type = 'person' AND p2.profile_type != 'person')
+             OR (p2.profile_type = 'person' AND p1.profile_type != 'person')
            )
          )
        LIMIT 300`,
@@ -399,8 +412,14 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 	}
 	/** Distinct FINRA CRD count per person — used to auto-confirm FINRA↔FINRA CSM. */
 	const personCrdCountById = new Map<string, number>();
-	/** Firm FINRA CRD values (first/primary) — skip alias merges across different CRDs. */
-	const firmCrdById = new Map<string, string>();
+	/**
+	 * FINRA CRD sets per profile (API-backed ingest).
+	 * Alias merges must not join profiles with disjoint CRD sets — those are distinct
+	 * BrokerCheck registrants even when a shared short alias overlaps
+	 * (e.g. "hudson securities" vs "hudson partners securities").
+	 * Applies to firm and mis-typed education/government cards that still carry finra_crd.
+	 */
+	const crdsById = new Map<string, Set<string>>();
 	for (const row of db
 		.prepare(
 			`SELECT profile_id AS pid, COUNT(DISTINCT value) AS n
@@ -415,12 +434,15 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		.prepare(
 			`SELECT pi.profile_id AS pid, pi.value AS crd
        FROM profile_identifiers pi
-       JOIN profiles p ON p.id = pi.profile_id
-       WHERE pi.scheme = 'finra_crd' AND p.profile_type = 'firm'`,
+       WHERE pi.scheme = 'finra_crd'`,
 		)
 		.all() as Array<Record<string, unknown>>) {
 		const pid = String(row.pid);
-		if (!firmCrdById.has(pid)) firmCrdById.set(pid, String(row.crd));
+		const crd = String(row.crd || '').trim();
+		if (!crd) continue;
+		const set = crdsById.get(pid) || new Set<string>();
+		set.add(crd);
+		crdsById.set(pid, set);
 	}
 
 	// 4. Shared Affiliations across DIFFERENT corpora
@@ -503,6 +525,14 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			const p2 = String(r.p2);
 			const scheme = String(r.scheme);
 			const value = String(r.value);
+			const evCorpus = (c: string) =>
+				scheme === 'finra_crd' || isFinraPersonCorpus(String(c || ''))
+					? 'finra-api'
+					: String(c || 'profiles');
+			const finraUrl =
+				scheme === 'finra_crd'
+					? `https://finra-sec-data-visualizer-canvas.vercel.app/dashboard/firm/${encodeURIComponent(value)}?disable_analytics=1`
+					: null;
 			upsertAlignmentCandidate(
 				{
 					dedupeKey: sha256Key(['shared_identifier', p1, p2, scheme, value]),
@@ -513,8 +543,16 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					cautionTier: 'stronger_indicator',
 					rationale: `Exact shared identifier ${scheme}=${value} between "${String(r.n1)}" and "${String(r.n2)}".`,
 					evidence: [
-						{ corpus: String(r.c1 || 'profiles'), label: `${String(r.n1)} (${scheme}: ${value})` },
-						{ corpus: String(r.c2 || 'profiles'), label: `${String(r.n2)} (${scheme}: ${value})` },
+						{
+							corpus: evCorpus(String(r.c1 || '')),
+							label: `${String(r.n1)} (${scheme}: ${value})`,
+							url: finraUrl,
+						},
+						{
+							corpus: evCorpus(String(r.c2 || '')),
+							label: `${String(r.n2)} (${scheme}: ${value})`,
+							url: finraUrl,
+						},
 					],
 				},
 				tx,
@@ -555,15 +593,28 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					// Person≠firm / person≠gov / historic_event≠firm alias collisions
 					if (isCrossTypeAliasNoise(left.profileType, right.profileType)) continue;
 
-					// Firm↔firm with different FINRA CRDs are distinct registrants unless
-					// names collapse to the same stripped legal form (Inc vs blank, Ltd vs Co Ltd).
-					if (left.profileType === 'firm' && right.profileType === 'firm') {
-						const crdL = firmCrdById.get(left.profileId);
-						const crdR = firmCrdById.get(right.profileId);
-						if (crdL && crdR && crdL !== crdR) {
-							const strippedL = stripLegalSuffixes(normalizeText(left.name));
-							const strippedR = stripLegalSuffixes(normalizeText(right.name));
-							if (strippedL !== strippedR) continue;
+					// FINRA identity is CRD from the visualizer merged API / dashboard,
+					// not the local `finra-visualizer` corpus label or short alias overlap.
+					{
+						const crdsL = crdsById.get(left.profileId);
+						const crdsR = crdsById.get(right.profileId);
+						if (crdsL?.size && crdsR?.size) {
+							let sharedCrd = false;
+							for (const c of crdsL) {
+								if (crdsR.has(c)) {
+									sharedCrd = true;
+									break;
+								}
+							}
+							// Disjoint CRD sets → distinct registrants (never alias-merge).
+							if (!sharedCrd) continue;
+						} else if (
+							// Both FINRA-ingested without a usable shared CRD: do not emit
+							// name-only alias noise from the ingest corpus alone.
+							isFinraPersonCorpus(left.corpus) &&
+							isFinraPersonCorpus(right.corpus)
+						) {
+							continue;
 						}
 					}
 
@@ -641,7 +692,25 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					}
 
 					aliasPairSeen.add(pairKey);
+
+					// Exact duplicate cards (same type + identical display name) — e.g. repeated
+					// authority-timelines lines. Auto-merge; do not queue for triage.
+					const leftNameNorm = normalizeText(left.name);
+					const rightNameNorm = normalizeText(right.name);
+					if (
+						sameType &&
+						leftNameNorm &&
+						leftNameNorm === rightNameNorm
+					) {
+						mergeProfiles(left.profileId, right.profileId, tx);
+						counts.sameEntityAlias += 1;
+						aliasCount += 1;
+						continue;
+					}
+
 					const score = (sameType ? 0.78 : 0.62) + (crossCorpus ? 0.1 : 0);
+					const evidenceCorpus = (c: string) =>
+						isFinraPersonCorpus(c) ? 'finra-api' : c;
 					upsertAlignmentCandidate(
 						{
 							dedupeKey: sha256Key(['same_entity_alias', left.profileId, right.profileId]),
@@ -650,10 +719,16 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 							rightProfileId: right.profileId,
 							score,
 							cautionTier: score >= 0.82 ? 'closer_look' : 'observation',
-							rationale: `Shared normalized name/alias "${normKey}" across "${left.name}" (${left.profileType}, ${left.corpus}) and "${right.name}" (${right.profileType}, ${right.corpus}).`,
+							rationale: `Shared normalized name/alias "${normKey}" across "${left.name}" (${left.profileType}, ${evidenceCorpus(left.corpus)}) and "${right.name}" (${right.profileType}, ${evidenceCorpus(right.corpus)}).`,
 							evidence: [
-								{ corpus: left.corpus, label: `${left.name} [${left.profileType}]` },
-								{ corpus: right.corpus, label: `${right.name} [${right.profileType}]` },
+								{
+									corpus: evidenceCorpus(left.corpus),
+									label: `${left.name} [${left.profileType}]`,
+								},
+								{
+									corpus: evidenceCorpus(right.corpus),
+									label: `${right.name} [${right.profileType}]`,
+								},
 							],
 						},
 						tx,
@@ -711,12 +786,32 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			const score = Math.min(0.95, 0.65 + corpora.length * 0.1);
 			const tier: CautionTier = corpora.length >= 3 ? 'stronger_indicator' : 'closer_look';
 			// Auto-confirm FINRA-corpora-only person CSM with exactly one CRD
-			// (rosters↔visualizer same registrant — no manual queue).
+			// (rosters↔API same registrant — no manual queue).
 			const finraOnly =
 				profileType === 'person' &&
 				corpora.length >= 2 &&
 				corpora.every((c) => isFinraPersonCorpus(c));
 			const singleCrd = (personCrdCountById.get(pid) || 0) === 1;
+			// Org / event cards: multi-corpus on one profile is enrichment of the same
+			// entity (MineralAnswers + chat dates, DFW + HQ search, etc.) — auto-confirm
+			// so triage is not flooded. Person CSM stays manual except FINRA-only+single CRD.
+			const orgOrEventAutoConfirm = [
+				'firm',
+				'education',
+				'nonprofit',
+				'government',
+				'medical_hospital',
+				'historic_event',
+			].includes(profileType);
+			const autoConfirm =
+				orgOrEventAutoConfirm || (finraOnly && singleCrd);
+			const displayCorpus = (c: string) =>
+				isFinraPersonCorpus(c) ? 'finra-api' : String(c || '');
+			const displayLabel = (c: string) =>
+				isFinraPersonCorpus(c) ? 'Present in FINRA API' : `Present in ${c}`;
+			const corporaForRationale = [
+				...new Set(corpora.map((c) => displayCorpus(c))),
+			];
 			upsertAlignmentCandidate(
 				{
 					dedupeKey: sha256Key(['cross_source_mention', pid]),
@@ -725,9 +820,12 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					rightProfileId: null,
 					score,
 					cautionTier: tier,
-					rationale: `"${String(p.name)}" (${profileType}) appears across ${corpora.length} distinct data sources: ${corpora.join(', ')}.`,
-					evidence: corpora.map((c) => ({ corpus: c, label: `Present in ${c}` })),
-					status: finraOnly && singleCrd ? 'confirmed' : undefined,
+					rationale: `"${String(p.name)}" (${profileType}) appears across ${corporaForRationale.length} distinct data sources: ${corporaForRationale.join(', ')}.`,
+					evidence: corpora.map((c) => ({
+						corpus: displayCorpus(c),
+						label: displayLabel(c),
+					})),
+					status: autoConfirm ? 'confirmed' : undefined,
 				},
 				tx,
 			);
@@ -925,6 +1023,14 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			});
 		}
 
+		/** FINRA CRDs from identifiers + metadata.finraCrd (firm or individual). */
+		function crdsForMember(m: CityMember): Set<string> {
+			const set = new Set<string>(crdsById.get(m.profileId) || []);
+			const meta = m.metadata.finraCrd ?? m.metadata.crd;
+			if (meta != null && String(meta).trim()) set.add(String(meta).trim());
+			return set;
+		}
+
 		function nameTokens(name: string): Set<string> {
 			return new Set(
 				normalizeText(name)
@@ -1069,6 +1175,27 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				if (a.profileType !== 'firm' || b.profileType !== 'firm') {
 					coveredPairs.add(pk);
 					return false;
+				}
+			}
+
+			// Distinct FINRA CRDs (firm or person) ⇒ distinct registrants. Shared
+			// suite/building is multi-tenant noise, not same-entity evidence — skip
+			// (existing proposed rows are swept to dismissed after the geo pass).
+			{
+				const crdsA = crdsForMember(a);
+				const crdsB = crdsForMember(b);
+				if (crdsA.size > 0 && crdsB.size > 0) {
+					let sharedCrd = false;
+					for (const c of crdsA) {
+						if (crdsB.has(c)) {
+							sharedCrd = true;
+							break;
+						}
+					}
+					if (!sharedCrd) {
+						coveredPairs.add(pk);
+						return false;
+					}
 				}
 			}
 
@@ -1567,6 +1694,45 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				}
 			}
 		}
+	}
+
+	// Sweep: any remaining proposed geo colo where both sides already have
+	// FINRA CRDs with no overlap (multi-tenant offices ≠ same registrant).
+	{
+		const now = new Date().toISOString();
+		const sweep = db
+			.prepare(
+				`UPDATE alignment_candidates
+         SET status = 'dismissed',
+             rationale = CASE
+               WHEN rationale LIKE '%Auto-dismissed: distinct FINRA CRDs%' THEN rationale
+               ELSE substr(rationale || ' Auto-dismissed: distinct FINRA CRDs (different registrants).', 1, 1000)
+             END,
+             updated_at = ?
+         WHERE status = 'proposed'
+           AND alignment_kind IN ('building_colocation', 'block_colocation', 'city_colocation')
+           AND right_profile_id IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM profile_identifiers l
+             WHERE l.profile_id = alignment_candidates.left_profile_id AND l.scheme = 'finra_crd'
+           )
+           AND EXISTS (
+             SELECT 1 FROM profile_identifiers r
+             WHERE r.profile_id = alignment_candidates.right_profile_id AND r.scheme = 'finra_crd'
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM profile_identifiers l
+             JOIN profile_identifiers r
+               ON r.scheme = 'finra_crd'
+              AND r.profile_id = alignment_candidates.right_profile_id
+              AND r.value = l.value
+             WHERE l.profile_id = alignment_candidates.left_profile_id
+               AND l.scheme = 'finra_crd'
+           )`,
+			)
+			.run(now);
+		counts.disjointCrdColocationDismissed += Number(sweep.changes || 0);
 	}
 
 	counts.totalUpserted =

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { getProfilesDb } from '@/lib/research/profiles/db';
+import { isCityLevelGeoKey } from '@/lib/research/profiles/edgeWeights';
 import {
-	buildSafeFtsQuery,
 	dateToEpochDays,
 	normalizeIsoDate,
 } from '@/lib/research/profiles/normalize';
@@ -14,6 +14,212 @@ import type {
 	TimelineEntry,
 	TimelineGap,
 } from '@/lib/research/profiles/types';
+
+/**
+ * Tokens that must never drive gap-fill FTS alone — they match unrelated
+ * "World Cup games", "poker games", ICE "take down", etc.
+ * Do not run aliases through stripLegalSuffixes (it turns "Take-Two" into
+ * "take two" and then "take" matches every take-down headline).
+ */
+const GAP_FILL_STOP_TOKENS = new Set([
+	'company',
+	'corporation',
+	'corp',
+	'inc',
+	'llc',
+	'ltd',
+	'group',
+	'holdings',
+	'partners',
+	'capital',
+	'services',
+	'solutions',
+	'systems',
+	'technologies',
+	'international',
+	'global',
+	'american',
+	'national',
+	'united',
+	'the',
+	'and',
+	'of',
+	'software',
+	'games',
+	'game',
+	'gaming',
+	'interactive',
+	'entertainment',
+	'studio',
+	'studios',
+	'music',
+	'media',
+	'digital',
+	'online',
+	'network',
+	'networks',
+	'label',
+	'publishing',
+	'division',
+	'formerly',
+	'former',
+	'take',
+	'make',
+	'made',
+	'based',
+	'north',
+	'south',
+	'east',
+	'west',
+	'city',
+	'street',
+	'auto', // alone — "Grand Theft Auto" stays as a phrase
+	'theft',
+	'grand',
+]);
+
+type GapFillSearchTerms = { phrases: string[]; tokens: string[] };
+
+/** Light cleanup that keeps hyphenated brands like Take-Two intact. */
+function cleanGapFillAlias(raw: string): string {
+	return String(raw || '')
+		.replace(/\b(incorporated|inc|llc|ltd|corp|corporation|company|co|plc|lp|llp)\b\.?/gi, ' ')
+		.replace(/[^\w\s-]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function collectGapFillSearchTerms(name: string, aliases: string[]): GapFillSearchTerms {
+	const phrases: string[] = [];
+	const tokens: string[] = [];
+	const seen = new Set<string>();
+
+	for (const raw of [name, ...aliases]) {
+		const cleaned = cleanGapFillAlias(raw);
+		if (cleaned.length < 3) continue;
+		const parts = cleaned.split(/\s+/).filter(Boolean);
+		const distinctive = parts.filter((p) => {
+			const compact = p.toLowerCase().replace(/[^a-z0-9]/g, '');
+			return compact.length >= 3 && !GAP_FILL_STOP_TOKENS.has(compact) && !GAP_FILL_STOP_TOKENS.has(p.toLowerCase());
+		});
+		if (!distinctive.length) continue;
+
+		const phraseKey = cleaned.toLowerCase();
+		if (parts.length >= 2 && !seen.has(`p:${phraseKey}`)) {
+			seen.add(`p:${phraseKey}`);
+			phrases.push(cleaned);
+		}
+		for (const d of distinctive) {
+			// Keep hyphens (take-two); FTS gets a quoted token, post-filter matches the brand.
+			const t = d.toLowerCase().replace(/[^a-z0-9-]/g, '');
+			const compact = t.replace(/[^a-z0-9]/g, '');
+			const isShortTicker = parts.length === 1 && /^[a-z0-9]{2,5}$/.test(compact);
+			// Require 5+ chars unless it is a short ticker/alias like TTWO / BMG.
+			if ((!isShortTicker && compact.length < 5) || seen.has(`t:${t}`)) continue;
+			if (GAP_FILL_STOP_TOKENS.has(compact) || GAP_FILL_STOP_TOKENS.has(t)) continue;
+			seen.add(`t:${t}`);
+			tokens.push(t);
+		}
+	}
+	return { phrases: phrases.slice(0, 6), tokens: tokens.slice(0, 8) };
+}
+
+/** FTS5 OR of distinctive phrases/tokens — never bare stopwords like "games". */
+function buildGapFillFtsQuery(terms: GapFillSearchTerms): string {
+	const parts: string[] = [];
+	for (const p of terms.phrases) {
+		const safe = p.replace(/"/g, '').trim();
+		if (safe.length >= 3) parts.push(`"${safe}"`);
+	}
+	for (const t of terms.tokens) {
+		if (t.length >= 4) parts.push(`"${t}"`);
+	}
+	// Prefer phrases (company + employee full names) over bare tokens.
+	return [...new Set(parts)].slice(0, 24).join(' OR ');
+}
+
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Require title/snippet/profileName to mention a distinctive subject token/phrase. */
+function leadMentionsSubject(lead: GapFillLead, terms: GapFillSearchTerms): boolean {
+	if (!terms.phrases.length && !terms.tokens.length) return false;
+	const hay = `${lead.title || ''} ${lead.snippet || ''} ${lead.profileName || ''}`.toLowerCase();
+	for (const p of terms.phrases) {
+		const pl = p.toLowerCase();
+		if (hay.includes(pl) || hay.includes(pl.replace(/-/g, ' '))) return true;
+	}
+	for (const t of terms.tokens) {
+		// Hyphenated brands: match "take-two" / "take two" / "taketwo", never bare "take".
+		const variants = t.includes('-')
+			? [t, t.replace(/-/g, ' '), t.replace(/-/g, '')]
+			: [t];
+		for (const v of variants) {
+			if (v.length < 3) continue;
+			const re = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(v)}(?:[^a-z0-9]|$)`, 'i');
+			if (re.test(hay)) return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * People employed at a firm (or employers of a person) via employment links.
+ * Used so gap-fill may accept leads that name those people / companies.
+ */
+function employmentConnectionNames(
+	db: DatabaseSync,
+	profileId: string,
+	profileType: string,
+): string[] {
+	const wantPerson = profileType === 'firm' || profileType === 'nonprofit' || profileType === 'medical_hospital';
+	const wantOrg = profileType === 'person';
+	if (!wantPerson && !wantOrg) return [];
+
+	const rows = db
+		.prepare(
+			`SELECT p.name AS name, p.profile_type AS ptype
+       FROM profile_links pl
+       JOIN profiles p ON p.id = CASE
+         WHEN pl.from_profile_id = ? THEN pl.to_profile_id
+         ELSE pl.from_profile_id
+       END
+       WHERE (pl.from_profile_id = ? OR pl.to_profile_id = ?)
+         AND pl.relation_type IN ('employed_by', 'affiliated_with')
+       LIMIT 120`,
+		)
+		.all(profileId, profileId, profileId) as Array<{ name: string; ptype: string }>;
+
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const r of rows) {
+		const name = String(r.name || '').trim();
+		const ptype = String(r.ptype || '');
+		if (name.length < 5) continue;
+		if (wantPerson && ptype !== 'person') continue;
+		if (wantOrg && ptype === 'person') continue;
+		const key = name.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(name);
+	}
+	return out;
+}
+
+/** Add full person/org names as phrases only (avoid tokenizing common surnames). */
+function addEmploymentConnectionPhrases(terms: GapFillSearchTerms, names: string[]): void {
+	const seen = new Set(terms.phrases.map((p) => p.toLowerCase()));
+	for (const name of names.slice(0, 40)) {
+		const cleaned = cleanGapFillAlias(name);
+		if (cleaned.length < 5) continue;
+		const key = cleaned.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		terms.phrases.push(cleaned);
+	}
+	terms.phrases = terms.phrases.slice(0, 30);
+}
 
 export type GetProfileTimelineOptions = {
 	from?: string;
@@ -39,12 +245,12 @@ function openKnowledgeReadOnly(): DatabaseSync | null {
 
 function searchKnowledgeForGap(
 	kdb: DatabaseSync,
-	keywords: string[],
+	terms: GapFillSearchTerms,
 	fromDate: string,
 	toDate: string,
 	maxHits = 4,
 ): GapFillLead[] {
-	const fts = buildSafeFtsQuery(keywords.join(' '));
+	const fts = buildGapFillFtsQuery(terms);
 	if (!fts) return [];
 
 	const fromYear = fromDate.slice(0, 4);
@@ -95,8 +301,7 @@ function searchKnowledgeForGap(
 			}
 			if (!matchedDate) continue;
 
-			seenDoc.add(docId);
-			leads.push({
+			const lead: GapFillLead = {
 				source: 'knowledge_sqlite',
 				corpus: `knowledge:${String(r.project_name || 'Default')}`,
 				date: matchedDate,
@@ -106,7 +311,11 @@ function searchKnowledgeForGap(
 				reason: `Knowledge store FTS hit dated ${matchedDate} inside ${fromDate}→${toDate} gap`,
 				sourceRef: `knowledge:doc:${docId}`,
 				url: r.url != null ? String(r.url) : null,
-			});
+			};
+			if (!leadMentionsSubject(lead, terms)) continue;
+
+			seenDoc.add(docId);
+			leads.push(lead);
 			if (leads.length >= maxHits) break;
 		}
 		return leads;
@@ -291,14 +500,24 @@ export function getProfileTimeline(
 		}
 
 		const aliasRows = db
-			.prepare('SELECT alias FROM profile_aliases WHERE profile_id = ? LIMIT 8')
+			.prepare('SELECT alias FROM profile_aliases WHERE profile_id = ? LIMIT 12')
 			.all(profile.id) as Array<{ alias: string }>;
-		const searchKeywords = [
+		const gapFillTerms = collectGapFillSearchTerms(
 			profile.name,
-			...aliasRows.map((a) => String(a.alias)),
-		].filter((s) => s.length >= 3);
+			aliasRows.map((a) => String(a.alias)),
+		);
+		// Employment graph: firm ← employees, or person → employers. Gap-fill
+		// leads must mention the company (aliases) or these connected names.
+		addEmploymentConnectionPhrases(
+			gapFillTerms,
+			employmentConnectionNames(db, profile.id, profile.profileType),
+		);
+		const gapFillFts = buildGapFillFtsQuery(gapFillTerms);
+		const hasSubjectTerms =
+			gapFillTerms.phrases.length > 0 || gapFillTerms.tokens.length > 0;
 
 		const existingCorpora = new Set(deduped.map((e) => e.sourceCorpus));
+		const isFirmProfile = profile.profileType === 'firm';
 
 		// Identify top gaps (cap at 10 largest/chronological gaps for speed & clarity)
 		const rawGaps: Array<{
@@ -329,7 +548,11 @@ export function getProfileTimeline(
 			.sort((a, b) => b.toDate.localeCompare(a.toDate) || b.fromDate.localeCompare(a.fromDate));
 
 		const kdb = fillFromKnowledge && topGaps.length > 0 ? openKnowledgeReadOnly() : null;
-		const geoKeyList = [...geoKeys].slice(0, 20);
+		// City-only geo (e.g. us:ny:city:new-york) is far too broad for firm HQ —
+		// it pulls unrelated NY events into gap fill. Keep street/building keys only.
+		const geoKeyList = [...geoKeys]
+			.filter((gk) => !(isFirmProfile && isCityLevelGeoKey(gk)))
+			.slice(0, 20);
 		const relatedIdList = [...relatedActorIds].filter((id) => !targetIds.has(id)).slice(0, 80);
 
 		try {
@@ -357,8 +580,7 @@ export function getProfileTimeline(
 					for (const h of geoHits) {
 						const k = `p:${String(h.id)}`;
 						if (seenLead.has(k)) continue;
-						seenLead.add(k);
-						fillLeads.push({
+						const lead: GapFillLead = {
 							source: 'profiles',
 							corpus: String(h.source_corpus),
 							date: h.event_date != null ? String(h.event_date) : null,
@@ -372,12 +594,19 @@ export function getProfileTimeline(
 							sourceRef: h.source_ref != null ? String(h.source_ref) : null,
 							url: h.source_url != null ? String(h.source_url) : null,
 							geoLabel: h.geo_label != null ? String(h.geo_label) : null,
-						});
+						};
+						// Always require company / employment-connected person mention.
+						if (!hasSubjectTerms || !leadMentionsSubject(lead, gapFillTerms)) continue;
+						seenLead.add(k);
+						fillLeads.push(lead);
 					}
 				}
 
-				// 2. Timeline entries from related actors (people/firms/agencies linked to this subject/event)
-				if (relatedIdList.length > 0 && fillLeads.length < 6) {
+				// 2. Timeline entries from employment-linked people (or other related
+				// actors) — still require the lead text/name to mention the company
+				// or an employment-connected person (business_tie-only peers alone
+				// are not enough).
+				if (relatedIdList.length > 0 && fillLeads.length < 6 && hasSubjectTerms) {
 					const rp = relatedIdList.map(() => '?').join(',');
 					const relHits = db
 						.prepare(
@@ -388,15 +617,14 @@ export function getProfileTimeline(
                WHERE te.event_date > ? AND te.event_date < ?
                  AND te.profile_id IN (${rp})
                ORDER BY te.event_date ASC
-               LIMIT 6`,
+               LIMIT 12`,
 						)
 						.all(g.fromDate, g.toDate, ...relatedIdList) as Array<Record<string, unknown>>;
 
 					for (const h of relHits) {
 						const k = `p:${String(h.id)}`;
 						if (seenLead.has(k)) continue;
-						seenLead.add(k);
-						fillLeads.push({
+						const lead: GapFillLead = {
 							source: 'profiles',
 							corpus: String(h.source_corpus),
 							date: h.event_date != null ? String(h.event_date) : null,
@@ -410,13 +638,17 @@ export function getProfileTimeline(
 							sourceRef: h.source_ref != null ? String(h.source_ref) : null,
 							url: h.source_url != null ? String(h.source_url) : null,
 							geoLabel: h.geo_label != null ? String(h.geo_label) : null,
-						});
+						};
+						if (!leadMentionsSubject(lead, gapFillTerms)) continue;
+						seenLead.add(k);
+						fillLeads.push(lead);
+						if (fillLeads.length >= 6) break;
 					}
 				}
 
-				// 3. FTS match in other timeline entries from OTHER corpora during this gap
-				const ftsQ = buildSafeFtsQuery(searchKeywords.slice(0, 4).join(' '));
-				if (ftsQ && fillLeads.length < 8) {
+				// 3. FTS match in other timeline entries during this gap (distinctive
+				// company / employment-connected phrases only).
+				if (gapFillFts && fillLeads.length < 8 && hasSubjectTerms) {
 					try {
 						const ftsHits = db
 							.prepare(
@@ -429,16 +661,15 @@ export function getProfileTimeline(
                    AND te.event_date > ? AND te.event_date < ?
                    AND te.profile_id NOT IN (${placeholders})
                  ORDER BY te.event_date ASC
-                 LIMIT 6`,
+                 LIMIT 12`,
 							)
-							.all(ftsQ, g.fromDate, g.toDate, ...idList) as Array<Record<string, unknown>>;
+							.all(gapFillFts, g.fromDate, g.toDate, ...idList) as Array<Record<string, unknown>>;
 
 						for (const h of ftsHits) {
 							const k = `p:${String(h.id)}`;
 							if (seenLead.has(k)) continue;
-							seenLead.add(k);
 							const otherCorpus = !existingCorpora.has(String(h.source_corpus));
-							fillLeads.push({
+							const lead: GapFillLead = {
 								source: 'profiles',
 								corpus: String(h.source_corpus),
 								date: h.event_date != null ? String(h.event_date) : null,
@@ -454,7 +685,11 @@ export function getProfileTimeline(
 								sourceRef: h.source_ref != null ? String(h.source_ref) : null,
 								url: h.source_url != null ? String(h.source_url) : null,
 								geoLabel: h.geo_label != null ? String(h.geo_label) : null,
-							});
+							};
+							if (!leadMentionsSubject(lead, gapFillTerms)) continue;
+							seenLead.add(k);
+							fillLeads.push(lead);
+							if (fillLeads.length >= 8) break;
 						}
 					} catch {
 						/* ignore FTS syntax edge cases */
@@ -462,10 +697,10 @@ export function getProfileTimeline(
 				}
 
 				// 4. Read-only FTS5 match in knowledge.sqlite during this gap
-				if (kdb && fillLeads.length < 10) {
+				if (kdb && fillLeads.length < 10 && (gapFillTerms.tokens.length || gapFillTerms.phrases.length)) {
 					const kLeads = searchKnowledgeForGap(
 						kdb,
-						searchKeywords.slice(0, 3),
+						gapFillTerms,
 						g.fromDate,
 						g.toDate,
 						3,

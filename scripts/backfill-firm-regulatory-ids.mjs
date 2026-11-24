@@ -10,6 +10,7 @@
  * Usage:
  *   node scripts/backfill-firm-regulatory-ids.mjs
  *   node scripts/backfill-firm-regulatory-ids.mjs --limit 300 --concurrency 3 --dry-run
+ *   node scripts/backfill-firm-regulatory-ids.mjs --crd-only --limit 2000
  */
 import fs from 'node:fs';
 import { registerHooks } from 'node:module';
@@ -52,6 +53,8 @@ function getArgNum(flag, fallback) {
 const limit = getArgNum('--limit', 500);
 const concurrency = Math.min(6, Math.max(1, getArgNum('--concurrency', 3)));
 const dryRun = argv.includes('--dry-run');
+/** Only firm profiles that already have a FINRA CRD identifier. */
+const crdOnly = argv.includes('--crd-only');
 const CORPUS = 'sec-edgar-submissions';
 const UA =
 	'Mozilla/5.0 (compatible; ai-research-tool/1.0; +https://localhost; firm-regulatory-ids)';
@@ -132,7 +135,21 @@ const db = new DatabaseSync(dbPath, { readOnly: true });
 
 const firms = db
 	.prepare(
-		`
+		crdOnly
+			? `
+SELECT p.id, p.slug, p.name, p.metadata_json,
+  (SELECT value FROM profile_identifiers WHERE profile_id=p.id AND scheme='sec_cik' LIMIT 1) AS sec_cik,
+  (SELECT value FROM profile_identifiers WHERE profile_id=p.id AND scheme='ticker' LIMIT 1) AS ticker_id,
+  (SELECT value FROM profile_identifiers WHERE profile_id=p.id AND scheme='irs_ein' LIMIT 1) AS ein_id,
+  (SELECT value FROM profile_identifiers WHERE profile_id=p.id AND scheme='cusip' LIMIT 1) AS cusip_id
+FROM profiles p
+WHERE p.profile_type='firm'
+  AND EXISTS (
+    SELECT 1 FROM profile_identifiers c
+    WHERE c.profile_id = p.id AND c.scheme = 'finra_crd'
+  )
+`
+			: `
 SELECT p.id, p.slug, p.name, p.metadata_json,
   (SELECT value FROM profile_identifiers WHERE profile_id=p.id AND scheme='sec_cik' LIMIT 1) AS sec_cik,
   (SELECT value FROM profile_identifiers WHERE profile_id=p.id AND scheme='ticker' LIMIT 1) AS ticker_id,
@@ -212,6 +229,7 @@ console.log(
 			matched: queue.length,
 			limit,
 			dryRun,
+			crdOnly,
 			concurrency,
 			tickerUniverse: Object.keys(tickersObj).length,
 		},

@@ -26,6 +26,8 @@ export type AliasKind =
 	| 'name'
 	| 'acronym'
 	| 'former_name'
+	/** Shorter / alternate display form kept when merge prefers a longer or ID-tied name. */
+	| 'other_name'
 	| 'crd'
 	| 'cik'
 	| 'ticker'
@@ -247,9 +249,14 @@ export type Profile = {
 	alternateNames?: string[];
 	/**
 	 * Firm is linked to an external live listing URL (e.g. MineralAnswers producer page,
-	 * BrokerCheck). Used for green “Active firm” treatment when start/end dates are missing.
+	 * BrokerCheck). Used for green “Firm” treatment when start/end dates are missing.
 	 */
 	hasLiveSourceUrl?: boolean;
+	/**
+	 * Firm has finraBcScope or finraIaScope === ACTIVE from the visualizer/API.
+	 * Also used for green “Firm” treatment when start/end dates are missing.
+	 */
+	hasActiveFinraScope?: boolean;
 };
 
 export type PersonEmploymentEntry = {

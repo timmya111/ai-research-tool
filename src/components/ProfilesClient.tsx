@@ -4,7 +4,10 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import AlignmentEvidenceList from '@/components/AlignmentEvidenceList';
 import ThemeToggle from '@/components/ThemeToggle';
-import { detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
+import {
+	detectFirmActiveFinraScope,
+	detectFirmLiveSourceUrl,
+} from '@/lib/research/profiles/liveListing';
 import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import type {
 	AlignmentCandidate,
@@ -72,19 +75,6 @@ const TYPE_META: Record<
 	},
 };
 
-const ANGLE_BADGE: Record<string, string> = {
-	civilian_health: 'bg-teal-500/15 text-teal-800 dark:text-teal-200',
-	defense_dod: 'bg-amber-500/15 text-amber-800 dark:text-amber-200',
-	law_enforcement: 'bg-red-500/15 text-red-800 dark:text-red-200',
-	regulatory_finra: 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-200',
-	land_records: 'bg-yellow-500/15 text-yellow-800 dark:text-yellow-200',
-	academic_research: 'bg-indigo-500/15 text-indigo-800 dark:text-indigo-200',
-	geophysical: 'bg-cyan-500/15 text-cyan-800 dark:text-cyan-200',
-	policy: 'bg-purple-500/15 text-purple-800 dark:text-purple-200',
-	corporate: 'bg-sky-500/15 text-sky-800 dark:text-sky-200',
-	general: 'bg-zinc-500/15 text-zinc-700 dark:text-zinc-300',
-};
-
 const CAUTION_BADGE: Record<CautionTier, string> = {
 	observation: 'bg-sky-500/15 text-sky-800 dark:text-sky-200 border-sky-500/30',
 	closer_look: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/35',
@@ -108,33 +98,84 @@ function firmHasLiveSourceUrl(
 	return detectFirmLiveSourceUrl(p.metadata, identifiers);
 }
 
+/** True when FINRA BrokerCheck or SEC IA scope from the visualizer/API is ACTIVE. */
+function firmHasActiveFinraScope(
+	p: Pick<Profile, 'metadata' | 'hasActiveFinraScope'>,
+): boolean {
+	if (p.hasActiveFinraScope === true) return true;
+	return detectFirmActiveFinraScope(p.metadata);
+}
+
 /**
  * Soft green “current” tint:
  * - people: living (no endDate)
- * - firms: not ended, and either a confirmed startDate or a live external listing URL
+ * - firms: not ended, and either a confirmed startDate, live external listing URL,
+ *   or ACTIVE FINRA BrokerCheck / SEC IA scope from the visualizer API
  */
 function isCurrentPersonOrFirm(
-	p: Pick<Profile, 'profileType' | 'startDate' | 'endDate' | 'metadata' | 'hasLiveSourceUrl'>,
+	p: Pick<
+		Profile,
+		| 'profileType'
+		| 'startDate'
+		| 'endDate'
+		| 'metadata'
+		| 'hasLiveSourceUrl'
+		| 'hasActiveFinraScope'
+	>,
 	identifiers?: Array<{ scheme: string; value: string }> | null,
 ): boolean {
 	if (profileHasEnded(p)) return false;
 	if (p.profileType === 'person') return true;
 	if (p.profileType === 'firm') {
-		return profileHasStartDate(p) || firmHasLiveSourceUrl(p, identifiers);
+		return (
+			profileHasStartDate(p) ||
+			firmHasLiveSourceUrl(p, identifiers) ||
+			firmHasActiveFinraScope(p)
+		);
 	}
 	return false;
 }
 
 function firmTypeBadgeLabel(
-	p: Pick<Profile, 'profileType' | 'startDate' | 'endDate' | 'metadata' | 'hasLiveSourceUrl'>,
+	p: Pick<
+		Profile,
+		| 'profileType'
+		| 'startDate'
+		| 'endDate'
+		| 'metadata'
+		| 'hasLiveSourceUrl'
+		| 'hasActiveFinraScope'
+	>,
+	_identifiers?: Array<{ scheme: string; value: string }> | null,
+): string {
+	if (p.profileType === 'firm') return 'Firm';
+	return TYPE_META[p.profileType]?.label || 'Firm';
+}
+
+/** Green for current/active firms; gray for ended / inactive firms. */
+function firmTypeBadgeClass(
+	p: Pick<
+		Profile,
+		| 'profileType'
+		| 'startDate'
+		| 'endDate'
+		| 'metadata'
+		| 'hasLiveSourceUrl'
+		| 'hasActiveFinraScope'
+	>,
 	identifiers?: Array<{ scheme: string; value: string }> | null,
 ): string {
-	if (p.profileType === 'firm' && isCurrentPersonOrFirm(p, identifiers)) return 'Active firm';
-	return TYPE_META[p.profileType]?.label || 'Firm';
+	if (p.profileType !== 'firm') {
+		return TYPE_META[p.profileType]?.badge || '';
+	}
+	return isCurrentPersonOrFirm(p, identifiers) ? CURRENT_ACTOR_BADGE : INACTIVE_FIRM_BADGE;
 }
 
 const CURRENT_ACTOR_BADGE =
 	'bg-emerald-500/20 text-emerald-900 dark:text-emerald-100 border-emerald-500/45';
+/** Ended / inactive firm type chip (gray). */
+const INACTIVE_FIRM_BADGE =
+	'bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/40';
 const CURRENT_ACTOR_ROW =
 	'bg-emerald-500/10 hover:bg-emerald-500/18 dark:bg-emerald-500/12 dark:hover:bg-emerald-500/20';
 /** Selected current actors keep the orange left rail (same as other selected rows) on the green tint. */
@@ -565,6 +606,127 @@ function hasValidSecIaScope(iaScope: unknown): boolean {
 		.toLowerCase()
 		.replace(/[^a-z]/g, '');
 	return s === 'active' || s === 'inactive' || s === 'expanded';
+}
+
+/** Normalize FINRA/SEC scope tokens for badge display (ACTIVE / INACTIVE / …). */
+function formatFinraScopeLabel(scope: unknown): string {
+	const raw = String(scope || '').trim();
+	if (!raw) return '';
+	const compact = raw.replace(/[^a-z0-9]+/gi, '').toLowerCase();
+	if (!compact || compact === 'notinscope') return '';
+	if (compact === 'active') return 'ACTIVE';
+	if (compact === 'inactive') return 'INACTIVE';
+	if (compact === 'expanded') return 'EXPANDED';
+	return raw.toUpperCase();
+}
+
+function scopeLooksInactive(scopeLabel: string): boolean {
+	return /(inactive|terminated|revoked|suspended|notinscope|withdrawn|barred|expelled|denied|ceased|closed|cancelled|canceled|previouslyregistered|nolongerregistered|notregistered|historical)/i.test(
+		scopeLabel.replace(/[^a-z0-9]+/gi, ''),
+	);
+}
+
+type FinraCrdHeaderTag =
+	| { kind: 'entity' | 'crd' | 'role'; label: string; title?: string; className: string }
+	| { kind: 'scope'; label: string; inactive: boolean; className: string }
+	| { kind: 'fact'; label: string; value: string; className: string };
+
+/**
+ * Visualizer-style header tags for firm/person CRDs: CRD + FINRA:/SEC: scopes
+ * (standalone FINRA/SEC presence chips, purple FIRM entity chip, and firm B/IA
+ * role chips omitted), INDIVIDUAL chip for person CRDs, plus District/Type/
+ * State/Size facts for firms. Type badge above the name already says Firm.
+ */
+function buildFinraCrdHeaderTags(opts: {
+	profileType: ProfileType;
+	crd: string;
+	metadata: Record<string, unknown> | null | undefined;
+}): FinraCrdHeaderTag[] {
+	const meta = opts.metadata || {};
+	const bcScope = formatFinraScopeLabel(meta.finraBcScope);
+	const iaScope = formatFinraScopeLabel(meta.finraIaScope);
+	const hasFinraExplicit = meta.hasFinraData === true || meta.hasFinra === true;
+	const hasSecExplicit = meta.hasSecData === true || meta.hasSec === true;
+	const hasFinra = hasFinraExplicit || Boolean(bcScope);
+	const hasSec =
+		hasSecExplicit || Boolean(iaScope) || hasValidSecIaScope(meta.finraIaScope);
+
+	const tags: FinraCrdHeaderTag[] = [];
+	// Purple FIRM chip omitted — redundant with the green/gray Firm type badge.
+	if (opts.profileType !== 'firm') {
+		tags.push({
+			kind: 'entity',
+			label: 'INDIVIDUAL',
+			className:
+				'rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-900 dark:text-indigo-100',
+		});
+	}
+	tags.push({
+		kind: 'crd',
+		label: `CRD ${opts.crd}`,
+		className:
+			'rounded border border-sky-500/35 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200',
+	});
+
+	if (hasFinra && bcScope) {
+		const inactive = scopeLooksInactive(bcScope);
+		tags.push({
+			kind: 'scope',
+			label: `FINRA: ${bcScope}`,
+			inactive,
+			className: inactive
+				? 'rounded border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200'
+				: 'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
+		});
+	} else if (hasFinra && !bcScope) {
+		tags.push({
+			kind: 'scope',
+			label: 'FINRA: ACTIVE',
+			inactive: false,
+			className:
+				'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
+		});
+	}
+
+	if (hasSec && iaScope) {
+		const inactive = scopeLooksInactive(iaScope);
+		tags.push({
+			kind: 'scope',
+			label: `SEC: ${iaScope}`,
+			inactive,
+			className: inactive
+				? 'rounded border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200'
+				: 'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
+		});
+	} else if (hasSec && !iaScope) {
+		tags.push({
+			kind: 'scope',
+			label: 'SEC: ACTIVE',
+			inactive: false,
+			className:
+				'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
+		});
+	}
+
+	if (opts.profileType === 'firm') {
+		const facts: Array<{ label: string; value: string }> = [
+			{ label: 'District', value: String(meta.finraDistrict || '').trim() },
+			{ label: 'Type', value: String(meta.finraFirmType || '').trim() },
+			{ label: 'State', value: String(meta.finraFormedState || '').trim() },
+			{ label: 'Size', value: String(meta.finraFirmSize || '').trim() },
+		].filter((f) => f.value !== '');
+		for (const fact of facts) {
+			tags.push({
+				kind: 'fact',
+				label: fact.label,
+				value: fact.value,
+				className:
+					'inline-flex items-baseline gap-1 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[10px]',
+			});
+		}
+	}
+
+	return tags;
 }
 
 function finraSecSourceLinks(opts: {
@@ -1383,8 +1545,6 @@ export default function ProfilesClient({
 	// Timeline state
 	const [timeline, setTimeline] = useState<ProfileTimelineResult | null>(null);
 	const [loadingTimeline, setLoadingTimeline] = useState(false);
-	const [timelineAngle, setTimelineAngle] = useState('');
-	const [minGapDays, setMinGapDays] = useState(30);
 
 	// Global alignments triage state
 	const [globalAlignments, setGlobalAlignments] = useState<AlignmentCandidate[]>([]);
@@ -1576,29 +1736,25 @@ export default function ProfilesClient({
 		[syncUrl],
 	);
 
-	const loadTimeline = useCallback(
-		async (id: string) => {
-			setLoadingTimeline(true);
-			try {
-				const params = new URLSearchParams();
-				if (timelineAngle) params.set('angle', timelineAngle);
-				params.set('minGapDays', String(minGapDays));
-				params.set('limit', '120');
-				const res = await fetch(
-					`/api/profiles/${encodeURIComponent(id)}/timeline?${params.toString()}`,
-					{ cache: 'no-store' },
-				);
-				const data = await res.json();
-				if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
-				setTimeline(data as ProfileTimelineResult);
-			} catch (e: unknown) {
-				setError(e instanceof Error ? e.message : String(e));
-			} finally {
-				setLoadingTimeline(false);
-			}
-		},
-		[timelineAngle, minGapDays],
-	);
+	const loadTimeline = useCallback(async (id: string) => {
+		setLoadingTimeline(true);
+		try {
+			const params = new URLSearchParams();
+			params.set('detectGaps', '0');
+			params.set('limit', '200');
+			const res = await fetch(
+				`/api/profiles/${encodeURIComponent(id)}/timeline?${params.toString()}`,
+				{ cache: 'no-store' },
+			);
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
+			setTimeline(data as ProfileTimelineResult);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setLoadingTimeline(false);
+		}
+	}, []);
 
 	const loadGlobalAlignments = useCallback(async () => {
 		setLoadingGlobalAlign(true);
@@ -1636,6 +1792,35 @@ export default function ProfilesClient({
 		}, 120);
 		return () => clearTimeout(timer);
 	}, [loadList]);
+
+	/** Keep category-tab counts (People, Firms, …) live while backfills / imports run. */
+	useEffect(() => {
+		let cancelled = false;
+		const refreshStats = async () => {
+			if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+			try {
+				const res = await fetch('/api/profiles?limit=1&stats=1', { cache: 'no-store' });
+				const data = await res.json();
+				if (!cancelled && res.ok && data?.ok && data.stats) {
+					setStats(data.stats as ProfileStats);
+				}
+			} catch {
+				/* non-fatal */
+			}
+		};
+		const interval = window.setInterval(() => {
+			void refreshStats();
+		}, 15_000);
+		const onVisible = () => {
+			if (document.visibilityState === 'visible') void refreshStats();
+		};
+		document.addEventListener('visibilitychange', onVisible);
+		return () => {
+			cancelled = true;
+			window.clearInterval(interval);
+			document.removeEventListener('visibilitychange', onVisible);
+		};
+	}, []);
 
 	// When history entries change while History tab is active, refresh the left list.
 	useEffect(() => {
@@ -2106,9 +2291,46 @@ export default function ProfilesClient({
 		}
 	}
 
+	async function refreshLeftListForProfile(opts: {
+		profileKey: string;
+		profileType?: string | null;
+	}) {
+		const keepType = String(opts.profileType || '');
+		const nextTypeFilter =
+			keepType === 'historic_event' ? HISTORY_FILTER : keepType ? keepType : 'all';
+		setPendingCategorySync(true);
+		setQuery('');
+		setCountryCode('');
+		setCountryQuery('');
+		setCountryMenuOpen(false);
+		setOffset(0);
+		setTypeFilter(nextTypeFilter);
+		setSelectedId(opts.profileKey);
+		setMainView('profile');
+		setProfileTab('overview');
+		const listParams = new URLSearchParams();
+		if (nextTypeFilter === HISTORY_FILTER) listParams.set('type', 'historic_event');
+		else if (nextTypeFilter && nextTypeFilter !== 'all') listParams.set('type', nextTypeFilter);
+		listParams.set('limit', '60');
+		listParams.set('offset', '0');
+		listParams.set('stats', '1');
+		const listRes = await fetch(`/api/profiles?${listParams.toString()}`, { cache: 'no-store' });
+		const listData = await listRes.json();
+		if (listRes.ok && listData?.ok) {
+			setProfiles(Array.isArray(listData.profiles) ? listData.profiles : []);
+			setTotalProfiles(Number(listData.total || 0));
+			if (listData.stats) setStats(listData.stats as ProfileStats);
+		}
+		await loadDetail(opts.profileKey);
+	}
+
 	async function handleTriageAlignment(id: string, status: AlignmentStatus) {
 		setSavingAlignmentId(id);
 		setError(null);
+		const target =
+			globalAlignments.find((a) => a.id === id) ||
+			detail?.alignments?.find((a) => a.id === id) ||
+			null;
 		// Optimistic local update so Accept/Dismiss feels immediate on the profile tab.
 		if (detail?.alignments?.some((a) => a.id === id)) {
 			setDetail({
@@ -2127,8 +2349,53 @@ export default function ProfilesClient({
 			});
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to update alignment');
-			if (selectedId && mainView === 'profile') await loadDetail(selectedId);
-			if (mainView === 'alignments') await loadGlobalAlignments();
+			const al = (data.alignment || target) as AlignmentCandidate | null;
+			// Accept on same-entity alias / shared-id pairs means Merge (Poly / PTT pattern).
+			const shouldAutoMerge =
+				status === 'confirmed' &&
+				al?.rightProfileId &&
+				(al.alignmentKind === 'same_entity_alias' || al.alignmentKind === 'shared_identifier');
+			if (shouldAutoMerge && al) {
+				const mergeTarget = pickCanonicalMergeTarget(al);
+				if (mergeTarget) {
+					const mergeRes = await fetch('/api/profiles/merge', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							keepId: mergeTarget.keepId,
+							mergeId: mergeTarget.mergeId,
+						}),
+					});
+					const mergeData = await mergeRes.json();
+					if (!mergeRes.ok || !mergeData?.ok) {
+						throw new Error(mergeData?.error || 'Accepted, but auto-merge failed');
+					}
+					const kept = mergeData.kept as
+						| { id?: string; slug?: string; profileType?: string; name?: string }
+						| undefined;
+					const keepKey = String(kept?.slug || kept?.id || mergeTarget.keepId);
+					setBanner(
+						`Accepted & merged "${mergeTarget.mergeLabel}" into "${kept?.name || mergeTarget.keepLabel}".`,
+					);
+					setLastEnrichReport(null);
+					await refreshLeftListForProfile({
+						profileKey: keepKey,
+						profileType: kept?.profileType || al.leftType || null,
+					});
+					await loadGlobalAlignments();
+					return;
+				}
+			}
+			if (status === 'confirmed' && al?.leftProfileId) {
+				const keepKey = String(al.leftSlug || al.leftProfileId);
+				const keepType = al.leftType || null;
+				setBanner(`Accepted alignment — ${al.leftName || keepKey} moved to top of list.`);
+				await refreshLeftListForProfile({ profileKey: keepKey, profileType: keepType });
+				await loadGlobalAlignments();
+			} else {
+				if (selectedId && mainView === 'profile') await loadDetail(selectedId);
+				if (mainView === 'alignments') await loadGlobalAlignments();
+			}
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
 			if (selectedId && mainView === 'profile') await loadDetail(selectedId);
@@ -2136,6 +2403,79 @@ export default function ProfilesClient({
 		} finally {
 			setSavingAlignmentId(null);
 		}
+	}
+
+	/**
+	 * Prefer firm: / person: canonical cards when merging shared-CRD or alias twins.
+	 * Firm CRD merges must keep a firm profile (not education/gov mistypes).
+	 * Person↔org finra_crd pairs are different CRD namespaces — block Merge.
+	 */
+	function pickCanonicalMergeTarget(al: AlignmentCandidate): {
+		keepId: string;
+		mergeId: string;
+		keepLabel: string;
+		mergeLabel: string;
+	} | null {
+		if (!al.rightProfileId) return null;
+		const left = {
+			id: al.leftProfileId,
+			type: String(al.leftType || ''),
+			slug: String(al.leftSlug || ''),
+			name: String(al.leftName || al.leftSlug || al.leftProfileId),
+		};
+		const right = {
+			id: al.rightProfileId,
+			type: String(al.rightType || ''),
+			slug: String(al.rightSlug || ''),
+			name: String(al.rightName || al.rightSlug || al.rightProfileId),
+		};
+		const isFinraCrd =
+			al.alignmentKind === 'shared_identifier' && /finra_crd/i.test(al.rationale || '');
+		if (isFinraCrd) {
+			const leftPerson = left.type === 'person';
+			const rightPerson = right.type === 'person';
+			if (leftPerson !== rightPerson) {
+				setError(
+					'Cannot merge: finra_crd is a shared numeric namespace for Firm CRDs and Individual CRDs. Merge only firm↔firm (same Firm CRD) or person↔person (same Individual CRD).',
+				);
+				return null;
+			}
+		}
+		// Client hint only — server mergeProfiles re-picks keep by official IDs / longest name.
+		const score = (p: { type: string; slug: string; name: string }) => {
+			let s = 0;
+			if (p.type === 'firm') s += 20;
+			if (p.type === 'person') s += 15;
+			if (p.slug.startsWith('firm:')) s += 10;
+			if (p.slug.startsWith('person:')) s += 8;
+			if (
+				p.type === 'education' ||
+				p.type === 'government' ||
+				p.type === 'nonprofit' ||
+				p.type === 'medical_hospital'
+			) {
+				s += 2;
+			}
+			// Prefer longer legal display names (server also enforces official-ID / longest).
+			s += Math.min(12, Math.floor(String(p.name || '').trim().length / 8));
+			const slugBody = p.slug.includes(':') ? p.slug.slice(p.slug.indexOf(':') + 1) : p.slug;
+			s += Math.min(6, Math.floor(slugBody.length / 14));
+			return s;
+		};
+		if (score(left) >= score(right)) {
+			return {
+				keepId: left.id,
+				mergeId: right.id,
+				keepLabel: left.name,
+				mergeLabel: right.name,
+			};
+		}
+		return {
+			keepId: right.id,
+			mergeId: left.id,
+			keepLabel: right.name,
+			mergeLabel: left.name,
+		};
 	}
 
 	async function handleMergeProfiles(keepId: string, mergeId: string, keepLabel: string, mergeLabel: string) {
@@ -2156,11 +2496,14 @@ export default function ProfilesClient({
 			});
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Merge failed');
-			setBanner(`Merged "${mergeLabel}" into "${keepLabel}".`);
-			if (selectedId === mergeId) setSelectedId(keepId);
-			await loadList();
-			if (mainView === 'profile') await loadDetail(keepId);
-			if (mainView === 'alignments') await loadGlobalAlignments();
+			const kept = data.kept as { id?: string; slug?: string; profileType?: string; name?: string } | undefined;
+			const keepKey = String(kept?.slug || kept?.id || keepId);
+			const keepType = String(kept?.profileType || '');
+			const keepName = String(kept?.name || keepLabel);
+			setBanner(`Merged "${mergeLabel}" into "${keepName}".`);
+			setLastEnrichReport(null);
+			await refreshLeftListForProfile({ profileKey: keepKey, profileType: keepType || null });
+			await loadGlobalAlignments();
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
 		}
@@ -2573,7 +2916,8 @@ export default function ProfilesClient({
 							</h2>
 							<p className="m-0 text-xs opacity-75">
 								Possible links, alias collisions, geo-temporal overlaps, multi-angle windows, and
-								knowledge.sqlite / Research Drive matches. Click a source chip to open OCR text and original files. Confirm verified links or dismiss false positives.
+								knowledge.sqlite / Research Drive matches. Click a source chip for merge insight,
+								identifiers, and OCR when available. Confirm verified links or dismiss false positives.
 							</p>
 						</div>
 						<div className="flex flex-wrap items-center gap-2">
@@ -2698,14 +3042,16 @@ export default function ProfilesClient({
 											al.rightProfileId ? (
 												<button
 													type="button"
-													onClick={() =>
+													onClick={() => {
+														const target = pickCanonicalMergeTarget(al);
+														if (!target) return;
 														void handleMergeProfiles(
-															al.leftProfileId,
-															al.rightProfileId!,
-															al.leftName || al.leftSlug || al.leftProfileId,
-															al.rightName || al.rightSlug || al.rightProfileId!,
-														)
-													}
+															target.keepId,
+															target.mergeId,
+															target.keepLabel,
+															target.mergeLabel,
+														);
+													}}
 													className="cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/15 px-2 py-0.5 text-[11px] font-semibold text-[#F97316]"
 												>
 													Merge
@@ -2767,7 +3113,18 @@ export default function ProfilesClient({
 									</p>
 
 									{al.evidence.length > 0 ? (
-										<AlignmentEvidenceList evidence={al.evidence} initialLimit={6} compact />
+										<AlignmentEvidenceList
+											evidence={al.evidence}
+											initialLimit={6}
+											compact
+											alignmentKind={al.alignmentKind}
+											rationale={al.rationale}
+											leftProfileId={al.leftProfileId}
+											rightProfileId={al.rightProfileId}
+											leftName={al.leftName || al.leftSlug}
+											rightName={al.rightName || al.rightSlug}
+											onOpenProfile={jumpToProfile}
+										/>
 									) : null}
 								</div>
 							))}
@@ -2972,7 +3329,12 @@ export default function ProfilesClient({
 										: active
 											? 'border-l-2 border-l-[#F97316] bg-[#F97316]/14'
 											: 'bg-transparent hover:bg-[var(--app-surface-hover)]';
-									const badgeTone = current ? CURRENT_ACTOR_BADGE : tm.badge;
+									const badgeTone =
+										p.profileType === 'firm'
+											? firmTypeBadgeClass(p)
+											: current
+												? CURRENT_ACTOR_BADGE
+												: tm.badge;
 									const typeLabel =
 										p.profileType === 'firm' ? firmTypeBadgeLabel(p) : tm.label;
 									return (
@@ -3043,12 +3405,21 @@ export default function ProfilesClient({
 													detail.profile,
 													detail.identifiers,
 												);
-												const typeBadgeClass = detailCurrent
-													? CURRENT_ACTOR_BADGE
-													: TYPE_META[detail.profile.profileType].badge;
+												const typeBadgeClass =
+													detail.profile.profileType === 'firm'
+														? firmTypeBadgeClass(
+																detail.profile,
+																detail.identifiers,
+															)
+														: detailCurrent
+															? CURRENT_ACTOR_BADGE
+															: TYPE_META[detail.profile.profileType].badge;
 												const typeLabel =
 													detail.profile.profileType === 'firm'
-														? firmTypeBadgeLabel(detail.profile, detail.identifiers)
+														? firmTypeBadgeLabel(
+																detail.profile,
+																detail.identifiers,
+															)
 														: TYPE_META[detail.profile.profileType].label;
 												return (
 													<span
@@ -3118,13 +3489,21 @@ export default function ProfilesClient({
 																	? ''
 																	: ''}
 														</span>
-													) : detail.profile.profileType === 'firm' &&
-													  isCurrentPersonOrFirm(detail.profile, detail.identifiers) ? (
+													) : detail.profile.profileType === 'firm' ? (
 														<span
-															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide opacity-100 ${CURRENT_ACTOR_BADGE}`}
-															title="Listed on a live external source with no start/end dates set"
+															className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide opacity-100 ${firmTypeBadgeClass(detail.profile, detail.identifiers)}`}
+															title={
+																isCurrentPersonOrFirm(
+																	detail.profile,
+																	detail.identifiers,
+																)
+																	? firmHasActiveFinraScope(detail.profile)
+																		? 'Active firm — FINRA BrokerCheck / SEC IA ACTIVE (visualizer API); no start/end dates set'
+																		: 'Active firm — listed on a live external source with no start/end dates set'
+																	: 'Inactive / ended firm — no start/end dates set'
+															}
 														>
-															Active firm
+															Firm
 														</span>
 													) : (
 														<span className="italic opacity-60">
@@ -3181,7 +3560,12 @@ export default function ProfilesClient({
 											const canonicalLow = detail.profile.name.trim().toLowerCase().replace(/\s+/g, ' ');
 											const seenAlt = new Set<string>([canonicalLow]);
 											const altNames = detail.aliases
-												.filter((a) => a.aliasKind === 'name' || a.aliasKind === 'former_name')
+												.filter(
+													(a) =>
+														a.aliasKind === 'name' ||
+														a.aliasKind === 'former_name' ||
+														a.aliasKind === 'other_name',
+												)
 												.map((a) => a.alias.replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim())
 												.filter((raw) => {
 													const low = raw.toLowerCase().replace(/\s+/g, ' ');
@@ -3192,9 +3576,47 @@ export default function ProfilesClient({
 												.sort((a, b) => b.length - a.length)
 												.slice(0, 2);
 
+											const headerCrd = resolveProfileFinraCrd(
+												detail.profile.profileType,
+												meta,
+												detail.identifiers,
+											);
+											const crdHeaderTags =
+												headerCrd &&
+												(detail.profile.profileType === 'person' ||
+													detail.profile.profileType === 'firm')
+													? buildFinraCrdHeaderTags({
+															profileType: detail.profile.profileType,
+															crd: headerCrd,
+															metadata: meta,
+														})
+													: [];
+
 											return (
 												<>
-													<h2 className="mt-1.5 mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-lg font-semibold">
+													{crdHeaderTags.length > 0 ? (
+														<div className="mb-1.5 mt-1 flex flex-wrap items-center gap-1.5">
+															{crdHeaderTags.map((tag, idx) =>
+																tag.kind === 'fact' ? (
+																	<span key={`${tag.label}-${idx}`} className={tag.className}>
+																		<span className="font-semibold uppercase tracking-wide opacity-65">
+																			{tag.label}
+																		</span>
+																		<span className="font-semibold">{tag.value}</span>
+																	</span>
+																) : (
+																	<span
+																		key={`${tag.kind}-${tag.label}-${idx}`}
+																		className={tag.className}
+																		title={'title' in tag ? tag.title : undefined}
+																	>
+																		{tag.label}
+																	</span>
+																),
+															)}
+														</div>
+													) : null}
+													<h2 className="mt-0.5 mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-lg font-semibold">
 														<span className="inline-flex items-center gap-2">
 															<span>{detail.profile.name}</span>
 															<CountryFlags codes={detail.profile.countryCodes} size="md" />
@@ -3339,7 +3761,7 @@ export default function ProfilesClient({
 											},
 											{
 												id: 'timeline' as const,
-												label: `Timeline & Gap Analysis (${detail.counts.timelineEntries})`,
+												label: `Timeline (${detail.counts.timelineEntries})`,
 												show: detail.counts.timelineEntries > 0,
 											},
 											{
@@ -3685,10 +4107,20 @@ export default function ProfilesClient({
 												if (wikiNorm && normalizeHref(href) === wikiNorm) return false;
 												return true;
 											});
+											const preferredWebsite =
+												(typeof meta.website === 'string' &&
+												/^https?:\/\//i.test(meta.website)
+													? meta.website
+													: null) ||
+												(typeof meta.companyUrl === 'string' &&
+												/^https?:\/\//i.test(meta.companyUrl)
+													? meta.companyUrl
+													: null);
 											const hasRegistryLinks =
 												finraLinks.length > 0 ||
 												typeof meta.finraVisualizerUrl === 'string' ||
-												typeof meta.wikipediaUrl === 'string';
+												typeof meta.wikipediaUrl === 'string' ||
+												Boolean(preferredWebsite);
 											const showAliases = detail.aliases.length > 0;
 											const hasSicMeta =
 												(meta.sic != null && String(meta.sic).trim() !== '') ||
@@ -3716,15 +4148,25 @@ export default function ProfilesClient({
 													{showAliases ? (
 														<div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
 															<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-																Aliases ({detail.aliases.length})
+																Aliases / other names ({detail.aliases.length})
 															</h3>
 															<div className="mb-2 flex flex-wrap gap-1">
 																{detail.aliases.slice(0, 16).map((a) => (
 																	<span
 																		key={a.id}
 																		className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 text-[11px]"
+																		title={
+																			a.aliasKind === 'other_name'
+																				? 'Other name (shorter / alternate form from merge)'
+																				: a.aliasKind === 'former_name'
+																					? 'Former name'
+																					: undefined
+																		}
 																	>
 																		{a.alias}
+																		{a.aliasKind === 'other_name' ? (
+																			<span className="ml-1 opacity-55">· other</span>
+																		) : null}
 																	</span>
 																))}
 															</div>
@@ -3754,14 +4196,7 @@ export default function ProfilesClient({
 															</h3>
 															{hasRegistryLinks || finraCrd ? (
 																<div className="mb-2 flex flex-wrap items-center gap-2.5">
-																	{finraCrd ? (
-																		<span className="rounded border border-sky-500/35 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200">
-																			{detail.profile.profileType === 'firm'
-																				? 'Firm CRD'
-																				: 'Individual CRD'}{' '}
-																			{finraCrd}
-																		</span>
-																	) : null}
+																	{/* CRD + FINRA:/SEC: scope chips (and firm B·IA / District·Type·State·Size) live in the header above the name */}
 																	{finraLinks.map((link) => (
 																		<a
 																			key={link.href}
@@ -3791,6 +4226,17 @@ export default function ProfilesClient({
 																			className="text-[11px] font-semibold text-[#F97316] underline"
 																		>
 																			Wikipedia ↗
+																		</a>
+																	) : null}
+																	{preferredWebsite ? (
+																		<a
+																			href={preferredWebsite}
+																			target="_blank"
+																			rel="noreferrer"
+																			className="text-[11px] font-semibold text-[#F97316] underline"
+																			title={preferredWebsite}
+																		>
+																			Website ↗
 																		</a>
 																	) : null}
 																</div>
@@ -3876,11 +4322,19 @@ export default function ProfilesClient({
 																						extraLabels.length > 0 ? 'mt-1.5' : ''
 																					}`}
 																				>
-																					{urlIds.slice(0, 8).map((idItem) => {
+																					{urlIds.slice(0, 8).map((idItem, urlIdx) => {
 																						const href = String(idItem.value || '').trim();
-																						const label =
-																							sourceLabelFromUrl(href) ||
-																							href.slice(0, 48);
+																						const preferredNorm = preferredWebsite
+																							? normalizeHref(preferredWebsite)
+																							: '';
+																						const isPrimary =
+																							(preferredNorm &&
+																								normalizeHref(href) === preferredNorm) ||
+																							(!preferredNorm && urlIdx === 0);
+																						const label = isPrimary
+																							? 'website'
+																							: sourceLabelFromUrl(href) ||
+																								href.slice(0, 48);
 																						const withProto = /^https?:\/\//i.test(href)
 																							? href
 																							: `https://${href}`;
@@ -4572,7 +5026,7 @@ export default function ProfilesClient({
 																	: 'No typed links recorded yet.'}
 														</p>
 													) : (
-														<div className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
+														<div className="max-h-[840px] space-y-1.5 overflow-y-auto pr-1">
 															{filteredLinks.map(({ link: l, connStatus }) => {
 																const isOut = l.fromProfileId === detail.profile.id;
 																const peerId = isOut ? l.toProfileId : l.fromProfileId;
@@ -4662,217 +5116,99 @@ export default function ProfilesClient({
 									</div>
 								) : null}
 
-								{/* TAB 2: Timeline & Gap Analysis */}
+								{/* TAB 2: Timeline (year sections) */}
 								{profileTab === 'timeline' ? (
 									<div className="space-y-4">
-										{/* Controls & Angle Filters */}
-										<div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 text-xs">
-											<div className="flex flex-wrap items-center gap-1.5">
-												<span className="font-semibold opacity-75">Angles:</span>
-												<button
-													type="button"
-													onClick={() => setTimelineAngle('')}
-													className={`cursor-pointer rounded border px-2 py-0.5 text-[11px] ${
-														!timelineAngle
-															? 'border-[#F97316] bg-[#F97316] text-white'
-															: 'border-[var(--app-border)] bg-[var(--app-surface)]'
-													}`}
-												>
-													All ({timeline?.totalEntries ?? 0})
-												</button>
-												{(timeline?.angleBreakdown || []).map((ab) => (
-													<button
-														key={ab.angle}
-														type="button"
-														onClick={() =>
-															setTimelineAngle(timelineAngle === ab.angle ? '' : ab.angle)
-														}
-														className={`cursor-pointer rounded border px-2 py-0.5 text-[11px] ${
-															timelineAngle === ab.angle
-																? 'border-[#F97316] bg-[#F97316] text-white'
-																: 'border-[var(--app-border)] bg-[var(--app-surface)]'
-														}`}
-													>
-														{ab.angle.replace(/_/g, ' ')} ({ab.count})
-													</button>
-												))}
-											</div>
-											<label className="flex items-center gap-1.5 text-[11px]">
-												<span className="opacity-75">Gap threshold (days):</span>
-												<input
-													type="number"
-													min={7}
-													max={730}
-													value={minGapDays}
-													onChange={(e) => setMinGapDays(Number(e.target.value) || 30)}
-													className="w-16 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 text-xs"
-												/>
-											</label>
-										</div>
-
 										{loadingTimeline ? (
-											<p className="text-xs opacity-70">Building multi-source timeline &amp; scanning gaps…</p>
+											<p className="text-xs opacity-70">Loading timeline…</p>
 										) : timeline ? (
 											<>
-												{/* Detected Timeline Gaps + Cross-Source Fill Leads */}
-												{timeline.gaps.length > 0 ? (
-													<div className="space-y-2">
-														<h3 className="m-0 text-xs font-semibold uppercase opacity-80">
-															Detected Timeline Gaps &amp; Cross-Source Fill Leads ({timeline.gaps.length})
-														</h3>
-														{timeline.gaps.map((g, idx) => (
-															<details
-																key={`${g.fromDate}-${g.toDate}-${idx}`}
-																open={g.fillLeads.length > 0 && idx < 2}
-																className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs"
-															>
-																<summary className="cursor-pointer font-semibold">
-																	{g.gapDays}-day gap: {g.fromDate} → {g.toDate} ·{' '}
-																	{g.fillLeads.length > 0
-																		? `${g.fillLeads.length} cross-source lead(s) found`
-																		: 'No automated leads found in other corpora'}
-																</summary>
-																<div className="mt-2 text-[11px] opacity-80">
-																	<div>
-																		<strong>
-																			Before ({formatSourceCorpusLabel(g.beforeCorpus)}):
-																		</strong>{' '}
-																		{g.beforeEntryTitle}
-																	</div>
-																	<div>
-																		<strong>
-																			After ({formatSourceCorpusLabel(g.afterCorpus)}):
-																		</strong>{' '}
-																		{g.afterEntryTitle}
-																	</div>
-																</div>
-																{g.fillLeads.length > 0 ? (
-																	<div className="mt-2 space-y-1.5 border-t border-amber-500/25 pt-2">
-																		{g.fillLeads.map((lead, lIdx) => (
-																			<div
-																				key={lIdx}
-																				className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] p-2 text-[11px]"
-																			>
-																				<div className="flex flex-wrap items-center gap-1.5">
-																					<span className="font-semibold">
-																						{lead.date || 'undated'}
-																					</span>
-																					<span
-																						className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${ANGLE_BADGE[lead.angle] || ANGLE_BADGE.general}`}
-																					>
-																						{lead.angle}
-																					</span>
-																					<span className="opacity-70">
-																						{formatSourceCorpusLabel(lead.corpus)}
-																					</span>
-																					{lead.geoLabel ? (
-																						<span className="opacity-65">· {lead.geoLabel}</span>
-																					) : null}
-																				</div>
-																				<div className="mt-0.5 font-semibold">{lead.title}</div>
-																				<div className="mt-0.5 opacity-80">
-																					{scrubEpsteinSourceLabels(lead.reason)}
-																				</div>
-																				{lead.snippet ? (
-																					<div className="mt-0.5 opacity-75">
-																						{scrubEpsteinSourceLabels(lead.snippet)}
-																					</div>
-																				) : null}
-																			</div>
-																		))}
-																	</div>
-																) : null}
-															</details>
-														))}
-													</div>
-												) : null}
-
-												{/* Chronological Entries (multi-angle months marked inline) */}
-												<div>
-													<h3 className="m-0 mb-2 text-xs font-semibold uppercase opacity-75">
-														Timeline Entries ({timeline.entries.length} of {timeline.totalEntries}
-														{timeline.overlappingWindows.length > 0
-															? ` · ${timeline.overlappingWindows.length} multi-angle months`
-															: ''}
-														)
-													</h3>
-													{timeline.entries.length === 0 ? (
-														<p className="text-xs opacity-70">
-															No timeline entries yet. Add one below or link dated historic events to this
-															profile.
-														</p>
-													) : (
-														<div className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
-															{timeline.entries.map((entry) => {
-																const entryMonth =
-																	entry.eventDate && entry.eventDate.length >= 7
-																		? entry.eventDate.slice(0, 7)
-																		: '';
-																const overlap = entryMonth
-																	? timeline.overlappingWindows.find((w) => w.month === entryMonth)
-																	: undefined;
-																return (
-																	<div
-																		key={entry.id}
-																		className={`rounded-md border bg-[var(--app-bg)] p-2.5 text-xs ${
-																			overlap
-																				? 'border-sky-500/45 bg-sky-500/5'
-																				: 'border-[var(--app-border)]'
-																		}`}
-																	>
-																		<div className="flex flex-wrap items-center justify-between gap-2">
-																			<div className="flex flex-wrap items-center gap-1.5">
-																				<span className="font-mono font-semibold text-[#F97316]">
-																					{entry.eventDate
-																						? formatDisplayDate(entry.eventDate)
-																						: 'Undated'}
-																				</span>
-																				<span
-																					className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${ANGLE_BADGE[entry.angle] || ANGLE_BADGE.general}`}
-																				>
-																					{entry.angle.replace(/_/g, ' ')}
-																				</span>
-																				{overlap ? (
-																					<span
-																						className="rounded border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200"
-																						title={`${overlap.month}: ${overlap.count} entries across ${overlap.angles.join(' + ')}${overlap.corpora.length ? ` · ${overlap.corpora.map(formatSourceCorpusLabel).join(', ')}` : ''}`}
-																					>
-																						multi-angle ·{' '}
-																						{overlap.angles
-																							.map((a) => a.replace(/_/g, ' '))
-																							.join(' + ')}{' '}
-																						({overlap.count})
-																					</span>
-																				) : null}
-																				{entry.geoLabel ? (
-																					<span className="text-[10px] opacity-70">
-																						📍 {entry.geoLabel}
-																					</span>
-																				) : null}
-																			</div>
-																			{entry.sourceUrl ? (
-																				<a
-																					href={entry.sourceUrl}
-																					target="_blank"
-																					rel="noreferrer"
-																					className="text-[10px] text-sky-600 underline dark:text-sky-300"
-																				>
-																					Source ↗
-																				</a>
-																			) : null}
+												{timeline.entries.length === 0 ? (
+													<p className="text-xs opacity-70">
+														No timeline entries yet. Add one below or link dated historic events to
+														this profile.
+													</p>
+												) : (
+													(() => {
+														const byYear = new Map<string, typeof timeline.entries>();
+														for (const entry of timeline.entries) {
+															const y =
+																entry.eventDate && /^\d{4}/.test(entry.eventDate)
+																	? entry.eventDate.slice(0, 4)
+																	: 'Undated';
+															const list = byYear.get(y) || [];
+															list.push(entry);
+															byYear.set(y, list);
+														}
+														const years = [...byYear.keys()].sort((a, b) => {
+															if (a === 'Undated') return 1;
+															if (b === 'Undated') return -1;
+															return b.localeCompare(a);
+														});
+														return (
+															<div className="space-y-5">
+																{years.map((year) => (
+																	<section key={year} className="space-y-2">
+																		<div className="sticky top-0 z-[1] -mx-0.5 flex items-baseline gap-2 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-0.5 py-1.5">
+																			<h3 className="m-0 text-sm font-bold tracking-wide text-[#F97316]">
+																				{year}
+																			</h3>
+																			<span className="text-[10px] opacity-60">
+																				{(byYear.get(year) || []).length}{' '}
+																				{(byYear.get(year) || []).length === 1
+																					? 'entry'
+																					: 'entries'}
+																			</span>
 																		</div>
-																		<div className="mt-1 font-semibold leading-snug">{entry.title}</div>
-																		{entry.summary && entry.summary !== entry.title ? (
-																			<p className="m-0 mt-1 leading-relaxed opacity-80">
-																				{entry.summary}
-																			</p>
-																		) : null}
-																	</div>
-																);
-															})}
-														</div>
-													)}
-												</div>
+																		<div className="relative space-y-0 border-l-2 border-[var(--app-border)] pl-3.5 ml-1.5">
+																			{(byYear.get(year) || []).map((entry) => (
+																				<article
+																					key={entry.id}
+																					className="relative pb-3.5 last:pb-1"
+																				>
+																					<span
+																						aria-hidden
+																						className="absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[var(--app-surface)]"
+																					/>
+																					<div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+																						<span className="font-mono font-semibold opacity-90">
+																							{entry.eventDate
+																								? formatDisplayDate(entry.eventDate)
+																								: 'Undated'}
+																						</span>
+																						{entry.geoLabel ? (
+																							<span className="opacity-65">
+																								📍 {entry.geoLabel}
+																							</span>
+																						) : null}
+																						{entry.sourceUrl ? (
+																							<a
+																								href={entry.sourceUrl}
+																								target="_blank"
+																								rel="noreferrer"
+																								className="text-sky-600 underline dark:text-sky-300"
+																							>
+																								Source ↗
+																							</a>
+																						) : null}
+																					</div>
+																					<div className="mt-0.5 text-sm font-semibold leading-snug">
+																						{entry.title}
+																					</div>
+																					{entry.summary && entry.summary !== entry.title ? (
+																						<p className="m-0 mt-1 text-xs leading-relaxed opacity-80">
+																							{entry.summary}
+																						</p>
+																					) : null}
+																				</article>
+																			))}
+																		</div>
+																	</section>
+																))}
+															</div>
+														);
+													})()
+												)}
 
 												{/* Add Manual Timeline Observation */}
 												<form
@@ -4880,7 +5216,7 @@ export default function ProfilesClient({
 													className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3"
 												>
 													<h4 className="m-0 mb-2 text-xs font-semibold">
-														+ Add Timeline Observation / Other Angle
+														+ Add Timeline Observation
 													</h4>
 													<div className="grid gap-2 sm:grid-cols-3">
 														<input
@@ -5077,7 +5413,17 @@ export default function ProfilesClient({
 														</p>
 
 														{al.evidence.length > 0 ? (
-															<AlignmentEvidenceList evidence={al.evidence} initialLimit={8} />
+															<AlignmentEvidenceList
+																evidence={al.evidence}
+																initialLimit={8}
+																alignmentKind={al.alignmentKind}
+																rationale={al.rationale}
+																leftProfileId={al.leftProfileId}
+																rightProfileId={al.rightProfileId}
+																leftName={al.leftName || al.leftSlug}
+																rightName={al.rightName || al.rightSlug}
+																onOpenProfile={jumpToProfile}
+															/>
 														) : null}
 													</div>
 												);

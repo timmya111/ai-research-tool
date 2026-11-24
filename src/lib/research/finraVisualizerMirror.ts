@@ -609,6 +609,14 @@ export async function ingestIndividualFromVisualizer(
 					finraCrd: clean,
 					finraBcScope: bi.bcScope || prevMeta.finraBcScope || null,
 					finraIaScope: bi.iaScope || prevMeta.finraIaScope || null,
+					hasFinraData:
+						payload.hasFinraData === true || payload.hasFinraData === false
+							? payload.hasFinraData
+							: prevMeta.hasFinraData ?? Boolean(bi.bcScope),
+					hasSecData:
+						payload.hasSecData === true || payload.hasSecData === false
+							? payload.hasSecData
+							: prevMeta.hasSecData ?? Boolean(bi.iaScope),
 					finraVisualizerUrl: finraApiUrl(`/individual/${clean}`),
 					finraDaysInIndustrySince: daysSinceStr || undefined,
 					finraYearsExperience: yearsExp != null ? `${yearsExp} yrs` : undefined,
@@ -1092,6 +1100,15 @@ export function ingestFirmDetailPayloadIntoDb(
 					finraDisclosureCount: disclosures.length || undefined,
 					finraRegisteredStates: stateList.length ? stateList : undefined,
 					finraRegisteredSROs: sroList.length ? sroList : undefined,
+					hasFinraData:
+						node.hasFinraData === true ||
+						node.hasFinraData === false
+							? node.hasFinraData
+							: prevMeta.hasFinraData ?? Boolean(bi.bcScope),
+					hasSecData:
+						node.hasSecData === true || node.hasSecData === false
+							? node.hasSecData
+							: prevMeta.hasSecData ?? Boolean(bi.iaScope),
 					finraVisualizerUrl: finraApiUrl(`/firm/${clean}`),
 					finraLastSyncedAt: fetchedAt,
 				},

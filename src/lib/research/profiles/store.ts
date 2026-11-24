@@ -9,7 +9,12 @@ import {
 	defaultConfidenceForRelation,
 	relationPriority,
 } from '@/lib/research/profiles/edgeWeights';
-import { detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
+import {
+	detectFirmActiveFinraScope,
+	detectFirmLiveSourceUrl,
+	pickPreferredWebsiteUrl,
+	sortIdentifiersByUrlPreference,
+} from '@/lib/research/profiles/liveListing';
 import {
 	buildSafeFtsQuery,
 	deduplicateLocations,
@@ -884,19 +889,43 @@ export function upsertAlignmentCandidate(
 		.get(input.dedupeKey) as { id?: string; status?: string } | undefined;
 
 	if (existing?.id) {
-		// Preserve user confirmed/dismissed triage status
-		db.prepare(
-			`UPDATE alignment_candidates
-       SET score = ?, caution_tier = ?, rationale = ?, evidence_json = ?, updated_at = ?
-       WHERE id = ?`,
-		).run(
-			Math.max(0, Math.min(1, Number(input.score.toFixed(3)))),
-			input.cautionTier,
-			input.rationale.slice(0, 1000),
-			JSON.stringify(input.evidence.slice(0, 16)),
-			now,
-			String(existing.id),
-		);
+		// Preserve dismissed / already-confirmed triage. Allow auto paths to
+		// upgrade proposed → confirmed (org CSM) or proposed → dismissed
+		// (e.g. building colocation with disjoint FINRA CRDs).
+		const prev = String(existing.status || 'proposed') as AlignmentStatus;
+		const upgradeToConfirmed =
+			input.status === 'confirmed' && prev === 'proposed';
+		const upgradeToDismissed =
+			input.status === 'dismissed' && prev === 'proposed';
+		if (upgradeToConfirmed || upgradeToDismissed) {
+			const nextStatus = upgradeToConfirmed ? 'confirmed' : 'dismissed';
+			db.prepare(
+				`UPDATE alignment_candidates
+         SET score = ?, caution_tier = ?, status = ?, rationale = ?, evidence_json = ?, updated_at = ?
+         WHERE id = ?`,
+			).run(
+				Math.max(0, Math.min(1, Number(input.score.toFixed(3)))),
+				input.cautionTier,
+				nextStatus,
+				input.rationale.slice(0, 1000),
+				JSON.stringify(input.evidence.slice(0, 16)),
+				now,
+				String(existing.id),
+			);
+		} else {
+			db.prepare(
+				`UPDATE alignment_candidates
+         SET score = ?, caution_tier = ?, rationale = ?, evidence_json = ?, updated_at = ?
+         WHERE id = ?`,
+			).run(
+				Math.max(0, Math.min(1, Number(input.score.toFixed(3)))),
+				input.cautionTier,
+				input.rationale.slice(0, 1000),
+				JSON.stringify(input.evidence.slice(0, 16)),
+				now,
+				String(existing.id),
+			);
+		}
 		return String(existing.id);
 	}
 
@@ -925,16 +954,57 @@ export function upsertAlignmentCandidate(
 	return id;
 }
 
+/** Mark profile(s) as user-touched so left-panel browse floats them above ingest churn. */
+function touchProfilesForUserAction(
+	profileIds: Array<string | null | undefined>,
+	db: DatabaseSync,
+	atIso?: string,
+): void {
+	const now = atIso || new Date().toISOString();
+	const ids = [...new Set(profileIds.map((id) => String(id || '').trim()).filter(Boolean))];
+	if (!ids.length) return;
+	const select = db.prepare('SELECT metadata_json FROM profiles WHERE id = ?');
+	const update = db.prepare(
+		`UPDATE profiles SET metadata_json = ?, updated_at = ? WHERE id = ?`,
+	);
+	for (const pid of ids) {
+		const row = select.get(pid) as { metadata_json?: string } | undefined;
+		if (!row) continue;
+		let meta: Record<string, unknown> = {};
+		try {
+			meta = JSON.parse(String(row.metadata_json || '{}')) as Record<string, unknown>;
+		} catch {
+			meta = {};
+		}
+		meta.userTouchedAt = now;
+		update.run(JSON.stringify(meta), now, pid);
+	}
+}
+
 export function updateAlignmentStatus(
 	id: string,
 	status: AlignmentStatus,
 ): AlignmentCandidate | null {
 	const db = getProfilesDb();
 	const now = new Date().toISOString();
+	const existing = db
+		.prepare(
+			`SELECT left_profile_id, right_profile_id FROM alignment_candidates WHERE id = ?`,
+		)
+		.get(id) as { left_profile_id?: string; right_profile_id?: string | null } | undefined;
 	const info = db
 		.prepare('UPDATE alignment_candidates SET status = ?, updated_at = ? WHERE id = ?')
 		.run(status, now, id);
 	if (!Number(info.changes || 0)) return null;
+
+	// Accept (confirmed): bump involved profiles so they rise to the top of the left list.
+	if (status === 'confirmed' && existing) {
+		touchProfilesForUserAction(
+			[existing.left_profile_id, existing.right_profile_id],
+			db,
+			now,
+		);
+	}
 
 	const row = db
 		.prepare(
@@ -1106,11 +1176,17 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		.get(...params) as { c?: number } | undefined;
 	const total = Number(totalRow?.c || 0);
 
-	// Left-list browse (all types, no query): newly changed profiles first (`updated_at` DESC).
-	// Text search: rank name/alias matches above FTS summary hits, then newest-changed.
+	// Left-list browse: user Accept/Merge touches (`metadata.userTouchedAt`) float above
+	// ingest churn (`updated_at` from FINRA sync). Then newest-changed, then name.
+	// Text search: rank name/alias matches above FTS summary hits, then the same recency keys.
 	const orderParams: Array<string | number> = [];
 	let orderSql: string;
-	const updatedThenName = `datetime(p.updated_at) DESC,
+	const updatedThenName = `CASE
+             WHEN json_extract(p.metadata_json, '$.userTouchedAt') IS NOT NULL THEN 0
+             ELSE 1
+           END ASC,
+           COALESCE(json_extract(p.metadata_json, '$.userTouchedAt'), '') DESC,
+           datetime(p.updated_at) DESC,
            p.name ASC`;
 	if (q) {
 		const normQ = normalizeText(q);
@@ -1270,6 +1346,7 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 			});
 			if (prof.profileType === 'firm') {
 				prof.hasLiveSourceUrl = detectFirmLiveSourceUrl(prof.metadata, idents);
+				prof.hasActiveFinraScope = detectFirmActiveFinraScope(prof.metadata);
 			}
 			const canonLow = prof.name.trim().toLowerCase().replace(/\s+/g, ' ');
 			const seen = new Set<string>([canonLow]);
@@ -1310,16 +1387,33 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 	const identRows = db
 		.prepare('SELECT * FROM profile_identifiers WHERE profile_id = ? ORDER BY scheme ASC, value ASC')
 		.all(profile.id) as Array<Record<string, unknown>>;
-	const identifiers: ProfileIdentifier[] = identRows.map((r) => ({
-		id: String(r.id),
-		profileId: String(r.profile_id),
-		scheme: String(r.scheme) as IdentifierScheme,
-		value: String(r.value),
-		normalizedValue: String(r.normalized_value),
-		sourceCorpus: r.source_corpus != null ? String(r.source_corpus) : null,
-	}));
+	const identifiers: ProfileIdentifier[] = sortIdentifiersByUrlPreference(
+		identRows.map((r) => ({
+			id: String(r.id),
+			profileId: String(r.profile_id),
+			scheme: String(r.scheme) as IdentifierScheme,
+			value: String(r.value),
+			normalizedValue: String(r.normalized_value),
+			sourceCorpus: r.source_corpus != null ? String(r.source_corpus) : null,
+		})),
+	);
 	if (profile.profileType === 'firm') {
 		profile.hasLiveSourceUrl = detectFirmLiveSourceUrl(profile.metadata, identifiers);
+		profile.hasActiveFinraScope = detectFirmActiveFinraScope(profile.metadata);
+	}
+	// Surface preferred website in metadata for UI "Website ↗" when missing.
+	const preferredWebsite = pickPreferredWebsiteUrl([
+		typeof profile.metadata.website === 'string' ? profile.metadata.website : null,
+		typeof profile.metadata.companyUrl === 'string' ? profile.metadata.companyUrl : null,
+		...identifiers.filter((i) => i.scheme === 'url').map((i) => i.value),
+	]);
+	if (preferredWebsite) {
+		if (profile.metadata.website !== preferredWebsite) {
+			profile.metadata = { ...profile.metadata, website: preferredWebsite };
+		}
+		if (!profile.metadata.companyUrl) {
+			profile.metadata = { ...profile.metadata, companyUrl: preferredWebsite };
+		}
 	}
 
 	const locRows = db
@@ -2051,11 +2145,53 @@ export function addPersonEmployment(input: {
 	return { linkId, orgProfile };
 }
 
+function countOfficialNameIds(profileId: string, db: DatabaseSync): number {
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) AS n FROM profile_identifiers
+       WHERE profile_id = ?
+         AND lower(scheme) IN ('finra_crd','sec_cik','ticker','irs_ein','cusip','orcid','ror')`,
+		)
+		.get(profileId) as { n?: number } | undefined;
+	return Number(row?.n || 0);
+}
+
+/**
+ * Canonical display name for a merge: prefer the name tied to official IDs;
+ * otherwise the longer name. Shorter / non-canonical forms become other_name aliases.
+ */
+function pickMergeCanonicalName(
+	aName: string,
+	bName: string,
+	aOfficialIds: number,
+	bOfficialIds: number,
+): { canonical: string; otherNames: string[] } {
+	const a = String(aName || '').trim();
+	const b = String(bName || '').trim();
+	if (!a && !b) return { canonical: '', otherNames: [] };
+	if (!a) return { canonical: b, otherNames: [] };
+	if (!b) return { canonical: a, otherNames: [] };
+	const same = a.toLowerCase() === b.toLowerCase();
+	if (aOfficialIds > 0 && bOfficialIds === 0) {
+		return { canonical: a, otherNames: same ? [] : [b] };
+	}
+	if (bOfficialIds > 0 && aOfficialIds === 0) {
+		return { canonical: b, otherNames: same ? [] : [a] };
+	}
+	// Both (or neither) have official IDs → longest display name wins.
+	if (b.length > a.length) return { canonical: b, otherNames: same ? [] : [a] };
+	if (a.length > b.length) return { canonical: a, otherNames: same ? [] : [b] };
+	return { canonical: a, otherNames: same ? [] : [b] };
+}
+
 /**
  * Merge `mergeIdOrSlug` into `keepIdOrSlug`: transfers aliases, identifiers, locations,
  * timeline entries, links (deduped, no self-loops), alignment candidates, and metadata
- * (corpora/categoryTags/summary/dates), adds the merged profile's name as an alias on
- * `keep`, and deletes the duplicate `merge` profile.
+ * (corpora/categoryTags/summary/dates), picks canonical display name (official-ID name or
+ * longest), stores the shorter as other_name, and deletes the duplicate `merge` profile.
+ *
+ * If the merge target has official IDs and keep does not (or has a longer legal name when
+ * ID counts tie), roles are swapped so the stronger card’s slug survives.
  */
 export function mergeProfiles(
 	keepIdOrSlug: string,
@@ -2063,9 +2199,24 @@ export function mergeProfiles(
 	dbOverride?: DatabaseSync,
 ): { kept: Profile; mergedId: string; mergedName: string } | null {
 	const db = dbOverride ?? getProfilesDb();
-	const keep = getProfile(keepIdOrSlug, db);
-	const merge = getProfile(mergeIdOrSlug, db);
+	let keep = getProfile(keepIdOrSlug, db);
+	let merge = getProfile(mergeIdOrSlug, db);
 	if (!keep || !merge || keep.id === merge.id) return null;
+
+	// Swap keep/merge only when the merge target has more official IDs.
+	// Display-name length is applied below via pickMergeCanonicalName — do not swap
+	// the surviving slug just because a predecessor name is slightly longer
+	// (e.g. "BMG Interactive" vs "Rockstar Games").
+	let keepOfficial = countOfficialNameIds(keep.id, db);
+	let mergeOfficial = countOfficialNameIds(merge.id, db);
+	if (mergeOfficial > keepOfficial) {
+		const tmp = keep;
+		keep = merge;
+		merge = tmp;
+		const tmpN = keepOfficial;
+		keepOfficial = mergeOfficial;
+		mergeOfficial = tmpN;
+	}
 
 	const runMerge = (tx: DatabaseSync) => {
 		const now = new Date().toISOString();
@@ -2084,6 +2235,37 @@ export function mergeProfiles(
 		const combinedTags = [...new Set([...keepTags, ...mergeTags])];
 		if (combinedTags.length) mergedMeta.categoryTags = combinedTags;
 
+		// Prefer an official company website as primary; secondary urls stay as identifiers.
+		const keepUrlRows = tx
+			.prepare(
+				`SELECT value FROM profile_identifiers WHERE profile_id = ? AND scheme = 'url'`,
+			)
+			.all(keep.id) as Array<{ value: string }>;
+		const mergeUrlRows = tx
+			.prepare(
+				`SELECT value FROM profile_identifiers WHERE profile_id = ? AND scheme = 'url'`,
+			)
+			.all(merge.id) as Array<{ value: string }>;
+		const metaUrlCandidates = [
+			mergedMeta.website,
+			mergedMeta.companyUrl,
+			mergedMeta.websiteUrl,
+			mergedMeta.homepage,
+			keep.metadata.website,
+			keep.metadata.companyUrl,
+			merge.metadata.website,
+			merge.metadata.companyUrl,
+		];
+		const preferredWebsite = pickPreferredWebsiteUrl([
+			...keepUrlRows.map((r) => r.value),
+			...mergeUrlRows.map((r) => r.value),
+			...metaUrlCandidates.map((v) => (typeof v === 'string' ? v : null)),
+		]);
+		if (preferredWebsite) {
+			mergedMeta.website = preferredWebsite;
+			mergedMeta.companyUrl = preferredWebsite;
+		}
+
 		const nextStatus: ProfileStatus =
 			keep.status === 'pinned' || merge.status === 'pinned' ? 'pinned' : keep.status;
 		const nextSummary =
@@ -2101,23 +2283,80 @@ export function mergeProfiles(
 					: merge.endDate
 				: keep.endDate || merge.endDate;
 
+		const namePick = pickMergeCanonicalName(
+			keep.name,
+			merge.name,
+			keepOfficial,
+			mergeOfficial,
+		);
+		const canonicalName = namePick.canonical || keep.name;
+		mergedMeta.mergeCanonicalNameRule =
+			keepOfficial !== mergeOfficial
+				? 'official_id'
+				: 'longest_name';
+
 		tx.prepare(
 			`UPDATE profiles
-       SET status = ?, summary = ?, start_date = ?, end_date = ?, metadata_json = ?, updated_at = ?
+       SET name = ?, normalized_name = ?, status = ?, summary = ?, start_date = ?, end_date = ?, metadata_json = ?, updated_at = ?
        WHERE id = ?`,
-		).run(nextStatus, nextSummary, nextStart, nextEnd, JSON.stringify(mergedMeta), now, keep.id);
+		).run(
+			canonicalName,
+			normalizeText(canonicalName),
+			nextStatus,
+			nextSummary,
+			nextStart,
+			nextEnd,
+			JSON.stringify(mergedMeta),
+			now,
+			keep.id,
+		);
 
-		// 2. Preserve merged name + all aliases
-		addAlias({ profileId: keep.id, alias: merge.name, aliasKind: 'former_name', confidence: 0.95 }, tx);
+		// 2. Shorter / non-canonical names → other_name; transfer all aliases from merge
+		for (const other of namePick.otherNames) {
+			addAlias(
+				{
+					profileId: keep.id,
+					alias: other,
+					aliasKind: 'other_name',
+					confidence: 0.95,
+				},
+				tx,
+			);
+		}
+		// If keep's original name lost the display slot, keep it as other_name too.
+		if (
+			keep.name.trim() &&
+			keep.name.trim().toLowerCase() !== canonicalName.trim().toLowerCase()
+		) {
+			addAlias(
+				{
+					profileId: keep.id,
+					alias: keep.name.trim(),
+					aliasKind: 'other_name',
+					confidence: 0.95,
+				},
+				tx,
+			);
+		}
 		const mergeAliases = tx
 			.prepare('SELECT alias, alias_kind, confidence, source_corpus FROM profile_aliases WHERE profile_id = ?')
 			.all(merge.id) as Array<Record<string, unknown>>;
 		for (const a of mergeAliases) {
+			const alias = String(a.alias || '').trim();
+			if (!alias) continue;
+			const kindRaw = String(a.alias_kind || 'name');
+			const kind =
+				alias.toLowerCase() === canonicalName.trim().toLowerCase()
+					? ('name' as AliasKind)
+					: kindRaw === 'name' &&
+						  namePick.otherNames.some((o) => o.toLowerCase() === alias.toLowerCase())
+						? ('other_name' as AliasKind)
+						: (kindRaw as AliasKind);
 			addAlias(
 				{
 					profileId: keep.id,
-					alias: String(a.alias),
-					aliasKind: String(a.alias_kind || 'name') as AliasKind,
+					alias,
+					aliasKind: kind,
 					confidence: Number(a.confidence ?? 1),
 					sourceCorpus: a.source_corpus != null ? String(a.source_corpus) : null,
 				},
@@ -2125,7 +2364,8 @@ export function mergeProfiles(
 			);
 		}
 
-		// 3. Move identifiers (ignore duplicates)
+		// 3. Move identifiers (ignore duplicates). URLs: keep all distinct values;
+		// preferred official site is already written to metadata.website / companyUrl.
 		const mergeIdents = tx
 			.prepare('SELECT scheme, value, source_corpus FROM profile_identifiers WHERE profile_id = ?')
 			.all(merge.id) as Array<Record<string, unknown>>;
@@ -2139,6 +2379,24 @@ export function mergeProfiles(
 				},
 				tx,
 			);
+		}
+		// Recompute preferred website after identifier transfer (merge may have added a better url).
+		const allUrlRows = tx
+			.prepare(
+				`SELECT value FROM profile_identifiers WHERE profile_id = ? AND scheme = 'url'`,
+			)
+			.all(keep.id) as Array<{ value: string }>;
+		const preferredAfter = pickPreferredWebsiteUrl([
+			...allUrlRows.map((r) => r.value),
+			typeof mergedMeta.website === 'string' ? mergedMeta.website : null,
+			typeof mergedMeta.companyUrl === 'string' ? mergedMeta.companyUrl : null,
+		]);
+		if (preferredAfter && preferredAfter !== mergedMeta.website) {
+			mergedMeta.website = preferredAfter;
+			mergedMeta.companyUrl = preferredAfter;
+			tx.prepare(
+				`UPDATE profiles SET metadata_json = ?, updated_at = ? WHERE id = ?`,
+			).run(JSON.stringify(mergedMeta), new Date().toISOString(), keep.id);
 		}
 
 		// 4. Move locations (ignore duplicates)
@@ -2227,6 +2485,10 @@ export function mergeProfiles(
 		).run(keep.id, merge.id, merge.id, keep.id);
 
 		tx.prepare('DELETE FROM profiles WHERE id = ?').run(merge.id);
+
+		// 8. Touch keep last so left-panel browse floats it above ingest churn
+		const touchAt = new Date().toISOString();
+		touchProfilesForUserAction([keep.id], tx, touchAt);
 	};
 
 	if (dbOverride) {

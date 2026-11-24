@@ -2,6 +2,9 @@
  * Detect whether a firm is linked to an external live listing / registry URL
  * (MineralAnswers producer page, BrokerCheck, company site, etc.).
  * Excludes our FINRA visualizer URLs and archival EDGAR browse links.
+ *
+ * Also ranks website URLs so merges prefer an official company site as primary
+ * while still keeping MineralAnswers / Wikipedia / etc. as secondary url= rows.
  */
 
 const LIVE_LISTING_META_KEYS = [
@@ -42,6 +45,85 @@ export function isLiveListingUrl(raw: string): boolean {
 	return true;
 }
 
+/**
+ * Higher = better primary website for a profile card.
+ * Official company domains beat registries, MineralAnswers, Wikipedia, social, and app URLs.
+ */
+export function urlPreferenceScore(raw: string): number {
+	const host = hostnameOfUrl(raw);
+	if (!host) return 0;
+	if (host === 'localhost' || host.startsWith('127.') || host.endsWith('.local')) return 0;
+	if (host.includes('finra-sec-data-visualizer')) return 5;
+	if (host.includes('wikipedia.org') || host.includes('wikidata.org')) return 30;
+	if (
+		host.includes('youtube.com') ||
+		host === 'youtu.be' ||
+		host.includes('linkedin.com') ||
+		host.includes('twitter.com') ||
+		host === 'x.com' ||
+		host.includes('facebook.com') ||
+		host.includes('instagram.com')
+	) {
+		return 20;
+	}
+	if (
+		host.includes('bloomberg.com') ||
+		host.includes('reuters.com') ||
+		host.includes('nytimes.com') ||
+		host.includes('wsj.com') ||
+		host.includes('ft.com')
+	) {
+		return 25;
+	}
+	if (host.includes('mineralanswers.com')) return 50;
+	if (host.includes('okcountyrecords.com') || host.includes('oklahomacounty.org')) return 45;
+	if (host.includes('brokercheck.finra.org') || host.includes('finra.org')) return 70;
+	if (host.includes('adviserinfo.sec.gov')) return 70;
+	if (host === 'sec.gov' || host.endsWith('.sec.gov')) return 40;
+	// Generic https host → treat as official / company site
+	return 100;
+}
+
+/** True when the URL looks like a first-party company / org website. */
+export function isOfficialWebsiteUrl(raw: string): boolean {
+	return urlPreferenceScore(raw) >= 100;
+}
+
+/** Pick the best primary website from a list (official company site preferred). */
+export function pickPreferredWebsiteUrl(urls: Array<string | null | undefined>): string | null {
+	let best: string | null = null;
+	let bestScore = -1;
+	for (const raw of urls) {
+		const u = String(raw || '').trim();
+		if (!u || !/^https?:\/\//i.test(u)) continue;
+		const score = urlPreferenceScore(u);
+		if (score > bestScore) {
+			bestScore = score;
+			best = u;
+		} else if (score === bestScore && best && u.length < best.length) {
+			// Prefer shorter canonical homepage over deep links at the same tier
+			best = u;
+		}
+	}
+	return bestScore > 0 ? best : null;
+}
+
+/** Sort url identifiers so official sites come first; other schemes unchanged relative order. */
+export function sortIdentifiersByUrlPreference<T extends { scheme: string; value: string }>(
+	identifiers: T[],
+): T[] {
+	return [...identifiers].sort((a, b) => {
+		const sa = String(a.scheme || '').toLowerCase();
+		const sb = String(b.scheme || '').toLowerCase();
+		if (sa !== sb) return sa.localeCompare(sb);
+		if (sa === 'url') {
+			const diff = urlPreferenceScore(b.value) - urlPreferenceScore(a.value);
+			if (diff !== 0) return diff;
+		}
+		return String(a.value).localeCompare(String(b.value));
+	});
+}
+
 function urlsFromMetadata(meta: Record<string, unknown> | null | undefined): string[] {
 	if (!meta || typeof meta !== 'object') return [];
 	const out: string[] = [];
@@ -64,4 +146,14 @@ export function detectFirmLiveSourceUrl(
 		if (isLiveListingUrl(id.value)) return true;
 	}
 	return false;
+}
+
+/** True when FINRA BrokerCheck or SEC IA scope from the visualizer/API is ACTIVE. */
+export function detectFirmActiveFinraScope(
+	meta: Record<string, unknown> | null | undefined,
+): boolean {
+	if (!meta || typeof meta !== 'object') return false;
+	const bc = String(meta.finraBcScope || '').trim().toUpperCase();
+	const ia = String(meta.finraIaScope || '').trim().toUpperCase();
+	return bc === 'ACTIVE' || ia === 'ACTIVE';
 }
