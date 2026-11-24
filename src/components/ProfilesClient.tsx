@@ -502,6 +502,199 @@ function formatSourceCorpusLabel(corpus: string | null | undefined): string {
 	return out;
 }
 
+/** Humanize corpus / feed slugs for historic-event source chips under the headline. */
+function humanizeHistoricSourceLabel(raw: string): string {
+	const cleaned = formatSourceCorpusLabel(raw);
+	if (!cleaned) return '';
+	const known: Record<string, string> = {
+		'cdc-covid-timeline': 'CDC COVID timeline',
+		'dod-covid-timeline': 'DoD COVID timeline',
+		'authority-timelines': 'Authority timelines',
+		'wikipedia-local': 'Local Wikipedia',
+		wikipedia: 'Wikipedia',
+		'news-rss': 'News RSS',
+		news_rss: 'News RSS',
+		usgs: 'USGS',
+		enr: 'ENR',
+		'ground-engineering': 'Ground Engineering',
+		'construction-dive': 'Construction Dive',
+		'construction-exec': 'Construction Executive',
+		'texas-construction-law': 'Texas Construction Law',
+		'federal-news-network': 'Federal News Network',
+		'usgs-science-snippet': 'USGS Science Snippet',
+	};
+	const key = cleaned.toLowerCase().replace(/_/g, '-');
+	if (known[key]) return known[key];
+	const feedMatch = key.match(/^news-rss:(.+)$/);
+	if (feedMatch) {
+		const feedKey = feedMatch[1];
+		if (known[feedKey]) return known[feedKey];
+		return feedKey
+			.split('-')
+			.filter(Boolean)
+			.map((w) => (w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+			.join(' ');
+	}
+	return cleaned
+		.split(/[-_]+/)
+		.filter(Boolean)
+		.map((w) => {
+			if (/^(cdc|dod|usgs|enr|sec|finra|okcr|txdot|usace|fema)$/i.test(w)) return w.toUpperCase();
+			if (/^(covid|rss|tbm)$/i.test(w)) return w.toUpperCase();
+			return w.charAt(0).toUpperCase() + w.slice(1);
+		})
+		.join(' ');
+}
+
+type HistoricSourceOrigin = 'local' | 'external';
+type HistoricSourceTag = { label: string; origin: HistoricSourceOrigin };
+
+/** Local-only corpora / labels (orange). Everything else with web provenance is external (blue). */
+const HISTORIC_LOCAL_SOURCE_RE =
+	/^(?:local\s*wikipedia|wikipedia-local|entity-dossiers?|dallas-elite(?:-curated)?|dynasties?(?:-power-network)?(?:-curated)?|regional-history(?:-corpus)?|manual|curated|seed|dialog-curated|court-files|dialog(?:-curated)?)$/i;
+
+const HISTORIC_EXTERNAL_CORPUS_RE =
+	/^(?:news[_-]rss(?:[:].+)?|authority-timelines?|cdc-covid-timeline|dod-covid-timeline|usgs(?:-science-snippet)?|finra(?:-visualizer|-rosters)?|sec(?:-edgar)?|wikipedia)$/i;
+
+function isHttpUrl(value: string | null | undefined): boolean {
+	return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function isLocalhostUrl(value: string | null | undefined): boolean {
+	const v = String(value || '').trim();
+	if (!v) return false;
+	try {
+		const u = new URL(v);
+		return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname.endsWith('.local');
+	} catch {
+		return /localhost|127\.0\.0\.1/i.test(v);
+	}
+}
+
+function classifyHistoricSourceOrigin(opts: {
+	label: string;
+	corpus?: string | null;
+	fromNewsFeed?: boolean;
+	fromUrlHost?: boolean;
+	hasExternalWikipedia?: boolean;
+	sourceUrl?: string | null;
+}): HistoricSourceOrigin {
+	const labelKey = opts.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+	const corpusKey = String(opts.corpus || '')
+		.trim()
+		.toLowerCase()
+		.replace(/_/g, '-');
+
+	// Live Wikipedia / Local Wikipedia validated against a public wikipedia.org URL → external (blue).
+	if (labelKey === 'wikipedia' || labelKey === 'local wikipedia') {
+		return opts.hasExternalWikipedia ? 'external' : 'local';
+	}
+	if (opts.fromNewsFeed) return 'external';
+	if (opts.fromUrlHost) {
+		return isLocalhostUrl(opts.sourceUrl) ? 'local' : 'external';
+	}
+	if (corpusKey && HISTORIC_EXTERNAL_CORPUS_RE.test(corpusKey)) return 'external';
+	if (corpusKey.startsWith('news-rss:') || corpusKey.startsWith('news_rss:')) return 'external';
+	if (HISTORIC_LOCAL_SOURCE_RE.test(labelKey) || (corpusKey && HISTORIC_LOCAL_SOURCE_RE.test(corpusKey))) {
+		return 'local';
+	}
+	// Public article URL on the card → treat publisher/corpus tags as external.
+	if (opts.sourceUrl && isHttpUrl(opts.sourceUrl) && !isLocalhostUrl(opts.sourceUrl)) return 'external';
+	return 'local';
+}
+
+/**
+ * Source chips under historic_event headlines: feed names, human corpora,
+ * URL hosts, and Local Wikipedia when fact-checked. Hides cluster:* /
+ * topic_consolidated / bare news_rss noise.
+ * origin: local (orange) | external (blue, including local wiki validated via wikipedia.org).
+ */
+function collectHistoricEventSourceTags(opts: {
+	metadata: Record<string, unknown> | null | undefined;
+	identifiers: Array<{ scheme: string; value: string; sourceCorpus?: string | null }>;
+	sourceCorpus?: string | null;
+}): HistoricSourceTag[] {
+	const meta = opts.metadata || {};
+	const tags: HistoricSourceTag[] = [];
+	const seen = new Set<string>();
+	const sourceUrl = typeof meta.sourceUrl === 'string' ? meta.sourceUrl.trim() : '';
+	const wikipediaUrl = typeof meta.wikipediaUrl === 'string' ? meta.wikipediaUrl.trim() : '';
+	const hasExternalWikipedia =
+		(wikipediaUrl && isHttpUrl(wikipediaUrl) && !isLocalhostUrl(wikipediaUrl) && /wikipedia\.org/i.test(wikipediaUrl)) ||
+		opts.identifiers.some((id) => {
+			if (String(id.scheme || '').toLowerCase() !== 'url') return false;
+			const v = String(id.value || '').trim();
+			return isHttpUrl(v) && !isLocalhostUrl(v) && /wikipedia\.org/i.test(v);
+		});
+
+	const push = (
+		label: string | null | undefined,
+		hint?: { corpus?: string | null; fromNewsFeed?: boolean; fromUrlHost?: boolean },
+	) => {
+		const t = String(label || '').trim();
+		if (!t) return;
+		const k = t.toLowerCase().replace(/[^a-z0-9]+/g, '');
+		if (!k || seen.has(k)) return;
+		seen.add(k);
+		tags.push({
+			label: t,
+			origin: classifyHistoricSourceOrigin({
+				label: t,
+				corpus: hint?.corpus,
+				fromNewsFeed: hint?.fromNewsFeed,
+				fromUrlHost: hint?.fromUrlHost,
+				hasExternalWikipedia,
+				sourceUrl,
+			}),
+		});
+	};
+
+	const newsFeedName = typeof meta.newsFeedName === 'string' ? meta.newsFeedName.trim() : '';
+	if (newsFeedName) push(newsFeedName, { fromNewsFeed: true, corpus: `news_rss:${meta.newsFeedId || 'feed'}` });
+
+	const corpora = Array.isArray(meta.corpora) ? meta.corpora.map(String) : [];
+	for (const c of corpora) {
+		const raw = String(c || '').trim();
+		if (!raw) continue;
+		const low = raw.toLowerCase();
+		if (low.startsWith('cluster:')) continue;
+		if (low === 'topic_consolidated' || low === 'topic-consolidated') continue;
+		if (low === 'news_rss' || low === 'news-rss') continue;
+		if (newsFeedName && (low.startsWith('news_rss:') || low.startsWith('news-rss:'))) continue;
+		push(humanizeHistoricSourceLabel(raw), { corpus: raw });
+	}
+
+	if (opts.sourceCorpus) {
+		const sc = String(opts.sourceCorpus).trim();
+		const low = sc.toLowerCase();
+		if (sc && !low.startsWith('cluster:') && low !== 'topic_consolidated' && low !== 'news_rss') {
+			if (!(newsFeedName && (low.startsWith('news_rss:') || low.startsWith('news-rss:')))) {
+				push(humanizeHistoricSourceLabel(sc), { corpus: sc });
+			}
+		}
+	}
+
+	for (const id of opts.identifiers) {
+		if (String(id.scheme || '').toLowerCase() !== 'url') continue;
+		if (isHiddenEpsteinSourceIdentifier(id.scheme, id.value)) continue;
+		const href = String(id.value || '').trim();
+		const hostLabel = sourceLabelFromSchemeValue(id.scheme, href);
+		if (!hostLabel) continue;
+		push(humanizeHistoricSourceLabel(hostLabel), { fromUrlHost: true, corpus: id.sourceCorpus });
+	}
+
+	const wiki = meta.wikiFactCheck;
+	if (Array.isArray(wiki) && wiki.length > 0) push('Local Wikipedia', { corpus: 'wikipedia-local' });
+	else if (wikipediaUrl) push('Wikipedia', { corpus: 'wikipedia' });
+
+	return tags;
+}
+
+const HISTORIC_SOURCE_TAG_LOCAL =
+	'inline-flex max-w-full items-center rounded border border-[#F97316]/45 bg-[#F97316]/15 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[#9a3412] dark:text-orange-100';
+const HISTORIC_SOURCE_TAG_EXTERNAL =
+	'inline-flex max-w-full items-center rounded border border-sky-500/50 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-sky-900 dark:text-sky-100';
+
 function scrubEpsteinSourceLabels(text: string | null | undefined): string {
 	return String(text || '')
 		.replace(/\bepstein-dialog-curated\b/gi, 'dialog-curated')
@@ -1021,26 +1214,36 @@ function renderSummaryInline(text: string, emphasizeClass = 'font-bold text-whit
 /**
  * Drop pronunciation / phonetic guides from overview summaries.
  * Keeps birth/death parentheticals: "Name ( / tiːl /; born 1967)" → "Name (born 1967)".
- * Slash pairs with `.` inside are left alone so URLs are not mangled.
+ * http(s) URLs are masked first so path segments like /news/ or /content/ are not treated as phonetics.
  */
 function stripPronunciationGuides(text: string): string {
-	return (
-		String(text || '')
-			// Labels only — do not drop the whole parenthetical (birth dates live there too).
-			.replace(/\b(?:pronounced|pronunciation|IPA)\s*[:–—-]?\s*/gi, '')
-			// Slash phonetics, including spaced letters: /tiːl/ or / t iː l /
-			.replace(/\s*\/\s*[^/\n.]{1,48}?\//g, '')
-			.replace(/\(\s*listen\s*\)/gi, ' ')
-			// After removing phonetics inside a paren: "( ; born …)" → "(born …)"
-			.replace(/\(\s*[;,:]\s*/g, '(')
-			.replace(/\(\s+/g, '(')
-			.replace(/\(\s*\)/g, ' ')
-			// Collapse horizontal runs only — keep newlines for labeled / year sections.
-			.replace(/[^\S\n]{2,}/g, ' ')
-			.replace(/[^\S\n]+([,.;:])/g, '$1')
-			.replace(/[^\S\n]+\n/g, '\n')
-			.trim()
-	);
+	const src = String(text || '');
+	const urls: string[] = [];
+	const masked = src.replace(/https?:\/\/[^\s)]+/gi, (url) => {
+		const token = `__URL_PH${urls.length}__`;
+		urls.push(url);
+		return token;
+	});
+	let out = masked
+		// Labels only — do not drop the whole parenthetical (birth dates live there too).
+		.replace(/\b(?:pronounced|pronunciation|IPA)\s*[:–—-]?\s*/gi, '')
+		// Slash phonetics after space/paren only (keeps owner/design/utility path-style phrases).
+		// Includes spaced letters: /tiːl/ or / t iː l /
+		.replace(/(^|[\s(])\/\s*[^/\n.]{1,48}?\//g, '$1')
+		.replace(/\(\s*listen\s*\)/gi, ' ')
+		// After removing phonetics inside a paren: "( ; born …)" → "(born …)"
+		.replace(/\(\s*[;,:]\s*/g, '(')
+		.replace(/\(\s+/g, '(')
+		.replace(/\(\s*\)/g, ' ')
+		// Collapse horizontal runs only — keep newlines for labeled / year sections.
+		.replace(/[^\S\n]{2,}/g, ' ')
+		.replace(/[^\S\n]+([,.;:])/g, '$1')
+		.replace(/[^\S\n]+\n/g, '\n')
+		.trim();
+	for (let i = 0; i < urls.length; i++) {
+		out = out.replace(`__URL_PH${i}__`, urls[i]);
+	}
+	return out;
 }
 
 const SUMMARY_LABEL_RE = /^(?:\*\*)?([^*:\n]{1,48})(?:\*\*)?\s*:\s*(.+)$/;
@@ -1105,11 +1308,20 @@ function sectionProseByYears(text: string): SummaryBlock[] {
 
 	// Single trailing parenthetical range with no sentence anchors:
 	// e.g. "Secretary of State (Reagan administration, 1982–1989)."
+	// Only when the paren closes at/near end of the string — mid-sentence citations
+	// like "(Construction Dive, 2026-11-24). Fact-checked…" stay inline prose.
 	if (years.length === 0 && allYears.length === 1) {
 		const y = allYears[0];
 		const open = src.lastIndexOf('(', y.index);
 		const close = src.indexOf(')', y.index);
-		if (open >= 0 && close > y.index && !src.slice(open + 1, y.index).includes(')')) {
+		const afterClose = close >= 0 ? src.slice(close + 1).trim() : '';
+		const trailingOk = afterClose === '' || /^[.;,!?]["'\u201c\u201d]?$/.test(afterClose);
+		if (
+			open >= 0 &&
+			close > y.index &&
+			trailingOk &&
+			!src.slice(open + 1, y.index).includes(')')
+		) {
 			const lead = src
 				.slice(0, open)
 				.trim()
@@ -1413,7 +1625,9 @@ function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
 								/>
 								<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
 									<span className='font-mono font-semibold opacity-90'>
-										{entry.date && entry.date !== 'Undated' ? formatDisplayDate(entry.date) || formatSummaryDateLabel(entry.date) : 'Undated'}
+										{entry.date && entry.date !== 'Undated' ?
+											formatSummaryDateLabel(entry.date) || formatDisplayDate(entry.date)
+										:	'Undated'}
 									</span>
 									{entry.sourceTag ?
 										<span className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>{entry.sourceTag}</span>
@@ -4158,6 +4372,14 @@ export default function ProfilesClient({
 															metadata: meta,
 														})
 													:	[];
+												const historicSourceTags =
+													detail.profile.profileType === 'historic_event' ?
+														collectHistoricEventSourceTags({
+															metadata: meta,
+															identifiers: detail.identifiers,
+															sourceCorpus: typeof meta.sourceCorpus === 'string' ? meta.sourceCorpus : null,
+														})
+													:	[];
 
 												return (
 													<>
@@ -4228,6 +4450,26 @@ export default function ProfilesClient({
 																</span>
 															}
 														</h2>
+														{historicSourceTags.length > 0 ?
+															<div
+																className='mb-1.5 flex flex-wrap items-center gap-1.5'
+																aria-label='Content sources'>
+																{historicSourceTags.map((tag) => (
+																	<span
+																		key={tag.label}
+																		className={
+																			tag.origin === 'external' ? HISTORIC_SOURCE_TAG_EXTERNAL : HISTORIC_SOURCE_TAG_LOCAL
+																		}
+																		title={
+																			tag.origin === 'external' ?
+																				`External source: ${tag.label}`
+																			:	`Local source: ${tag.label}`
+																		}>
+																		{tag.label}
+																	</span>
+																))}
+															</div>
+														:	null}
 														{profileEditing ?
 															<div className='mb-1.5 flex flex-wrap items-center gap-1.5'>
 																<input
