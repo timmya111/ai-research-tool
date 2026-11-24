@@ -6,6 +6,7 @@ import AlignmentEvidenceList from '@/components/AlignmentEvidenceList';
 import ThemeToggle from '@/components/ThemeToggle';
 import { detectFirmActiveFinraScope, detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
 import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
+import { summaryMarkdownToHtml } from '@/lib/research/profiles/summaryMarkdown';
 import type {
 	AliasKind,
 	AlignmentCandidate,
@@ -1192,28 +1193,49 @@ const SUMMARY_DATED_BULLET_RE =
 const SUMMARY_TITLED_BULLET_RE = /^\*\*([^*]+)\*\*\s*[—–:\-]\s*(.+)$/;
 const SUMMARY_URL_RE = /^(https?:\/\/\S+)$/i;
 
-function renderSummaryInline(text: string, emphasizeClass = 'font-bold text-white'): ReactNode[] {
-	const nodes: ReactNode[] = [];
-	let last = 0;
-	let key = 0;
+/** Emphasize numeric year/date tokens as markdown bold (rendered via marked). */
+function emphasizeSummaryYearTokens(text: string): string {
 	const src = String(text || '');
-	const tokenRe = new RegExp(`(\\*\\*([^*]+)\\*\\*)|(\\b(?:${SUMMARY_YEAR_TOKEN})\\b)`, 'g');
-	let m: RegExpExecArray | null;
-	while ((m = tokenRe.exec(src))) {
-		if (m.index > last) nodes.push(src.slice(last, m.index));
-		const content = m[2] != null ? m[2] : m[3];
-		const display = m[2] != null && !new RegExp(`^(?:${SUMMARY_YEAR_TOKEN})$`).test(String(content || '').trim()) ? content : formatSummaryDateLabel(String(content || ''));
-		nodes.push(
-			<strong
-				key={`s-${key++}`}
-				className={emphasizeClass}>
-				{display}
-			</strong>,
+	const yearRe = new RegExp(`\\b(?:${SUMMARY_YEAR_TOKEN})\\b`, 'g');
+	return src.replace(yearRe, (...args: unknown[]) => {
+		const match = String(args[0] || '');
+		const offset = Number(args[args.length - 2] || 0);
+		const before = src.slice(Math.max(0, offset - 2), offset);
+		const after = src.slice(offset + match.length, offset + match.length + 2);
+		if (before.endsWith('**') || after.startsWith('**')) return match;
+		const lineStart = src.lastIndexOf('\n', offset) + 1;
+		const prefix = src.slice(lineStart, offset);
+		if (/https?:\/\/\S*$/i.test(prefix)) return match;
+		return `**${formatSummaryDateLabel(match)}**`;
+	});
+}
+
+function SummaryMarkdown({
+	text,
+	inline = false,
+	className,
+}: {
+	text: string;
+	inline?: boolean;
+	className?: string;
+}) {
+	const prepared = emphasizeSummaryYearTokens(String(text || ''));
+	const html = summaryMarkdownToHtml(prepared, { inline });
+	if (!html) return null;
+	if (inline) {
+		return (
+			<span
+				className={className}
+				dangerouslySetInnerHTML={{ __html: html }}
+			/>
 		);
-		last = m.index + m[0].length;
 	}
-	if (last < src.length) nodes.push(src.slice(last));
-	return nodes;
+	return (
+		<div
+			className={className}
+			dangerouslySetInnerHTML={{ __html: html }}
+		/>
+	);
 }
 
 /**
@@ -1586,6 +1608,24 @@ function summaryYearSortKey(yearLabel: string): number {
 	return Math.max(...nums) * 10_000;
 }
 
+/** Normalize overview timeline dates so "November 24, 2026" and "2026-11-24" share one group. */
+function summaryTimelineDateKey(date: string | null | undefined): string {
+	const raw = String(date || '').trim();
+	if (!raw || raw === 'Undated') return 'Undated';
+	const iso = raw.match(/\b((?:18|19|20)\d{2}-\d{2}-\d{2})\b/);
+	if (iso) return iso[1];
+	const us = raw.match(/\b(\d{2})-(\d{2})-((?:18|19|20)\d{2})\b/);
+	if (us) return `${us[3]}-${us[1]}-${us[2]}`;
+	const labeled = formatSummaryDateLabel(raw);
+	return labeled || raw;
+}
+
+function summaryTimelineDateLabel(date: string | null | undefined): string {
+	const raw = String(date || '').trim();
+	if (!raw || raw === 'Undated') return 'Undated';
+	return formatSummaryDateLabel(raw) || formatDisplayDate(raw) || raw;
+}
+
 function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
 	const byYear = new Map<string, SummaryTimelineEntry[]>();
 	for (const entry of entries) {
@@ -1609,43 +1649,77 @@ function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
 
 	return (
 		<div className='space-y-4'>
-			{years.map((year) => (
-				<section
-					key={year}
-					className='space-y-2'>
-					<div className='flex items-baseline gap-2 border-b border-white/15 px-0.5 py-1'>
-						<h4 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h4>
-						<span className='text-[10px] opacity-60'>
-							{(byYear.get(year) || []).length} {(byYear.get(year) || []).length === 1 ? 'entry' : 'entries'}
-						</span>
-					</div>
-					<div className='relative ml-1.5 space-y-0 border-l-2 border-white/20 pl-3.5'>
-						{(byYear.get(year) || []).map((entry, ei) => (
-							<article
-								key={`${year}-${ei}-${entry.date}`}
-								className='relative pb-3.5 last:pb-1'>
-								<span
-									aria-hidden
-									className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
-								/>
-								<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
-									<span className='font-mono font-semibold opacity-90'>
-										{entry.date && entry.date !== 'Undated' ?
-											formatSummaryDateLabel(entry.date) || formatDisplayDate(entry.date)
-										:	'Undated'}
-									</span>
-									{entry.sourceTag ?
-										<span className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>{entry.sourceTag}</span>
-									:	null}
-								</div>
-								<p className='m-0 mt-1 text-[12px] leading-relaxed text-white/90'>
-									{renderSummaryInline(entry.text, 'font-bold text-white')}
-								</p>
-							</article>
-						))}
-					</div>
-				</section>
-			))}
+			{years.map((year) => {
+				const yearEntries = byYear.get(year) || [];
+				// Collapse same-date bullets: one date header, then stacked claims.
+				const dateGroups: Array<{ key: string; label: string; entries: SummaryTimelineEntry[] }> = [];
+				const dateIndex = new Map<string, number>();
+				for (const entry of yearEntries) {
+					const key = summaryTimelineDateKey(entry.date);
+					const existing = dateIndex.get(key);
+					if (existing != null) {
+						dateGroups[existing].entries.push(entry);
+						continue;
+					}
+					dateIndex.set(key, dateGroups.length);
+					dateGroups.push({
+						key,
+						label: summaryTimelineDateLabel(entry.date),
+						entries: [entry],
+					});
+				}
+
+				return (
+					<section
+						key={year}
+						className='space-y-2'>
+						<div className='flex items-baseline gap-2 border-b border-white/15 px-0.5 py-1'>
+							<h4 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h4>
+							<span className='text-[10px] opacity-60'>
+								{yearEntries.length} {yearEntries.length === 1 ? 'entry' : 'entries'}
+								{dateGroups.length !== yearEntries.length ? ` · ${dateGroups.length} dates` : ''}
+							</span>
+						</div>
+						<div className='relative ml-1.5 space-y-0 border-l-2 border-white/20 pl-3.5'>
+							{dateGroups.map((group) => {
+								const sourceTags = [
+									...new Set(group.entries.map((e) => e.sourceTag).filter(Boolean).map(String)),
+								];
+								return (
+									<article
+										key={`${year}-${group.key}`}
+										className='relative pb-3.5 last:pb-1'>
+										<span
+											aria-hidden
+											className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
+										/>
+										<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+											<span className='font-mono font-semibold opacity-90'>{group.label}</span>
+											{sourceTags.map((tag) => (
+												<span
+													key={tag}
+													className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>
+													{tag}
+												</span>
+											))}
+										</div>
+										<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2' : 'mt-1'}>
+											{group.entries.map((entry, ei) => (
+												<SummaryMarkdown
+													key={`${group.key}-${ei}`}
+													text={entry.text}
+													inline
+													className='block text-[12px] leading-relaxed text-white/90'
+												/>
+											))}
+										</div>
+									</article>
+								);
+							})}
+						</div>
+					</section>
+				);
+			})}
 		</div>
 	);
 }
@@ -1722,7 +1796,10 @@ function ProfileSummaryText({ text }: { text: string }) {
 												{entry.text || entry.href}
 											</a>
 										:	<p className='m-0 mt-0.5 text-[12px] leading-snug text-white/90'>
-												{renderSummaryInline(entry.text, 'font-bold text-white')}
+												<SummaryMarkdown
+													text={entry.text}
+													inline
+												/>
 												{entry.href ?
 													<>
 														{' '}
@@ -1747,7 +1824,10 @@ function ProfileSummaryText({ text }: { text: string }) {
 								key={`y-${idx}`}
 								label={formatSummaryDateLabel(block.year)}
 								accent>
-								{renderSummaryInline(block.text, 'font-bold text-white')}
+								<SummaryMarkdown
+									text={block.text}
+									inline
+								/>
 							</SummarySectionCard>
 						);
 					}
@@ -1763,7 +1843,10 @@ function ProfileSummaryText({ text }: { text: string }) {
 									<SummarySectionCard
 										key={`r-${idx}-${ri}`}
 										label={row.label}>
-										{renderSummaryInline(row.value, 'font-bold text-white')}
+										<SummaryMarkdown
+											text={row.value}
+											inline
+										/>
 									</SummarySectionCard>
 								))}
 							</div>
@@ -1775,11 +1858,11 @@ function ProfileSummaryText({ text }: { text: string }) {
 						return null;
 					}
 					return (
-						<p
+						<SummaryMarkdown
 							key={`p-${idx}`}
-							className='m-0 text-[12px] leading-relaxed text-white'>
-							{renderSummaryInline(block.text, 'font-bold text-white')}
-						</p>
+							text={block.text}
+							className='summary-md-prose'
+						/>
 					);
 				})}
 			</div>
@@ -5953,49 +6036,92 @@ export default function ProfilesClient({
 															});
 															return (
 																<div className='space-y-5'>
-																	{years.map((year) => (
-																		<section
-																			key={year}
-																			className='space-y-2'>
-																			<div className='sticky top-0 z-[1] -mx-0.5 flex items-baseline gap-2 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-0.5 py-1.5'>
-																				<h3 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h3>
-																				<span className='text-[10px] opacity-60'>
-																					{(byYear.get(year) || []).length} {(byYear.get(year) || []).length === 1 ? 'entry' : 'entries'}
-																				</span>
-																			</div>
-																			<div className='relative space-y-0 border-l-2 border-[var(--app-border)] pl-3.5 ml-1.5'>
-																				{(byYear.get(year) || []).map((entry) => (
-																					<article
-																						key={entry.id}
-																						className='relative pb-3.5 last:pb-1'>
-																						<span
-																							aria-hidden
-																							className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[var(--app-surface)]'
-																						/>
-																						<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
-																							<span className='font-mono font-semibold opacity-90'>{entry.eventDate ? formatDisplayDate(entry.eventDate) : 'Undated'}</span>
-																							{entry.geoLabel ?
-																								<span className='opacity-65'>📍 {entry.geoLabel}</span>
-																							:	null}
-																							{entry.sourceUrl ?
-																								<a
-																									href={entry.sourceUrl}
-																									target='_blank'
-																									rel='noreferrer'
-																									className='text-sky-600 underline dark:text-sky-300'>
-																									Source ↗
-																								</a>
-																							:	null}
-																						</div>
-																						<div className='mt-0.5 text-sm font-semibold leading-snug'>{entry.title}</div>
-																						{entry.summary && entry.summary !== entry.title ?
-																							<p className='m-0 mt-1 text-xs leading-relaxed opacity-80'>{entry.summary}</p>
-																						:	null}
-																					</article>
-																				))}
-																			</div>
-																		</section>
-																	))}
+																	{years.map((year) => {
+																		const yearEntries = byYear.get(year) || [];
+																		const dateGroups: Array<{
+																			key: string;
+																			label: string;
+																			entries: typeof yearEntries;
+																		}> = [];
+																		const dateIndex = new Map<string, number>();
+																		for (const entry of yearEntries) {
+																			const key = summaryTimelineDateKey(entry.eventDate);
+																			const existing = dateIndex.get(key);
+																			if (existing != null) {
+																				dateGroups[existing].entries.push(entry);
+																				continue;
+																			}
+																			dateIndex.set(key, dateGroups.length);
+																			dateGroups.push({
+																				key,
+																				label: entry.eventDate ? formatDisplayDate(entry.eventDate) || summaryTimelineDateLabel(entry.eventDate) : 'Undated',
+																				entries: [entry],
+																			});
+																		}
+																		return (
+																			<section
+																				key={year}
+																				className='space-y-2'>
+																				<div className='sticky top-0 z-[1] -mx-0.5 flex items-baseline gap-2 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-0.5 py-1.5'>
+																					<h3 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h3>
+																					<span className='text-[10px] opacity-60'>
+																						{yearEntries.length} {yearEntries.length === 1 ? 'entry' : 'entries'}
+																						{dateGroups.length !== yearEntries.length ? ` · ${dateGroups.length} dates` : ''}
+																					</span>
+																				</div>
+																				<div className='relative ml-1.5 space-y-0 border-l-2 border-[var(--app-border)] pl-3.5'>
+																					{dateGroups.map((group) => (
+																						<article
+																							key={`${year}-${group.key}`}
+																							className='relative pb-3.5 last:pb-1'>
+																							<span
+																								aria-hidden
+																								className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[var(--app-surface)]'
+																							/>
+																							<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+																								<span className='font-mono font-semibold opacity-90'>{group.label}</span>
+																								{group.entries
+																									.map((e) => e.geoLabel)
+																									.filter(Boolean)
+																									.filter((g, i, arr) => arr.indexOf(g) === i)
+																									.map((geo) => (
+																										<span
+																											key={String(geo)}
+																											className='opacity-65'>
+																											📍 {geo}
+																										</span>
+																									))}
+																								{group.entries
+																									.map((e) => e.sourceUrl)
+																									.filter(Boolean)
+																									.filter((u, i, arr) => arr.indexOf(u) === i)
+																									.map((url) => (
+																										<a
+																											key={String(url)}
+																											href={String(url)}
+																											target='_blank'
+																											rel='noreferrer'
+																											className='text-sky-600 underline dark:text-sky-300'>
+																											Source ↗
+																										</a>
+																									))}
+																							</div>
+																							<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
+																								{group.entries.map((entry) => (
+																									<div key={entry.id}>
+																										<div className='text-sm font-semibold leading-snug'>{entry.title}</div>
+																										{entry.summary && entry.summary !== entry.title ?
+																											<p className='m-0 mt-1 text-xs leading-relaxed opacity-80'>{entry.summary}</p>
+																										:	null}
+																									</div>
+																								))}
+																							</div>
+																						</article>
+																					))}
+																				</div>
+																			</section>
+																		);
+																	})}
 																</div>
 															);
 														})()

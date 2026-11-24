@@ -113,6 +113,8 @@
 		"profiles:backfill-bryan-oil-ids": "node scripts/backfill-bryan-oil-ids.mjs"
 	},
 	"dependencies": {
+		"isomorphic-dompurify": "^4.8.0",
+		"marked": "^18.2.1",
 		"next": "16.4.6",
 		"react": "19.3.0",
 		"react-dom": "19.3.0",
