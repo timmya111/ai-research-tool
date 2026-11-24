@@ -50,7 +50,7 @@ const MEDICAL_HOSPITAL_RE =
 	/\b(hospital|medical\s+center|medical\s+centre|health\s+system|healthcare\s+system|health\s+center|health\s+centre|infirmary|clinic\b|mayo\s+clinic|cleveland\s+clinic|va\s+medical|children'?s\s+hospital|general\s+hospital|memorial\s+hospital|regional\s+medical|surgical\s+center|trauma\s+center|cancer\s+center|maternity\s+hospital|psychiatric\s+(?:hospital|center|centre|institute|clinic|facility)|behavioral\s+health\s+(?:hospital|center|centre|system)|asylum|sanitarium|sanatorium|neuropsychiatric|mental\s+health\s+(?:hospital|center|centre|institute|facility|authority))\b/i;
 
 const EDUCATION_RE =
-	/\b(universit[a-z]*|college|polytechnic|mit\b|caltech|eth\s+zurich|itmo|sorbonne|stanford|harvard|oxford|cambridge|princeton|yale|columbia\s+univ|berkeley|nyu\b|ucla\b|ut\s+dallas|nazarbayev|novosibirsk\s+state|moscow\s+institute\s+of\s+physics|technion|imperial\s+college|tsinghua|peking\s+univ|kyoto\s+univ|tokyo\s+institute\s+of\s+technology|faculty\s+of|school\s+district|independent\s+school|public\s+schools|board\s+of\s+education|high\s+school|middle\s+school|elementary\s+school|prep(?:aratory)?\s+school|school\s+of\b|conservatory|seminary|educational\s+(?:trust|foundation|institute|board|system|services)|education\s+(?:board|district|network|system)|academy\s+of\s+(?!sciences|medicine)|k-?12|charter\s+school|montessori|lyceum|gymnasium|edtech|teaching\s+institute)\b/i;
+	/\b(universit[a-z]*|universidade|universidad|université|college|polytechnic|politecnico|mit\b|caltech|eth\s+zurich|itmo|sorbonne|stanford|harvard|oxford|cambridge|princeton|yale|columbia\s+univ|berkeley|nyu\b|ucla\b|ut\s+dallas|nazarbayev|novosibirsk\s+state|moscow\s+institute\s+of\s+physics|technion|imperial\s+college|tsinghua|peking\s+univ|kyoto\s+univ|tokyo\s+institute\s+of\s+technology|faculty\s+of|school\s+district|independent\s+school|public\s+schools|board\s+of\s+education|high\s+school|middle\s+school|elementary\s+school|prep(?:aratory)?\s+school|law\s+school|business\s+school|medical\s+school|divinity\s+school|graduate\s+school|school\s+of\b|conservatory|seminary|educational\s+(?:trust|foundation|institute|board|system|services|group)|education\s+(?:board|district|network|system|group)|academy\s+of\s+(?!sciences|medicine)|k-?12|charter\s+school|montessori|lyceum|gymnasium|edtech|teaching\s+institute|instituto\s+superior|karolinska|virginia\s+tech)\b/i;
 
 const US_GOVERNMENT_RE =
 	/\b(u\.?s\.?\s+(?:department|dept|army|navy|air\s+force|marines|coast\s+guard|customs|border|marshals|secret\s+service|treasury|justice|state|defense|health|geological|government|federal|senate|congress|house\s+of\s+representatives)|united\s+states\s+(?:department|government|army|navy|air\s+force|secret\s+service|senate|congress)|federal\s+(?:bureau|reserve|trade|communications|aviation|emergency|agency|commission|administration|government)|white\s+house|\bcdc\b|centers\s+for\s+disease\s+control|\bhhs\b|health\s+and\s+human\s+services|\bdod\b|department\s+of\s+defense|\bdhs\b|homeland\s+security|\bice\b|immigration\s+and\s+customs|\bdea\b|drug\s+enforcement|\bcbp\b|customs\s+and\s+border|\bfbi\b|\batf\b|\busss\b|\bdoj\b|\bfda\b|food\s+and\s+drug\s+administration|\bnih\b|national\s+institutes\s+of\s+health|\bniaid\b|\bfema\b|\bnoaa\b|national\s+oceanic|\busgs\b|\bsec\b|securities\s+and\s+exchange\s+commission|\bnasa\b|\bdarpa\b|\bbarda\b|\bnorthcom\b|national\s+guard|\bngb\b|pentagon|war\.gov|central\s+intelligence\s+agency|\bcia\b|\bnsa\b|veterans\s+affairs|internal\s+revenue\s+service|\birs\b|environmental\s+protection\s+agency|\bepa\b|operation\s+warp\s+speed|texas\s+water\s+development\s+board|\btwdb\b|city\s+of\s+(?:atlanta|dallas|austin|houston|oklahoma\s+city|tulsa|durant|new\s+york|chicago|los\s+angeles|san\s+francisco|seattle|boston|miami|denver|phoenix)|state\s+of\s+(?:alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york|north\s+carolina|north\s+dakota|ohio|oklahoma|oregon|pennsylvania|rhode\s+island|south\s+carolina|south\s+dakota|tennessee|texas|utah|vermont|virginia|washington|west\s+virginia|wisconsin|wyoming)|(?:texas|oklahoma|california|new\s+york|florida|illinois|virginia|ohio|georgia|michigan|pennsylvania|north\s+carolina|arizona|colorado|washington|massachusetts|minnesota|missouri|tennessee|indiana|maryland|wisconsin|oregon|nevada|kansas|arkansas|louisiana|alabama|utah|iowa|kentucky|new\s+mexico)\s+(?:department|dept|commission|board|agency|legislature|senate|house|supreme\s+court|attorney\s+general|treasurer|comptroller|governor|state\s+police|highway\s+patrol|health\s+department|water\s+board)|state\s+(?:department\s+of|commission|board\s+of|legislature|senate|assembly|treasurer|comptroller|attorney\s+general|health\s+department|governor|agency|authority)|county\s+(?:clerk|commissioner|sheriff|assessor|treasurer|court|board|government))\b/i;
@@ -65,6 +65,58 @@ const FIRM_RE =
 	/\b(llc|l\.l\.c\.|inc\.?|corp\.?|corporation|ltd\.?|limited|plc|gmbh|s\.a\.|co\.|company|capital|ventures|partners|holdings|bank|financial|securities|advisors|advisers|investments|management|pharma|pharmaceuticals|therapeutics|biotech|biosciences|labs|systems|solutions|technologies|consulting|energy|oil|gas|realty|properties|restaurants|games|enterprises|industries|manufacturing|logistics|airlines|telecom|media|studios|group)\b/i;
 
 /**
+ * True for broker/holding/investment-style names that only *mention* a university brand
+ * (e.g. "Stanford Investment Group, Inc.", "Cambridge Securities", "MIT Holdings LLC").
+ * Real schools and educational institutes return false.
+ */
+export function isCommercialFirmName(name: string): boolean {
+	const n = String(name || '').trim();
+	if (!n) return false;
+	// Clear educational institutions — even with LLC (e.g. CNL Educational Institute, LLC).
+	if (
+		/\b(educational?\s+(?:institute|institution|group|services|system|board|trust|foundation)|education\s+group|school\s+district|board\s+of\s+education|university\s+corporation\s+for|historically\s+black\s+college|law\s+school|business\s+school|medical\s+school|divinity\s+school|graduate\s+school)\b/i.test(
+			n,
+		)
+	) {
+		return false;
+	}
+	const hasSchoolWord =
+		/\b(universit(?:y|ies)|colleges?|schools?|academ(?:y|ies)|seminar(?:y|ies)|conservator(?:y|ies)|polytechnics?)\b/i.test(
+			n,
+		);
+	const hasFinancial =
+		/\b(securities|investments?|capital\s+markets|equities|financial|holdings?|advisors?|advisers?|broker(?:age)?|wealth|retirement|trading|asset\s+management|partners?|college\s+planning|university\s+sales|university\s+equities)\b/i.test(
+			n,
+		);
+	const hasCorpSuffix =
+		/\b(llc|l\.l\.c\.?|inc\.?|incorporated|corp\.?|corporation|ltd\.?|limited|plc|lp|llp|pllc|gmbh|co\.)\b/i.test(
+			n,
+		);
+	// "Harvard Securities, Inc." / "University Equities Corporation" → firm
+	if (hasFinancial && (hasCorpSuffix || hasSchoolWord || /\b(group|company)\b/i.test(n))) {
+		return true;
+	}
+	// "MIT Holdings, LLC" / "Tsinghua Holdings Co. Ltd" with no school-word as the entity type
+	if (hasCorpSuffix && hasFinancial) return true;
+	if (hasCorpSuffix && !hasSchoolWord) return true;
+	// Brand-only university tokens + Group/Holdings (not an actual school entity).
+	if (
+		/\b(harvard|yale|stanford|princeton|oxford|cambridge|berkeley|mit|tsinghua|columbia|nyu|ucla)\b/i.test(
+			n,
+		) &&
+		!/\b(universit(?:y|ies)|colleges?|schools?|academ(?:y|ies)|institutes?|seminar(?:y|ies)|educational?)\b/i.test(
+			n,
+		) &&
+		/\b(group|holdings?|inc\.?|llc|corp\.?|ltd\.?|company|partners?|securities|capital|enterprise)\b/i.test(
+			n,
+		)
+	) {
+		return true;
+	}
+	return false;
+}
+
+/**
  * Heuristically classify an organization name into:
  * medical_hospital | education | government | nonprofit | firm.
  * Government covers domestic and foreign ministries, embassies, and intl bodies.
@@ -74,6 +126,9 @@ export function classifyOrgType(
 	hint?: string | null,
 ): Exclude<ActorProfileType, 'person'> {
 	const rawHint = String(hint || '').toLowerCase().trim();
+	// Commercial brokers / holdings that only borrow a university brand → firm first.
+	if (isCommercialFirmName(name)) return 'firm';
+
 	if (rawHint === 'medical_hospital' || rawHint === 'medical_mental_hospital' || rawHint === 'hospital' || rawHint === 'medical') {
 		return 'medical_hospital';
 	}
@@ -101,8 +156,8 @@ export function classifyOrgType(
 	const hay = `${name} ${rawHint}`;
 	// 1. Medical hospitals & health centers (avoid "Hospitality")
 	if (MEDICAL_HOSPITAL_RE.test(hay) && !/\bhospitality\b/i.test(hay)) return 'medical_hospital';
-	// 2. Education (universities, colleges, schools, districts, boards)
-	if (EDUCATION_RE.test(hay)) return 'education';
+	// 2. Education (universities, colleges, schools, districts, boards) — not commercial brands
+	if (EDUCATION_RE.test(hay) && !isCommercialFirmName(name)) return 'education';
 	// 3. Government (domestic + foreign ministries / embassies / intl bodies)
 	if (US_GOVERNMENT_RE.test(hay)) return 'government';
 	if (FOREIGN_GOV_RE.test(hay) && !/\b(co\.?\s*ltd|llc|inc\.?|corp\.?|plc|gmbh)\b/i.test(hay)) {
@@ -134,6 +189,9 @@ export function normalizeUsState(input?: string | null): string | null {
 	const raw = String(input || '').trim();
 	if (!raw) return null;
 	if (/^[A-Za-z]{2}$/.test(raw)) return raw.toUpperCase();
+	// Dotted / spaced postal style: "S.C.", "N. Y.", "D.C."
+	const dotted = raw.replace(/\./g, '').replace(/\s+/g, '');
+	if (/^[A-Za-z]{2}$/.test(dotted)) return dotted.toUpperCase();
 	const mapped = US_STATE_ABBR[raw.toLowerCase()];
 	return mapped || raw.toUpperCase().slice(0, 24);
 }
@@ -495,6 +553,48 @@ export function scoreLocationCompleteness(loc: {
 	const structured =
 		(loc.city ? 40 : 0) + (loc.state ? 40 : 0) + (loc.county ? 20 : 0) + (loc.country ? 10 : 0);
 	return confirmedBoost + streety + roleBoost + commaParts * 25 + structured + label.length;
+}
+
+/**
+ * Compact person-list location: "City, ST" for US; "City, ST, CC" / "City, CC" when abroad.
+ * Omits street, ZIP, county, and USA. Returns null when there is no city (or city+state).
+ */
+export function formatCompactCityStateLocation(
+	loc: {
+		raw?: string | null;
+		city?: string | null;
+		state?: string | null;
+		country?: string | null;
+	},
+	opts?: { countryAbbrev?: string | null },
+): string | null {
+	const norm = normalizeLocationRecord({
+		raw: loc.raw,
+		city: loc.city,
+		state: loc.state,
+		country: loc.country,
+	});
+	const city = String(norm.city || '').trim() || null;
+	const state = normalizeUsState(norm.state);
+	const countryRaw = String(norm.country || '').trim();
+	const isUsCountry =
+		!countryRaw || /^(?:u\.?s\.?a?\.?|united states(?: of america)?)$/i.test(countryRaw);
+	const inferredUs = Boolean(state && Object.values(US_STATE_ABBR).includes(state) && isUsCountry);
+	const isUs = isUsCountry || inferredUs;
+
+	let countryAbbrev = opts?.countryAbbrev != null ? String(opts.countryAbbrev).trim() : '';
+	if (!countryAbbrev && !isUs && countryRaw) {
+		if (/^[a-z]{2}$/i.test(countryRaw)) countryAbbrev = countryRaw.toUpperCase();
+	}
+	if (isUs || /^(us)$/i.test(countryAbbrev)) countryAbbrev = '';
+
+	const parts: string[] = [];
+	if (city) parts.push(city);
+	if (state) parts.push(state);
+	if (countryAbbrev) parts.push(countryAbbrev.toUpperCase());
+	// Prefer city+state; allow city-only abroad; skip bare US state with no city.
+	if (!city) return null;
+	return parts.length ? parts.join(', ') : null;
 }
 
 /** Pick the best location row and return a full display address string. */

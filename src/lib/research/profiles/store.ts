@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+	countryToIsoAbbrev,
 	detectProfileCountryCodes,
 	getCountryFilterHints,
 } from '@/lib/research/profiles/countries';
@@ -18,12 +19,14 @@ import {
 import {
 	buildSafeFtsQuery,
 	deduplicateLocations,
+	formatCompactCityStateLocation,
 	isTooGenericLocation,
 	makeProfileSlug,
 	normalizeIsoDate,
 	normalizeLocationRecord,
 	normalizeText,
 	pickBestFullAddress,
+	pickBestLocation,
 	sha256Key,
 } from '@/lib/research/profiles/normalize';
 import { getProfilesDir } from '@/lib/research/profiles/paths';
@@ -526,6 +529,48 @@ export function addIdentifier(
        id, profile_id, scheme, value, normalized_value, source_corpus
      ) VALUES (?, ?, ?, ?, ?, ?)`,
 	).run(id, input.profileId, input.scheme, clean, norm, input.sourceCorpus || null);
+
+	// FINRA CRD belongs only on person (individual) or firm (org) profiles.
+	if (String(input.scheme || '').toLowerCase() === 'finra_crd') {
+		const row = db
+			.prepare(`SELECT id, slug, profile_type, metadata_json FROM profiles WHERE id = ?`)
+			.get(input.profileId) as
+			| { id: string; slug: string; profile_type: string; metadata_json: string }
+			| undefined;
+		if (row && row.profile_type !== 'person' && row.profile_type !== 'firm') {
+			const oldSlug = String(row.slug || '');
+			let meta: Record<string, unknown> = {};
+			try {
+				meta = JSON.parse(String(row.metadata_json || '{}') || '{}') as Record<string, unknown>;
+			} catch {
+				meta = {};
+			}
+			meta.hasFinra = true;
+			meta.hasFinraData = true;
+			if (/^\d{1,10}$/.test(clean)) meta.finraCrd = clean;
+			meta.reclassifiedFrom = row.profile_type;
+			meta.reclassifyReason = 'Has FINRA CRD — must be firm or person';
+			updateProfileFields(
+				row.id,
+				{
+					profileType: 'firm',
+					metadata: meta,
+				},
+				db,
+			);
+			if (oldSlug) {
+				addAlias(
+					{
+						profileId: row.id,
+						alias: oldSlug,
+						aliasKind: 'slug',
+						sourceCorpus: input.sourceCorpus || 'manual',
+					},
+					db,
+				);
+			}
+		}
+	}
 }
 
 export function deleteAlias(
@@ -1536,14 +1581,30 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 
 		for (const prof of profiles) {
 			const idents = idByPid.get(prof.id) || [];
+			const locs = locByPid.get(prof.id) || [];
 			prof.countryCodes = detectProfileCountryCodes({
 				name: prof.name,
 				profileType: prof.profileType,
 				summary: prof.summary,
-				locations: locByPid.get(prof.id) || [],
+				locations: locs,
 				identifiers: idents,
 				metadata: prof.metadata,
 			});
+			// Person left-list: compact City, ST (omit USA; append ISO when abroad).
+			if (prof.profileType === 'person') {
+				const best = pickBestLocation(locs);
+				prof.primaryLocation = best
+					? formatCompactCityStateLocation(best, {
+							countryAbbrev: countryToIsoAbbrev(best.country),
+						})
+					: null;
+			}
+			if (prof.profileType === 'person' || prof.profileType === 'firm') {
+				const metaCrd = String(prof.metadata?.finraCrd || '').trim();
+				const identCrd = idents.find((i) => i.scheme.toLowerCase() === 'finra_crd')?.value?.trim() || '';
+				const crd = /^\d{1,10}$/.test(metaCrd) ? metaCrd : /^\d{1,10}$/.test(identCrd) ? identCrd : '';
+				prof.finraCrd = crd || null;
+			}
 			if (prof.profileType === 'firm') {
 				prof.hasLiveSourceUrl = detectFirmLiveSourceUrl(prof.metadata, idents);
 				prof.hasActiveFinraScope = detectFirmActiveFinraScope(prof.metadata);
@@ -2558,8 +2619,23 @@ export function mergeProfiles(
 
 		const nextStatus: ProfileStatus =
 			keep.status === 'pinned' || merge.status === 'pinned' ? 'pinned' : keep.status;
-		const nextSummary =
-			merge.summary.trim().length > keep.summary.trim().length ? merge.summary.trim() : keep.summary.trim();
+		// Keep both summaries when each has unique content (do not drop the shorter side).
+		const keepSum = keep.summary.trim();
+		const mergeSum = merge.summary.trim();
+		let nextSummary = keepSum || mergeSum;
+		if (keepSum && mergeSum) {
+			const keepNorm = keepSum.toLowerCase();
+			const mergeNorm = mergeSum.toLowerCase();
+			if (keepNorm === mergeNorm) {
+				nextSummary = keepSum.length >= mergeSum.length ? keepSum : mergeSum;
+			} else if (keepNorm.includes(mergeNorm)) {
+				nextSummary = keepSum;
+			} else if (mergeNorm.includes(keepNorm)) {
+				nextSummary = mergeSum;
+			} else {
+				nextSummary = `${keepSum}\n\n${mergeSum}`;
+			}
+		}
 		const nextStart =
 			keep.startDate && merge.startDate
 				? keep.startDate < merge.startDate

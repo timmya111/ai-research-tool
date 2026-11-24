@@ -405,6 +405,24 @@ function getExactNameToCode(): Map<string, string> {
 	return m;
 }
 
+/**
+ * Resolve a country field to an uppercase ISO abbreviation for compact display.
+ * Returns null for empty / US (callers omit USA from city/state labels).
+ */
+export function countryToIsoAbbrev(country?: string | null): string | null {
+	const raw = String(country || '').trim();
+	if (!raw) return null;
+	if (/^(?:u\.?s\.?a?\.?|united states(?: of america)?)$/i.test(raw)) return null;
+	if (/^[a-z]{2}$/i.test(raw)) {
+		const c = raw.toLowerCase();
+		if (c === 'us') return null;
+		return c.toUpperCase();
+	}
+	const code = getExactNameToCode().get(raw.toLowerCase());
+	if (!code || code === 'us') return null;
+	return code.toUpperCase();
+}
+
 function scanTextForCountries(text: string, add: (code: string, weight: number) => void, weight: number): void {
 	const raw = String(text || '').trim();
 	if (!raw) return;

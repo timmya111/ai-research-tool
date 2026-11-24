@@ -247,6 +247,8 @@ export type Profile = {
 	countryCodes?: string[];
 	/** Distinct alternate / full name variations (excluding the primary canonical name) */
 	alternateNames?: string[];
+	/** FINRA CRD# when present (person or firm); for left-list display */
+	finraCrd?: string | null;
 	/**
 	 * Firm is linked to an external live listing URL (e.g. MineralAnswers producer page,
 	 * BrokerCheck). Used for green “Firm” treatment when start/end dates are missing.

@@ -107,18 +107,75 @@ function firmHasActiveFinraScope(
 	return detectFirmActiveFinraScope(p.metadata);
 }
 
+const ORG_TYPES_DEFAULT_CURRENT = new Set<ProfileType>([
+	'education',
+	'nonprofit',
+	'medical_hospital',
+	'government',
+]);
+
+/** Closed / defunct clues beyond a hard endDate (enrich + FINRA mistypes + summary language). */
+function orgHasClosedClues(
+	p: Pick<Profile, 'status' | 'summary' | 'metadata'>,
+): boolean {
+	if (p.status === 'archived') return true;
+	const meta = p.metadata || {};
+	const statusBits = [
+		meta.status,
+		meta.orgStatus,
+		meta.operatingStatus,
+		meta.eoStatus,
+		meta.freeOrgStatus,
+		meta.finraFirmStatus,
+	]
+		.map((v) => String(v || '').trim().toLowerCase())
+		.filter(Boolean);
+	for (const s of statusBits) {
+		if (
+			s === 'archived' ||
+			s === 'inactive' ||
+			s === 'terminated' ||
+			s === 'cancelled' ||
+			s === 'canceled' ||
+			s === 'revoked' ||
+			s === 'dissolved' ||
+			s === 'closed' ||
+			s === 'defunct' ||
+			s.includes('terminat') ||
+			s.includes('revok') ||
+			s.includes('dissolv') ||
+			s.includes('closed')
+		) {
+			return true;
+		}
+	}
+	const blob = `${p.summary || ''} ${String(meta.notes || '')}`.toLowerCase();
+	if (
+		/\b(dissolved|defunct|ceased operations|no longer operat|permanently closed|revoked|shut down|went out of business)\b/.test(
+			blob,
+		)
+	) {
+		return true;
+	}
+	return false;
+}
+
 /**
  * Soft green “current” tint:
  * - people: living (no endDate)
  * - firms: not ended, and either a confirmed startDate, live external listing URL,
  *   or ACTIVE FINRA BrokerCheck / SEC IA scope from the visualizer API
+ * - education / nonprofit / hospital / government: green by default; gray when
+ *   endDate or closed/archived/dissolved clues appear
  */
 function isCurrentPersonOrFirm(
 	p: Pick<
 		Profile,
 		| 'profileType'
+		| 'status'
 		| 'startDate'
 		| 'endDate'
+		| 'summary'
 		| 'metadata'
 		| 'hasLiveSourceUrl'
 		| 'hasActiveFinraScope'
@@ -134,6 +191,9 @@ function isCurrentPersonOrFirm(
 			firmHasActiveFinraScope(p)
 		);
 	}
+	if (ORG_TYPES_DEFAULT_CURRENT.has(p.profileType)) {
+		return !orgHasClosedClues(p);
+	}
 	return false;
 }
 
@@ -141,8 +201,10 @@ function firmTypeBadgeLabel(
 	p: Pick<
 		Profile,
 		| 'profileType'
+		| 'status'
 		| 'startDate'
 		| 'endDate'
+		| 'summary'
 		| 'metadata'
 		| 'hasLiveSourceUrl'
 		| 'hasActiveFinraScope'
@@ -153,13 +215,15 @@ function firmTypeBadgeLabel(
 	return TYPE_META[p.profileType]?.label || 'Firm';
 }
 
-/** Green for current/active firms; gray for ended / inactive firms. */
+/** Mint for current/active firms; gray for ended / inactive firms. */
 function firmTypeBadgeClass(
 	p: Pick<
 		Profile,
 		| 'profileType'
+		| 'status'
 		| 'startDate'
 		| 'endDate'
+		| 'summary'
 		| 'metadata'
 		| 'hasLiveSourceUrl'
 		| 'hasActiveFinraScope'
@@ -167,23 +231,52 @@ function firmTypeBadgeClass(
 	identifiers?: Array<{ scheme: string; value: string }> | null,
 ): string {
 	if (p.profileType !== 'firm') {
-		return TYPE_META[p.profileType]?.badge || '';
+		return isCurrentPersonOrFirm(p, identifiers)
+			? CURRENT_ACTOR_BADGE
+			: TYPE_META[p.profileType]?.badge || '';
 	}
 	return isCurrentPersonOrFirm(p, identifiers) ? CURRENT_ACTOR_BADGE : INACTIVE_FIRM_BADGE;
 }
 
+/** Flat mint chip (light); dark mode uses soft electric-blue wash. */
 const CURRENT_ACTOR_BADGE =
-	'bg-emerald-500/20 text-emerald-900 dark:text-emerald-100 border-emerald-500/45';
+	'bg-[#e7f6ef] text-[#3d6b55] border-[#b9d5cd] dark:bg-[lab(5_4.06_-17.11_/0.62)] dark:text-[#c5d4ff] dark:border-[lab(5_4.06_-17.11_/0.8)]';
 /** Ended / inactive firm type chip (gray). */
 const INACTIVE_FIRM_BADGE =
 	'bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/40';
+/** Active (unselected) left-list row: soft dark electric blue. */
 const CURRENT_ACTOR_ROW =
-	'bg-emerald-500/10 hover:bg-emerald-500/18 dark:bg-emerald-500/12 dark:hover:bg-emerald-500/20';
-/** Selected current actors keep the orange left rail (same as other selected rows) on the green tint. */
+	'bg-[#f3faf6] hover:bg-[#eaf6f0] dark:bg-[lab(5_4.06_-17.11_/0.62)] dark:hover:bg-[lab(5_4.06_-17.11_/0.75)]';
+/** Selected current row only: brighter electric blue lab(32 45.99 -92.35 / 0.85). */
 const CURRENT_ACTOR_ROW_ACTIVE =
-	'border-l-2 border-l-[#F97316] bg-emerald-500/20 dark:bg-emerald-500/25';
+	'border-l-2 border-l-[#F97316] bg-[#e7f6ef] dark:bg-[lab(32_45.99_-92.35_/0.85)]';
+/** Selected inactive/gray row: full orange fill (not just left edge). */
+const INACTIVE_ROW_ACTIVE =
+	'border-l-2 border-l-[#F97316] bg-[#F97316]/35 text-[#fff7ed] dark:bg-[#F97316]/40 dark:text-[#fff7ed]';
+/** Shared very dark electric blue (main panel + left-panel chrome). */
+const CURRENT_ACTOR_PANEL_BG = 'bg-[#050a1c] text-[#e8eeff] dark:bg-[#040812] dark:text-[#e8eeff]';
+/**
+ * Current employment / connection card —
+ * bg lab(17 -16.7 1.95); border rgb(18 161 158 / 47%).
+ */
+const EMP_CARD_CURRENT =
+	'rounded-md border border-[rgb(18_161_158_/0.47)] bg-[lab(17_-16.7_1.95)] px-2.5 py-2 text-xs text-emerald-50';
+/** Previous / old employment or connection card — muted zinc for contrast. */
+const EMP_CARD_PREVIOUS =
+	'rounded-md border border-zinc-500/40 bg-zinc-500/15 px-2.5 py-2 text-xs dark:bg-zinc-500/20';
+const EMP_CHIP_CURRENT =
+	'shrink-0 rounded border border-[rgb(18_161_158_/0.47)] bg-[lab(17_-16.7_1.95)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-50';
+const EMP_CHIP_PREVIOUS =
+	'shrink-0 rounded border border-zinc-500/35 bg-zinc-500/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold';
+/** Inactive / ended profile main panel: same border as left column. */
+const DETAIL_PANEL_OUTLINE =
+	`border-[#1e3a8a]/50 dark:border-[#3b82f6]/35 ${CURRENT_ACTOR_PANEL_BG}`;
+/** Current/active profile main panel: fluorescent orange top edge. */
 const CURRENT_ACTOR_DETAIL_OUTLINE =
-	'border-emerald-500/55 ring-1 ring-emerald-500/35 dark:border-emerald-400/50 dark:ring-emerald-400/30';
+	`border-[#1e3a8a]/50 border-t-2 border-t-[#ff5f00] dark:border-[#3b82f6]/35 dark:border-t-[#ff6a00] ${CURRENT_ACTOR_PANEL_BG}`;
+/** Left-list top controls (match count / Prev / Next). */
+const LEFT_PANEL_TOP_CONTROLS =
+	`border-b border-[#1e3a8a]/50 dark:border-[#3b82f6]/35 ${CURRENT_ACTOR_PANEL_BG}`;
 
 const ALL_TYPES: ProfileType[] = [
 	'historic_event',
@@ -360,9 +453,9 @@ const ENRICHED_DETAIL_FIELDS: Array<{ key: string; label: string }> = [
 	{ key: 'finraDaysInIndustrySince', label: 'In Industry Since' },
 	{ key: 'finraDaysInIndustry', label: 'Days in Industry' },
 	{ key: 'finraDisclosureCount', label: 'FINRA Disclosures' },
+	{ key: 'finraRegisteredSROs', label: 'Registered SROs' },
 	{ key: 'finraExams', label: 'FINRA Exams' },
 	{ key: 'finraRegisteredStates', label: 'Registered States' },
-	{ key: 'finraRegisteredSROs', label: 'Registered SROs' },
 	// website omitted — shown as Website ↗ in Sources & Identifiers when present
 ];
 
@@ -378,9 +471,7 @@ const MILITARY_DETAIL_KEYS = new Set([
 /** Fields that are always rendered full-width in the overview detail grid. */
 const FULL_WIDTH_DETAIL_KEYS = new Set([
 	'finraRegisteredStates',
-	'finraRegisteredSROs',
 	'finraExams',
-	'finraStateLicenses',
 	'finraPrimaryOffice',
 	'knownFor',
 	'notableWorks',
@@ -614,7 +705,8 @@ function formatFinraScopeLabel(scope: unknown): string {
 	const raw = String(scope || '').trim();
 	if (!raw) return '';
 	const compact = raw.replace(/[^a-z0-9]+/gi, '').toLowerCase();
-	if (!compact || compact === 'notinscope') return '';
+	if (!compact) return '';
+	if (compact === 'notinscope') return 'NOT IN SCOPE';
 	if (compact === 'active') return 'ACTIVE';
 	if (compact === 'inactive') return 'INACTIVE';
 	if (compact === 'expanded') return 'EXPANDED';
@@ -646,11 +738,6 @@ function buildFinraCrdHeaderTags(opts: {
 	const meta = opts.metadata || {};
 	const bcScope = formatFinraScopeLabel(meta.finraBcScope);
 	const iaScope = formatFinraScopeLabel(meta.finraIaScope);
-	const hasFinraExplicit = meta.hasFinraData === true || meta.hasFinra === true;
-	const hasSecExplicit = meta.hasSecData === true || meta.hasSec === true;
-	const hasFinra = hasFinraExplicit || Boolean(bcScope);
-	const hasSec =
-		hasSecExplicit || Boolean(iaScope) || hasValidSecIaScope(meta.finraIaScope);
 
 	const tags: FinraCrdHeaderTag[] = [];
 	// Purple FIRM chip omitted — redundant with the green/gray Firm type badge.
@@ -669,7 +756,10 @@ function buildFinraCrdHeaderTags(opts: {
 			'rounded border border-sky-500/35 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:text-sky-200',
 	});
 
-	if (hasFinra && bcScope) {
+	// Only emit FINRA:/SEC: chips from explicit scope tokens — never invent ACTIVE
+	// when scope is missing or NOTINSCOPE (that false ACTIVE made historical firms
+	// look registered while the type badge correctly stayed inactive/gray).
+	if (bcScope) {
 		const inactive = scopeLooksInactive(bcScope);
 		tags.push({
 			kind: 'scope',
@@ -679,17 +769,10 @@ function buildFinraCrdHeaderTags(opts: {
 				? 'rounded border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200'
 				: 'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
 		});
-	} else if (hasFinra && !bcScope) {
-		tags.push({
-			kind: 'scope',
-			label: 'FINRA: ACTIVE',
-			inactive: false,
-			className:
-				'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
-		});
 	}
 
-	if (hasSec && iaScope) {
+	// SEC chip only for real IA scopes (ACTIVE / INACTIVE / EXPANDED) — omit NOT IN SCOPE.
+	if (iaScope && iaScope !== 'NOT IN SCOPE') {
 		const inactive = scopeLooksInactive(iaScope);
 		tags.push({
 			kind: 'scope',
@@ -698,14 +781,6 @@ function buildFinraCrdHeaderTags(opts: {
 			className: inactive
 				? 'rounded border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200'
 				: 'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
-		});
-	} else if (hasSec && !iaScope) {
-		tags.push({
-			kind: 'scope',
-			label: 'SEC: ACTIVE',
-			inactive: false,
-			className:
-				'rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200',
 		});
 	}
 
@@ -3198,14 +3273,15 @@ export default function ProfilesClient({
 	}, []);
 
 	return (
-		<main className="mx-auto flex min-h-dvh max-w-[1380px] flex-col px-4 py-5 text-[var(--app-fg)]">
+		<div className={`min-h-dvh ${CURRENT_ACTOR_PANEL_BG}`}>
+		<main className={`mx-auto flex min-h-dvh max-w-[1380px] flex-col px-4 py-5 ${CURRENT_ACTOR_PANEL_BG}`}>
 			{/* Top Header */}
 			<header className="mb-4 flex flex-wrap items-start justify-between gap-3">
 				<div>
 					<div className="flex items-center gap-2 text-xs opacity-75">
 						<Link
 							href="/"
-							className="rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 font-semibold no-underline hover:bg-[var(--app-surface-hover)]"
+							className="rounded border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] px-2 py-0.5 font-semibold text-[#e8eeff] no-underline hover:bg-[lab(5_4.06_-17.11_/0.75)]"
 						>
 							← Research Chat
 						</Link>
@@ -3235,7 +3311,7 @@ export default function ProfilesClient({
 						className={`cursor-pointer rounded-md border px-2.5 py-1.5 text-xs font-semibold ${
 							mainView === 'alignments'
 								? 'border-[#F97316] bg-[#F97316] text-white'
-								: 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
+								: 'border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] text-[#e8eeff] hover:bg-[lab(5_4.06_-17.11_/0.75)]'
 						}`}
 					>
 						{mainView === 'alignments'
@@ -3245,7 +3321,7 @@ export default function ProfilesClient({
 					<button
 						type="button"
 						onClick={() => setShowCreate((v) => !v)}
-						className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-semibold hover:bg-[var(--app-surface-hover)]"
+						className="cursor-pointer rounded-md border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] px-2.5 py-1.5 text-xs font-semibold text-[#e8eeff] hover:bg-[lab(5_4.06_-17.11_/0.75)]"
 					>
 						+ New Profile
 					</button>
@@ -3275,12 +3351,12 @@ export default function ProfilesClient({
 							value={queryDraft}
 							onChange={(e) => setQueryDraft(e.target.value)}
 							placeholder="Search name, alias, CRD, ticker…"
-							className="min-w-0 flex-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs"
+							className="min-w-0 flex-1 rounded-md border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] px-2.5 py-1.5 text-xs text-[#e8eeff] placeholder:text-[#e8eeff]/50"
 							aria-label="Profile search"
 						/>
 						<button
 							type="submit"
-							className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-semibold hover:bg-[var(--app-surface-hover)]"
+							className="cursor-pointer rounded-md border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] px-2.5 py-1.5 text-xs font-semibold text-[#e8eeff] hover:bg-[lab(5_4.06_-17.11_/0.75)]"
 						>
 							Search
 						</button>
@@ -3293,7 +3369,7 @@ export default function ProfilesClient({
 									setQuery('');
 									setOffset(0);
 								}}
-								className="cursor-pointer rounded-md border border-[var(--app-border)] bg-transparent px-2 py-1.5 text-xs opacity-70 hover:opacity-100"
+								className="cursor-pointer rounded-md border border-[#3b82f6]/40 bg-transparent px-2 py-1.5 text-xs text-[#e8eeff] opacity-70 hover:opacity-100"
 							>
 								✕
 							</button>
@@ -3301,7 +3377,7 @@ export default function ProfilesClient({
 					</form>
 					<div ref={countryBoxRef} className="relative min-w-[10rem] max-w-[14rem] shrink-0">
 						{countryCode ? (
-							<div className="flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1.5">
+							<div className="flex items-center gap-1 rounded-md border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] px-1.5 py-1.5 text-[#e8eeff]">
 								{/* eslint-disable-next-line @next/next/no-img-element */}
 								<img
 									src={`/flags/4x3/${encodeURIComponent(countryCode)}.svg`}
@@ -3337,12 +3413,12 @@ export default function ProfilesClient({
 								onFocus={() => setCountryMenuOpen(true)}
 								placeholder="Flag / country…"
 								aria-label="Filter by country"
-								className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs"
+								className="w-full rounded-md border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] px-2.5 py-1.5 text-xs text-[#e8eeff] placeholder:text-[#e8eeff]/50"
 								autoComplete="off"
 							/>
 						)}
 						{countryMenuOpen && !countryCode ? (
-							<ul className="absolute right-0 z-30 mt-1 max-h-56 w-full min-w-[14rem] overflow-y-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] py-1 shadow-lg">
+							<ul className={`absolute right-0 z-30 mt-1 max-h-56 w-full min-w-[14rem] overflow-y-auto rounded-md border border-[#3b82f6]/40 py-1 shadow-lg ${CURRENT_ACTOR_PANEL_BG}`}>
 								{(countryQuery.trim()
 									? countryOptions.filter((o) => {
 											const q = countryQuery.trim().toLowerCase();
@@ -3372,7 +3448,7 @@ export default function ProfilesClient({
 														});
 													}
 												}}
-												className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left text-xs hover:bg-[var(--app-surface-hover)]"
+												className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2.5 py-1.5 text-left text-xs text-[#e8eeff] hover:bg-[lab(5_4.06_-17.11_/0.65)]"
 											>
 												{/* eslint-disable-next-line @next/next/no-img-element */}
 												<img
@@ -3439,7 +3515,7 @@ export default function ProfilesClient({
 						className={`cursor-pointer rounded-lg border px-2.5 py-2 text-left transition ${
 							typeFilter === 'all' && mainView === 'profile'
 								? 'border-[#F97316] bg-[#F97316]/10'
-								: 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
+								: 'border-[#1e3a8a]/45 bg-[lab(5_4.06_-17.11_/0.45)] hover:bg-[lab(5_4.06_-17.11_/0.65)] dark:border-[#3b82f6]/30'
 						}`}
 					>
 						<div className="text-[11px] opacity-70">All Profiles</div>
@@ -3463,7 +3539,7 @@ export default function ProfilesClient({
 										? 'border-[#F97316] bg-[#F97316]/12 ring-1 ring-[#F97316]/40'
 										: isCurrentProfileType
 											? 'border-[#F97316]/70 bg-[#F97316]/8'
-											: 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
+											: 'border-[#1e3a8a]/45 bg-[lab(5_4.06_-17.11_/0.45)] hover:bg-[lab(5_4.06_-17.11_/0.65)] dark:border-[#3b82f6]/30'
 								}`}
 							>
 								<div className="text-[11px] opacity-70">{TYPE_META[t].plural}</div>
@@ -3483,7 +3559,7 @@ export default function ProfilesClient({
 						className={`cursor-pointer rounded-lg border px-2.5 py-2 text-left transition ${
 							typeFilter === HISTORY_FILTER && mainView === 'profile'
 								? 'border-[#F97316] bg-[#F97316]/12 ring-1 ring-[#F97316]/40'
-								: 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
+								: 'border-[#1e3a8a]/45 bg-[lab(5_4.06_-17.11_/0.45)] hover:bg-[lab(5_4.06_-17.11_/0.65)] dark:border-[#3b82f6]/30'
 						}`}
 					>
 						<div className="text-[11px] opacity-70">History</div>
@@ -3496,7 +3572,7 @@ export default function ProfilesClient({
 			{showCreate ? (
 				<form
 					onSubmit={(e) => void handleCreateProfile(e)}
-					className="mb-4 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3.5"
+					className={`mb-4 rounded-lg border border-[#1e3a8a]/50 p-3.5 dark:border-[#3b82f6]/35 ${CURRENT_ACTOR_PANEL_BG}`}
 				>
 					<div className="mb-2 flex items-center justify-between">
 						<h2 className="m-0 text-sm font-semibold">Create Canonical Profile</h2>
@@ -3925,9 +4001,13 @@ export default function ProfilesClient({
 			) : (
 				<div className="grid min-h-0 flex-1 items-stretch gap-4 lg:grid-cols-[360px_1fr]">
 					{/* Left Sidebar: tracks detail column; lg:h-0 lg:min-h-full keeps list from inflating the row; scrolls inside */}
-					<aside className="flex min-h-0 min-w-0 flex-col self-stretch overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] lg:h-0 lg:min-h-full">
-						<div className="flex shrink-0 items-center justify-between border-b border-[var(--app-border)] px-3 py-2 text-[11px] opacity-70">
-							<span>
+					<aside
+						className={`flex min-h-0 min-w-0 flex-col self-stretch overflow-hidden rounded-lg border border-[#1e3a8a]/50 lg:h-0 lg:min-h-full dark:border-[#3b82f6]/35 ${CURRENT_ACTOR_PANEL_BG}`}
+					>
+						<div
+							className={`flex shrink-0 items-center justify-between px-3 py-2 text-[11px] ${LEFT_PANEL_TOP_CONTROLS}`}
+						>
+							<span className="opacity-80">
 								{loadingList
 									? 'Loading…'
 									: query
@@ -3939,7 +4019,7 @@ export default function ProfilesClient({
 									type="button"
 									disabled={offset === 0}
 									onClick={() => setOffset((o) => Math.max(0, o - 60))}
-									className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+									className="cursor-pointer rounded border border-[#3b82f6]/40 bg-transparent px-1.5 py-0.5 text-[10px] text-[#e8eeff] disabled:opacity-40"
 								>
 									Prev
 								</button>
@@ -3947,14 +4027,14 @@ export default function ProfilesClient({
 									type="button"
 									disabled={offset + 60 >= totalProfiles}
 									onClick={() => setOffset((o) => o + 60)}
-									className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+									className="cursor-pointer rounded border border-[#3b82f6]/40 bg-transparent px-1.5 py-0.5 text-[10px] text-[#e8eeff] disabled:opacity-40"
 								>
 									Next
 								</button>
 							</div>
 						</div>
 
-						<div className="min-h-0 flex-1 divide-y divide-[var(--app-border)] overflow-y-auto">
+						<div className="min-h-0 flex-1 divide-y divide-[#1e3a8a]/35 overflow-y-auto dark:divide-[#3b82f6]/20">
 							{(() => {
 								// Ensure the currently selected entity is always visible & selectable in the left column
 								const detailMatchesFilter =
@@ -4013,8 +4093,8 @@ export default function ProfilesClient({
 											? CURRENT_ACTOR_ROW_ACTIVE
 											: CURRENT_ACTOR_ROW
 										: active
-											? 'border-l-2 border-l-[#F97316] bg-[#F97316]/14'
-											: 'bg-transparent hover:bg-[var(--app-surface-hover)]';
+											? INACTIVE_ROW_ACTIVE
+											: 'bg-zinc-500/15 hover:bg-zinc-500/25 dark:bg-zinc-500/20 dark:hover:bg-zinc-500/30';
 									const badgeTone =
 										p.profileType === 'firm'
 											? firmTypeBadgeClass(p)
@@ -4032,7 +4112,7 @@ export default function ProfilesClient({
 												setSelectedId(p.slug || p.id);
 												setLastEnrichReport(null);
 											}}
-											className={`w-full cursor-pointer border-0 border-b border-b-[var(--app-border)] px-3 py-2.5 text-left transition last:border-b-0 ${rowTone}`}
+											className={`w-full cursor-pointer border-0 border-b border-b-[#1e3a8a]/30 px-3 py-2.5 text-left transition last:border-b-0 dark:border-b-[#3b82f6]/15 ${rowTone}`}
 										>
 											{typeFilter === 'all' ||
 											typeFilter === 'actors' ||
@@ -4056,9 +4136,32 @@ export default function ProfilesClient({
 													<CountryFlags codes={p.countryCodes} size="sm" />
 												</div>
 											)}
-											{p.profileType === 'person' && p.alternateNames && p.alternateNames.length > 0 ? (
-												<div className="mt-0.5 truncate text-[10px] italic opacity-70">
-													{p.alternateNames.join(' · ')}
+											{p.profileType === 'person' && p.primaryLocation ? (
+												<div className="mt-0.5 truncate text-[10px] opacity-70">
+													{p.primaryLocation}
+												</div>
+											) : null}
+											{((p.profileType === 'person' || p.profileType === 'firm') &&
+												(p.finraCrd || (p.alternateNames && p.alternateNames.length > 0))) ||
+											(p.profileType === 'education' &&
+												p.alternateNames &&
+												p.alternateNames.length > 0) ? (
+												<div className="mt-0.5 truncate text-[10px] opacity-70">
+													{(p.profileType === 'person' || p.profileType === 'firm') &&
+													p.finraCrd ? (
+														<span className="not-italic font-medium tabular-nums">
+															CRD {p.finraCrd}
+														</span>
+													) : null}
+													{(p.profileType === 'person' || p.profileType === 'firm') &&
+													p.finraCrd &&
+													p.alternateNames &&
+													p.alternateNames.length > 0 ? (
+														<span className="opacity-50"> · </span>
+													) : null}
+													{p.alternateNames && p.alternateNames.length > 0 ? (
+														<span className="italic">{p.alternateNames.join(' · ')}</span>
+													) : null}
 												</div>
 											) : null}
 										</button>
@@ -4070,10 +4173,10 @@ export default function ProfilesClient({
 
 					{/* Right Workspace: fills the flex-1 grid cell (min-h-full) so short dossiers still reach the viewport bottom */}
 					<section
-						className={`min-h-full min-w-0 rounded-lg border bg-[var(--app-surface)] p-4 ${
+						className={`min-h-full min-w-0 rounded-lg border p-4 ${
 							detail && isCurrentPersonOrFirm(detail.profile, detail.identifiers)
 								? CURRENT_ACTOR_DETAIL_OUTLINE
-								: 'border-[var(--app-border)]'
+								: DETAIL_PANEL_OUTLINE
 						}`}
 					>
 						{loadingDetail && !detail ? (
@@ -5619,15 +5722,16 @@ export default function ProfilesClient({
 																? emp.firmFinraScope.charAt(0).toUpperCase() +
 																	emp.firmFinraScope.slice(1).toLowerCase()
 																: null;
+														const isCurrentEmp = emp.isCurrent === true;
 														return (
 															<div
 																key={emp.id}
-																className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs"
+																className={isCurrentEmp ? EMP_CARD_CURRENT : EMP_CARD_PREVIOUS}
 															>
 																<div className="flex flex-wrap items-center justify-between gap-2">
 																	<div className="flex flex-wrap items-center gap-1.5">
 																		{span ? (
-																			<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+																			<span className={isCurrentEmp ? EMP_CHIP_CURRENT : EMP_CHIP_PREVIOUS}>
 																				{span}
 																			</span>
 																		) : null}
@@ -5644,12 +5748,24 @@ export default function ProfilesClient({
 																		)}
 																		<CountryFlags codes={emp.orgCountryCodes} size="sm" />
 																		{emp.firmCrd ? (
-																			<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] opacity-85">
+																			<span
+																				className={
+																					isCurrentEmp
+																						? 'rounded border border-[rgb(18_161_158_/0.35)] bg-[lab(17_-16.7_1.95)] px-1.5 py-0.5 font-mono text-[10px] text-emerald-50 opacity-90'
+																						: 'rounded bg-zinc-500/15 px-1.5 py-0.5 font-mono text-[10px] opacity-85'
+																				}
+																			>
 																				CRD# <strong>{emp.firmCrd}</strong>
 																			</span>
 																		) : null}
 																		{emp.secNumber ? (
-																			<span className="rounded bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] opacity-85">
+																			<span
+																				className={
+																					isCurrentEmp
+																						? 'rounded border border-[rgb(18_161_158_/0.35)] bg-[lab(17_-16.7_1.95)] px-1.5 py-0.5 font-mono text-[10px] text-emerald-50 opacity-90'
+																						: 'rounded bg-zinc-500/15 px-1.5 py-0.5 font-mono text-[10px] opacity-85'
+																				}
+																			>
 																				SEC# <strong>{emp.secNumber}</strong>
 																			</span>
 																		) : null}
@@ -5664,18 +5780,13 @@ export default function ProfilesClient({
 																			<span className="text-[11px] opacity-85">— {cleanRole}</span>
 																		) : null}
 																	</div>
-																	<div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-																		{emp.isCurrent === true ? (
-																			<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-semibold text-emerald-800 dark:text-emerald-200">
-																				Current
-																			</span>
-																		) : emp.isCurrent === false ? (
-																			<span className="rounded bg-zinc-500/15 px-1.5 py-0.5 font-semibold opacity-75">
+																	{emp.isCurrent === false ? (
+																		<div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+																			<span className="rounded bg-zinc-500/20 px-1.5 py-0.5 font-semibold opacity-80">
 																				Old
 																			</span>
-																		) : null}
-
-																	</div>
+																		</div>
+																	) : null}
 																</div>
 																{emp.location || emp.iaOnly || showFinraScope ? (
 																	<div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] opacity-75">
@@ -6103,21 +6214,31 @@ export default function ProfilesClient({
 																return (
 																	<div
 																		key={l.id}
-																		className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs"
+																		className={
+																			connStatus === 'current'
+																				? EMP_CARD_CURRENT
+																				: connStatus === 'old'
+																					? EMP_CARD_PREVIOUS
+																					: 'rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs'
+																		}
 																	>
 																		<div className="flex flex-wrap items-center justify-between gap-2">
 																			<div className="flex flex-wrap items-center gap-1.5">
 																				{dateSpan ? (
-																					<span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+																					<span
+																						className={
+																							connStatus === 'current'
+																								? EMP_CHIP_CURRENT
+																								: connStatus === 'old'
+																									? EMP_CHIP_PREVIOUS
+																									: 'shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold'
+																						}
+																					>
 																						{dateSpan}
 																					</span>
 																				) : null}
-																				{connStatus === 'current' ? (
-																					<span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
-																						Current
-																					</span>
-																				) : connStatus === 'old' ? (
-																					<span className="shrink-0 rounded bg-zinc-500/15 px-1.5 py-0.5 text-[10px] font-semibold opacity-75">
+																				{connStatus === 'old' ? (
+																					<span className="shrink-0 rounded bg-zinc-500/20 px-1.5 py-0.5 text-[10px] font-semibold opacity-80">
 																						Old
 																					</span>
 																				) : null}
@@ -6487,5 +6608,6 @@ export default function ProfilesClient({
 				</div>
 			)}
 		</main>
+		</div>
 	);
 }

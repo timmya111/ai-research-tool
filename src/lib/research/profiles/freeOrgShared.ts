@@ -48,6 +48,43 @@ export function isShortOrAcronymName(name: string): boolean {
 	return false;
 }
 
+/** True when the education name is clearly non-U.S. (skip IPEDS / Scorecard). */
+export function looksLikeForeignEducationName(name: string): boolean {
+	const n = String(name || '').toLowerCase();
+	if (!n) return false;
+	if (
+		/\b(universidade|università|université|universidad|universiteit|universität|univerzita|universitet)\b/.test(
+			n,
+		)
+	) {
+		return true;
+	}
+	if (/\bfederal university of\b/.test(n)) return true;
+	if (
+		/\b(brazil|brasil|india|china|beijing|shanghai|moscow|russia|ukraine|poland|hungary|budapest|bangladesh|qatar|singapore|tokyo|japan|korea|seoul|tehran|iran|egypt|cairo|nigeria|kenya|ghana|mexico|argentina|chile|colombia|peru|vietnam|thailand|indonesia|malaysia|philippines|pakistan|turkey|türkiye|israel|palestine|saudi|emirates|uae)\b/.test(
+			n,
+		)
+	) {
+		return true;
+	}
+	if (/\b(all india|birla institute|bauman moscow|charles university|anna university)\b/.test(n)) {
+		return true;
+	}
+	return false;
+}
+
+/** Distinct org-type token when present — university ≠ college ≠ institute. */
+export function extractOrgTypeToken(name: string): string | null {
+	const n = String(name || '').toLowerCase();
+	if (/\buniversit(y|ies)\b/.test(n)) return 'university';
+	if (/\bcolleges?\b/.test(n)) return 'college';
+	if (/\binstitutes?\b/.test(n)) return 'institute';
+	if (/\bschools?\b/.test(n)) return 'school';
+	if (/\bhospitals?\b/.test(n)) return 'hospital';
+	if (/\b(academy|academies)\b/.test(n)) return 'academy';
+	return null;
+}
+
 export function nameLooksLikeHit(orgName: string, title: string): boolean {
 	const rawA = String(orgName || '').trim();
 	const rawB = String(title || '').trim();
@@ -57,6 +94,10 @@ export function nameLooksLikeHit(orgName: string, title: string): boolean {
 		const compact = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 		return compact(rawA) === compact(rawB.split(',')[0] || rawB);
 	}
+	// "Carleton University" must not match "Carleton College" (IPEDS HD / Scorecard).
+	const typeA = extractOrgTypeToken(rawA);
+	const typeB = extractOrgTypeToken(rawB);
+	if (typeA && typeB && typeA !== typeB) return false;
 	const norm = (s: string) =>
 		String(s || '')
 			.toLowerCase()

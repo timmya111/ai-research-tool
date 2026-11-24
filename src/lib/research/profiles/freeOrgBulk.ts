@@ -12,7 +12,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { isPlausibleStreetHq, nameLooksLikeHit } from '@/lib/research/profiles/freeOrgShared';
+import {
+	isPlausibleStreetHq,
+	looksLikeForeignEducationName,
+	nameLooksLikeHit,
+} from '@/lib/research/profiles/freeOrgShared';
 
 const ROOT = process.cwd();
 const BMF_DIR = path.join(ROOT, '.data/irs/eo-bmf');
@@ -68,6 +72,16 @@ function normName(s: string): string {
 			/\b(inc|llc|ltd|limited|corp|corporation|company|co|the|university|college|foundation|assoc|association|charities|charity)\b/g,
 			' ',
 		)
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+/** IPEDS/Scorecard keys keep university|college|institute so Carleton U ≠ Carleton College. */
+function normIpedsName(s: string): string {
+	return String(s || '')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, ' ')
+		.replace(/\b(inc|llc|ltd|limited|corp|corporation|company|co|the|foundation|assoc|association)\b/g, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
 }
@@ -190,11 +204,11 @@ async function ensureIpedsIndex(): Promise<void> {
 			row[h] = (cols[i] || '').trim();
 		});
 		const name = row.INSTNM || '';
-		const n = normName(name);
+		const n = normIpedsName(name);
 		if (n.length >= 3) ipedsByNormName.set(n, row);
 		const alias = row.IALIAS || '';
 		for (const a of alias.split('|')) {
-			const an = normName(a);
+			const an = normIpedsName(a);
 			if (an.length >= 3 && !ipedsByNormName.has(an)) ipedsByNormName.set(an, row);
 		}
 	}
@@ -266,6 +280,7 @@ export async function lookupCollegeScorecard(input: {
 }): Promise<BulkOrgHit | null> {
 	const q = String(input.name || '').trim().slice(0, 120);
 	if (q.length < 3) return null;
+	if (looksLikeForeignEducationName(q)) return null;
 	const fields = [
 		'id',
 		'school.name',
@@ -345,14 +360,22 @@ export async function lookupIpedsHd(input: {
 }): Promise<BulkOrgHit | null> {
 	await ensureIpedsIndex();
 	if (!ipedsByNormName) return null;
-	const n = normName(input.name);
+	// IPEDS HD is U.S.-only — skip clearly foreign institutions.
+	if (looksLikeForeignEducationName(input.name)) return null;
+	const n = normIpedsName(input.name);
 	let row = ipedsByNormName.get(n) || null;
 	if (!row) {
 		for (const [key, rec] of ipedsByNormName) {
 			const inst = rec.INSTNM || key;
 			if (!nameLooksLikeHit(input.name, inst)) continue;
-			const qt = n.split(' ').filter((t) => t.length > 2 && !/(university|college|institute|school)/.test(t));
-			const ht = new Set(normName(inst).split(' ').filter((t) => t.length > 2));
+			const qt = n
+				.split(' ')
+				.filter((t) => t.length > 2 && !/(university|college|institute|school)/.test(t));
+			const ht = new Set(
+				normIpedsName(inst)
+					.split(' ')
+					.filter((t) => t.length > 2 && !/(university|college|institute|school)/.test(t)),
+			);
 			const overlap = qt.filter((t) => ht.has(t)).length;
 			if (qt.length >= 2 && overlap < 2) continue;
 			row = rec;
