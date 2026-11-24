@@ -635,6 +635,11 @@ function collectHistoricEventSourceTags(opts: {
 		if (!t) return;
 		const k = t.toLowerCase().replace(/[^a-z0-9]+/g, '');
 		if (!k || seen.has(k)) return;
+		// Drop host chips that are just a compressed form of an existing feed name
+		// (e.g. "Constructionexec" after "Construction Executive").
+		for (const prev of seen) {
+			if (prev.includes(k) || k.includes(prev)) return;
+		}
 		seen.add(k);
 		tags.push({
 			label: t,
