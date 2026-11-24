@@ -183,6 +183,12 @@ const US_STATE_ABBR: Record<string, string> = {
 	'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT',
 	virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
 	'district of columbia': 'DC',
+	'd.c.': 'DC',
+	'd.c': 'DC',
+	'dc.': 'DC',
+	'washington dc': 'DC',
+	'washington d.c.': 'DC',
+	'washington d.c': 'DC',
 };
 
 export function normalizeUsState(input?: string | null): string | null {
@@ -330,12 +336,40 @@ export function normalizeLocationRecord(input: {
 			country = 'US';
 		}
 
-		// Handle "Washington, D.C."
-		if (parts.length >= 2 && /^washington$/i.test(parts[0]) && /^d\.?c\.?$/i.test(parts[1])) {
-			city = 'Washington';
-			state = 'DC';
-			country = 'US';
-			parts.splice(0, 2, 'Washington', 'DC');
+		// Normalize "D.C." / "D.C. 20001" tokens to "DC" / "DC 20001" anywhere in the parts list.
+		for (let i = 0; i < parts.length; i++) {
+			const dcZip = parts[i].match(/^d\.?\s*c\.?(?:\s+(\d{5}(?:-\d{4})?))?$/i);
+			if (dcZip) {
+				parts[i] = dcZip[1] ? `DC ${dcZip[1]}` : 'DC';
+			}
+		}
+
+		// Handle "Washington, D.C." (any adjacent pair — not only at the start).
+		for (let i = 0; i < parts.length - 1; i++) {
+			if (/^washington$/i.test(parts[i]) && /^(?:d\.?\s*c\.?|DC)(?:\s+\d{5}(?:-\d{4})?)?$/i.test(parts[i + 1])) {
+				city = city || 'Washington';
+				state = 'DC';
+				country = 'US';
+				const zipM = parts[i + 1].match(/\b(\d{5}(?:-\d{4})?)\b/);
+				parts.splice(i, 2, 'Washington', zipM ? `DC ${zipM[1]}` : 'DC');
+				break;
+			}
+		}
+
+		// "Suite 308 Washington" + "DC" → peel city out of a trailing Washington in the prior part.
+		for (let i = 0; i < parts.length - 1; i++) {
+			if (/^(?:d\.?\s*c\.?|DC)(?:\s+\d{5}(?:-\d{4})?)?$/i.test(parts[i + 1])) {
+				const wash = parts[i].match(/^(.*\b)?(washington)\s*$/i);
+				if (wash) {
+					const leading = String(wash[1] || '').trim().replace(/[,\s]+$/g, '');
+					if (leading) parts[i] = leading;
+					else parts.splice(i, 1);
+					city = city || 'Washington';
+					state = 'DC';
+					country = 'US';
+					break;
+				}
+			}
 		}
 
 		// Handle standalone "New York City" (with or without trailing US / NY)
@@ -358,14 +392,17 @@ export function normalizeLocationRecord(input: {
 
 		// Check if last part is a US state (only when parts.length >= 2, so standalone city/state isn't collapsed to bare 2-letter code)
 		const lastPart = parts.length >= 2 ? parts[parts.length - 1] : '';
-		const stateZipM = lastPart.match(/^([A-Za-z ]+?)(?:\s+(\d{5}(?:-\d{4})?))?$/);
+		const stateZipM = lastPart.match(/^([A-Za-z.\s]+?)(?:\s+(\d{5}(?:-\d{4})?))?$/);
 		if (stateZipM) {
 			const maybeState = stateZipM[1].trim();
 			const zip = stateZipM[2] || '';
 			const mapped =
-				maybeState.length === 2 && VALID_US_STATES.has(maybeState.toUpperCase())
-					? maybeState.toUpperCase()
-					: US_STATE_ABBR[maybeState.toLowerCase()] || null;
+				normalizeUsState(maybeState) &&
+				VALID_US_STATES.has(String(normalizeUsState(maybeState)))
+					? String(normalizeUsState(maybeState))
+					: maybeState.length === 2 && VALID_US_STATES.has(maybeState.toUpperCase())
+						? maybeState.toUpperCase()
+						: US_STATE_ABBR[maybeState.toLowerCase()] || null;
 			if (mapped) {
 				state = mapped;
 				country = 'US';
@@ -393,10 +430,17 @@ export function normalizeLocationRecord(input: {
 			const countyM = beforeState.match(/^(.+?)\s+County$/i);
 			if (countyM) {
 				county = county || countyM[1].trim();
-			} else if (beforeState && !/^\d/.test(beforeState)) {
+			} else if (
+				!city &&
+				beforeState &&
+				!/^\d/.test(beforeState) &&
+				!/^(?:suite|ste\.?|floor|fl\.?|apt\.?|unit|room|rm\.?)\b/i.test(beforeState)
+			) {
 				city = beforeState;
 			}
 		}
+		// DC shorthand: if we know DC but city still empty, prefer Washington.
+		if (!city && state === 'DC') city = 'Washington';
 
 		if (city && /^new york city$/i.test(city)) city = 'New York';
 

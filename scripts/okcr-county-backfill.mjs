@@ -217,8 +217,23 @@ function parseResultsPage(html, pageUrl) {
 		if (!a) continue;
 		let href = a.getAttribute('href') || '';
 		if (href.startsWith('/')) href = `https://okcountyrecords.com${href}`;
-		const m = href.match(/\/detail\/([^/]+)\/([^/]+)\/(\d+)/);
-		if (!m) continue;
+		// Classic: /detail/{site}/{instrumentNo}/{id}
+		// Lien/short: /detail/{site}/{kind}-{id}  e.g. /detail/hughes/lien-3786942
+		let site = '';
+		let instrumentNo = '';
+		let id = '';
+		const classic = href.match(/\/detail\/([^/]+)\/([^/]+)\/(\d+)(?:\/|$|\?)/);
+		if (classic) {
+			site = classic[1];
+			instrumentNo = classic[2];
+			id = classic[3];
+		} else {
+			const short = href.match(/\/detail\/([^/]+)\/([a-zA-Z]+)-(\d+)(?:\/|$|\?)/);
+			if (!short) continue;
+			site = short[1];
+			instrumentNo = `${short[2]}-${short[3]}`;
+			id = short[3];
+		}
 
 		const cells = [...tr.querySelectorAll('td')].map((td) => normalizeText(td.textContent));
 		const get = (name) => {
@@ -228,7 +243,6 @@ function parseResultsPage(html, pageUrl) {
 
 		const imagesRaw = get('Images') || '';
 		const imagesMatch = imagesRaw.match(/(\d+)/);
-		const instrumentNo = m[2];
 		const instrumentCell = get('Instrument') || instrumentNo;
 		const instrument = instrumentCell.startsWith('I-') ? instrumentCell : `I-${instrumentCell}`;
 		const countyCell = get('County');
@@ -239,8 +253,8 @@ function parseResultsPage(html, pageUrl) {
 			: COUNTY_LABEL;
 
 		filings.push({
-			id: m[3],
-			site: m[1],
+			id,
+			site,
 			instrumentNo,
 			instrument,
 			docType: get('Type') || 'UNKNOWN',

@@ -51,14 +51,16 @@ export async function PATCH(request: Request, context: Ctx) {
 	const key = decodeURIComponent(String(id || '').trim());
 	try {
 		const body = (await request.json()) as Record<string, unknown>;
-		const metadataPatch =
-			Array.isArray(body.categoryTags)
-				? {
-						categoryTags: body.categoryTags
-							.map((t) => String(t) as ProfileType)
-							.filter((t) => PROFILE_TYPES.includes(t) && t !== 'person'),
-					}
-				: undefined;
+		const metadataPatch: Record<string, unknown> = {};
+		if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
+			Object.assign(metadataPatch, body.metadata as Record<string, unknown>);
+		}
+		if (Array.isArray(body.categoryTags)) {
+			metadataPatch.categoryTags = body.categoryTags
+				.map((t) => String(t) as ProfileType)
+				.filter((t) => PROFILE_TYPES.includes(t) && t !== 'person');
+		}
+		const hasMetadataPatch = Object.keys(metadataPatch).length > 0;
 
 		const updated = updateProfileFields(key, {
 			name: body.name != null ? String(body.name) : undefined,
@@ -67,7 +69,7 @@ export async function PATCH(request: Request, context: Ctx) {
 			summary: body.summary != null ? String(body.summary) : undefined,
 			startDate: body.startDate !== undefined ? (body.startDate ? String(body.startDate) : null) : undefined,
 			endDate: body.endDate !== undefined ? (body.endDate ? String(body.endDate) : null) : undefined,
-			metadata: metadataPatch,
+			metadata: hasMetadataPatch ? metadataPatch : undefined,
 		});
 		if (!updated) {
 			return NextResponse.json({ ok: false, error: 'Profile not found' }, { status: 404 });

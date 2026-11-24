@@ -1,11 +1,6 @@
 import crypto from 'crypto';
 import fs from 'fs';
-import {
-	chartFilePath,
-	chartMimeType,
-	ensureChartsDir,
-	type ChartImageFormat,
-} from '@/lib/research/charts/paths';
+import { chartFilePath, chartMimeType, ensureChartsDir, type ChartImageFormat } from '@/lib/research/charts/paths';
 import { CHART_PIXEL_DENSITY } from '@/lib/research/charts/svg';
 import { rasterizeChartSvg } from '@/lib/research/charts/rasterize';
 
@@ -31,12 +26,7 @@ export type MakeLogoResult = {
 };
 
 function escapeXml(s: string): string {
-	return String(s)
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&apos;');
+	return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
 function normalizeLogoFormat(raw: unknown): ChartImageFormat {
@@ -49,18 +39,12 @@ function normalizeLogoFormat(raw: unknown): ChartImageFormat {
 }
 
 /** Simple wordmark / badge SVG for logos (vector by default). */
-export function renderLogoSvg(args: {
-	text: string;
-	subtitle?: string | null;
-	bg?: string;
-	fg?: string;
-	accent?: string;
-}): string {
+export function renderLogoSvg(args: { text: string; subtitle?: string | null; bg?: string; fg?: string; accent?: string }): string {
 	const density = CHART_PIXEL_DENSITY;
 	const d = (n: number) => n * density;
 	const width = d(640);
 	const height = d(200);
-	const bg = args.bg || '#0f172a';
+	const bg = args.bg || '#002118;';
 	const fg = args.fg || '#f8fafc';
 	const accent = args.accent || '#F97316';
 	const title = escapeXml(String(args.text || 'Logo').trim() || 'Logo');
@@ -71,11 +55,7 @@ export function renderLogoSvg(args: {
   <rect width="100%" height="100%" rx="${d(24)}" fill="${bg}"/>
   <rect x="${d(28)}" y="${d(28)}" width="${d(10)}" height="${height - d(56)}" rx="${d(4)}" fill="${accent}"/>
   <text x="${d(56)}" y="${subtitle ? d(88) : d(112)}" font-size="${d(42)}" font-weight="700" fill="${fg}" font-family="system-ui,sans-serif">${title}</text>
-  ${
-		subtitle
-			? `<text x="${d(56)}" y="${d(140)}" font-size="${d(20)}" fill="#94a3b8" font-family="system-ui,sans-serif">${subtitle}</text>`
-			: ''
-	}
+  ${subtitle ? `<text x="${d(56)}" y="${d(140)}" font-size="${d(20)}" fill="#94a3b8" font-family="system-ui,sans-serif">${subtitle}</text>` : ''}
 </svg>
 `;
 }

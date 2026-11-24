@@ -71,6 +71,10 @@
 		"questions:monitor": "node scripts/questions-playlist-daily.mjs",
 		"questions:monitor:once": "QUESTIONS_PLAYLIST_ONCE=1 node scripts/questions-playlist-daily.mjs",
 		"questions:monitor:seed": "QUESTIONS_PLAYLIST_SEED_ONLY=1 QUESTIONS_PLAYLIST_ONCE=1 node scripts/questions-playlist-daily.mjs",
+		"news:rss": "node scripts/news-rss-ingest.mjs",
+		"news:rss:loop": "NEWS_RSS_LOOP=1 node scripts/news-rss-ingest.mjs",
+		"news:rss:backfill-full": "NEWS_RSS_BACKFILL_FULL=1 node scripts/news-rss-ingest.mjs",
+		"news:rss:consolidate": "node scripts/news-rss-topic-consolidate.mjs",
 		"mu:ocr": "python3 scripts/mindunveiled-ocr.py --priority-first",
 		"mu:ocr:once": "python3 scripts/mindunveiled-ocr.py --once --priority-first",
 		"wikipedia:serve": "bash /home/lenny/.grok/long-running-background-tasks/run_kiwix_serve.sh",
@@ -114,6 +118,7 @@
 		"sharp": "^0.35.5"
 	},
 	"devDependencies": {
+		"@mozilla/readability": "^0.6.0",
 		"@tailwindcss/turbopack": "4.3.3",
 		"@types/node": "^20",
 		"@types/react": "^19",

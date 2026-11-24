@@ -1458,6 +1458,17 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 			like,
 			`%${q.toLowerCase().replace(/\s+/g, '')}%`,
 		);
+	} else if (
+		filter.profileType === 'historic_event' ||
+		filter.profileType === 'narratives'
+	) {
+		// Historic Events tab: most recent event date first; undated last.
+		orderSql = `CASE
+             WHEN COALESCE(p.start_date, p.end_date) IS NULL THEN 1
+             ELSE 0
+           END ASC,
+           COALESCE(p.start_date, p.end_date, '') DESC,
+           p.name ASC`;
 	} else {
 		orderSql = updatedThenName;
 	}
@@ -1590,8 +1601,8 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 				identifiers: idents,
 				metadata: prof.metadata,
 			});
-			// Person left-list: compact City, ST (omit USA; append ISO when abroad).
-			if (prof.profileType === 'person') {
+			// Left-list: compact City, ST (omit USA; append ISO when abroad) for all types.
+			{
 				const best = pickBestLocation(locs);
 				prof.primaryLocation = best
 					? formatCompactCityStateLocation(best, {
