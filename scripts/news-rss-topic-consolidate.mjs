@@ -201,8 +201,16 @@ function buildTimelineSummary({ cluster, members, wikiNotes }) {
 		.filter(Boolean)
 		.slice(0, 12);
 
+	const leadBits = [
+		`${cluster.canonicalName} spans ${start || 'undated'}${end && end !== start ? ` to ${end}` : ''}.`,
+		sorted.length > 1 ?
+			`This card merges ${sorted.length} related news items into one topic narrative.`
+		:	`Fact-checked against the local Wikipedia library and reduced to dated milestones.`,
+		firstSentences(sorted[0]?.summary || '', 180),
+	].filter(Boolean);
+
 	const lines = [
-		`${cluster.canonicalName}.`,
+		leadBits.join(' '),
 		'',
 		'## Timeline',
 		...bullets,
@@ -215,7 +223,7 @@ function buildTimelineSummary({ cluster, members, wikiNotes }) {
 		'## Source articles',
 		...sources.map((u) => `- ${u}`),
 		'',
-		`Consolidated from ${sorted.length} news_rss card(s); prose reduced to dated bullets.`,
+		`Consolidated from ${sorted.length} news_rss card(s); overview mixes a short paragraph with Timeline-style dated entries.`,
 	];
 
 	return {

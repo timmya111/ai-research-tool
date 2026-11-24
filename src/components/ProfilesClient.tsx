@@ -985,6 +985,14 @@ const SUMMARY_YEAR_TOKEN =
 	'(?:18|19|20)\\d{2}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|present|Present))?|\\d{4}-\\d{2}-\\d{2}|\\d{2}-\\d{2}-\\d{4}|\\d{2}-\\d{4}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|\\d{2}-\\d{4}|present|Present))?|\\d{4}-\\d{2}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|\\d{4}-\\d{2}|present|Present))?';
 const SUMMARY_YEAR_RE = new RegExp(`\\b(?:${SUMMARY_YEAR_TOKEN})\\b`, 'g');
 const SUMMARY_YEAR_CONNECTOR_RE = /(?:In|From|During|By|Until|Since|After|Before)\s+$/i;
+const SUMMARY_HEADING_RE = /^#{1,3}\s+(.+)$/;
+const SUMMARY_BULLET_RE = /^[-*•]\s+(.+)$/;
+// Prefer full dates (YYYY-MM-DD / MM-DD-YYYY) before bare years so
+// "2025-06-09 — …" does not split into date=2025 + text="06-09 — …".
+const SUMMARY_DATED_BULLET_RE =
+	/^(?:\*\*)?((?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+const SUMMARY_TITLED_BULLET_RE = /^\*\*([^*]+)\*\*\s*[—–:\-]\s*(.+)$/;
+const SUMMARY_URL_RE = /^(https?:\/\/\S+)$/i;
 
 function renderSummaryInline(text: string, emphasizeClass = 'font-bold text-white'): ReactNode[] {
 	const nodes: ReactNode[] = [];
@@ -1038,9 +1046,15 @@ function stripPronunciationGuides(text: string): string {
 const SUMMARY_LABEL_RE = /^(?:\*\*)?([^*:\n]{1,48})(?:\*\*)?\s*:\s*(.+)$/;
 const SUMMARY_DISCLAIMER_RE = /(?:appearance in this curated|does not allege|does not imply|records public|disclaimer|appearing in .{0,40}does not)/i;
 
+type SummaryTimelineEntry = { date: string; text: string; sourceTag?: string | null };
+type SummaryBulletEntry = { title?: string | null; text: string; href?: string | null };
+
 type SummaryBlock =
 	| { kind: 'grid'; rows: Array<{ label: string; value: string }> }
 	| { kind: 'year'; year: string; text: string }
+	| { kind: 'heading'; text: string }
+	| { kind: 'timeline'; entries: SummaryTimelineEntry[] }
+	| { kind: 'bullets'; entries: SummaryBulletEntry[] }
 	| { kind: 'prose'; text: string }
 	| { kind: 'disclaimer'; text: string };
 
@@ -1173,19 +1187,50 @@ function normalizeSummaryMarkup(text: string): string {
 	);
 }
 
+function splitSourceTag(text: string): { body: string; sourceTag: string | null } {
+	const m = String(text || '').match(/^(.*?)(?:\s*\[([^\]]{1,64})\])\s*$/);
+	if (!m) return { body: String(text || '').trim(), sourceTag: null };
+	return { body: m[1].trim(), sourceTag: m[2].trim() || null };
+}
+
+function extractTrailingUrl(text: string): { body: string; href: string | null } {
+	const m = String(text || '').match(/^(.*?)(?:\((https?:\/\/[^)\s]+)\)|(https?:\/\/\S+))\s*$/i);
+	if (!m) return { body: String(text || '').trim(), href: null };
+	return { body: (m[1] || '').trim().replace(/[—–\-\s]+$/g, '').trim(), href: m[2] || m[3] || null };
+}
+
 function parseSummaryBlocks(text: string): SummaryBlock[] {
 	const cleaned = normalizeSummaryMarkup(stripPronunciationGuides(text));
+	// Keep blank lines only as separators; preserve markdown headings / bullets.
 	const lines = cleaned
-		.split(/\n+/)
+		.split(/\n/)
 		.map((l) => l.trim())
 		.filter(Boolean);
 	const blocks: SummaryBlock[] = [];
 	let gridRows: Array<{ label: string; value: string }> = [];
+	let timelineEntries: SummaryTimelineEntry[] = [];
+	let bulletEntries: SummaryBulletEntry[] = [];
+	let sectionKind: 'general' | 'timeline' | 'bullets' = 'general';
 
 	const flushGrid = () => {
 		if (gridRows.length === 0) return;
 		blocks.push({ kind: 'grid', rows: gridRows });
 		gridRows = [];
+	};
+	const flushTimeline = () => {
+		if (timelineEntries.length === 0) return;
+		blocks.push({ kind: 'timeline', entries: timelineEntries });
+		timelineEntries = [];
+	};
+	const flushBullets = () => {
+		if (bulletEntries.length === 0) return;
+		blocks.push({ kind: 'bullets', entries: bulletEntries });
+		bulletEntries = [];
+	};
+	const flushCollections = () => {
+		flushGrid();
+		flushTimeline();
+		flushBullets();
 	};
 
 	for (const rawLine of lines) {
@@ -1193,7 +1238,7 @@ function parseSummaryBlocks(text: string): SummaryBlock[] {
 		let trailingDisclaimer: string | null = null;
 		const discIdx = line.search(SUMMARY_DISCLAIMER_RE);
 		if (discIdx === 0) {
-			flushGrid();
+			flushCollections();
 			blocks.push({ kind: 'disclaimer', text: line.replace(/^\*\*|\*\*$/g, '').trim() });
 			continue;
 		}
@@ -1207,13 +1252,68 @@ function parseSummaryBlocks(text: string): SummaryBlock[] {
 		}
 		if (!line) {
 			if (trailingDisclaimer) {
-				flushGrid();
+				flushCollections();
 				blocks.push({ kind: 'disclaimer', text: trailingDisclaimer });
 			}
 			continue;
 		}
+
+		const heading = line.match(SUMMARY_HEADING_RE);
+		if (heading) {
+			flushCollections();
+			const title = heading[1].replace(/^\*\*|\*\*$/g, '').trim();
+			blocks.push({ kind: 'heading', text: title });
+			const lower = title.toLowerCase();
+			if (/timeline|chronolog|milestones?|key dates|history/.test(lower)) sectionKind = 'timeline';
+			else if (/wikipedia|sources?|references?|further reading|cross-?check/.test(lower)) sectionKind = 'bullets';
+			else sectionKind = 'general';
+			continue;
+		}
+
+		const bullet = line.match(SUMMARY_BULLET_RE);
+		if (bullet) {
+			flushGrid();
+			const body = bullet[1].trim();
+			const dated = body.match(SUMMARY_DATED_BULLET_RE);
+			if (dated || sectionKind === 'timeline') {
+				flushBullets();
+				if (dated) {
+					const split = splitSourceTag(dated[2]);
+					timelineEntries.push({ date: dated[1].replace(/\*\*/g, '').trim(), text: split.body, sourceTag: split.sourceTag });
+				} else {
+					const titled = body.match(SUMMARY_TITLED_BULLET_RE);
+					const split = splitSourceTag(titled ? titled[2] : body);
+					timelineEntries.push({
+						date: titled ? titled[1].trim() : 'Undated',
+						text: split.body,
+						sourceTag: split.sourceTag,
+					});
+				}
+			} else if (SUMMARY_URL_RE.test(body)) {
+				flushTimeline();
+				bulletEntries.push({ text: body, href: body });
+			} else {
+				flushTimeline();
+				const titled = body.match(SUMMARY_TITLED_BULLET_RE);
+				if (titled) {
+					const extracted = extractTrailingUrl(titled[2]);
+					bulletEntries.push({ title: titled[1].trim(), text: extracted.body, href: extracted.href });
+				} else {
+					const extracted = extractTrailingUrl(body);
+					bulletEntries.push({ text: extracted.body, href: extracted.href });
+				}
+			}
+			if (trailingDisclaimer) {
+				flushCollections();
+				blocks.push({ kind: 'disclaimer', text: trailingDisclaimer });
+			}
+			continue;
+		}
+
 		const labeled = line.match(SUMMARY_LABEL_RE);
 		if (labeled) {
+			flushTimeline();
+			flushBullets();
 			const label = labeled[1].replace(/^\*\*|\*\*$/g, '').trim();
 			const value = labeled[2].trim();
 			// Year-as-label lines become year sections for scanning.
@@ -1224,18 +1324,18 @@ function parseSummaryBlocks(text: string): SummaryBlock[] {
 				gridRows.push({ label, value });
 			}
 		} else {
-			flushGrid();
+			flushCollections();
 			// Wikipedia prose: only sentence-starting years become date cards
 			// (mid-sentence "(1998)" / "in 2002" stay inline). Explicit "YEAR: …" labels
 			// are handled above.
 			for (const part of sectionProseByYears(line)) blocks.push(part);
 		}
 		if (trailingDisclaimer) {
-			flushGrid();
+			flushCollections();
 			blocks.push({ kind: 'disclaimer', text: trailingDisclaimer });
 		}
 	}
-	flushGrid();
+	flushCollections();
 	return blocks;
 }
 
@@ -1269,7 +1369,69 @@ function summaryYearSortKey(yearLabel: string): number {
 	return Math.max(...nums) * 10_000;
 }
 
-/** All profile summaries: white text, year sections (newest first within runs), labeled grid, bold dates. */
+function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
+	const byYear = new Map<string, SummaryTimelineEntry[]>();
+	for (const entry of entries) {
+		const y =
+			entry.date && /^\d{4}/.test(entry.date) ? entry.date.slice(0, 4)
+			: entry.date && /\b((?:18|19|20)\d{2})\b/.test(entry.date) ? (entry.date.match(/\b((?:18|19|20)\d{2})\b/) || [])[1]
+			: 'Undated';
+		const list = byYear.get(y) || [];
+		list.push(entry);
+		byYear.set(y, list);
+	}
+	const years = [...byYear.keys()].sort((a, b) => {
+		if (a === 'Undated') return 1;
+		if (b === 'Undated') return -1;
+		return b.localeCompare(a);
+	});
+	for (const y of years) {
+		const list = byYear.get(y) || [];
+		list.sort((a, b) => summaryYearSortKey(b.date) - summaryYearSortKey(a.date));
+	}
+
+	return (
+		<div className='space-y-4'>
+			{years.map((year) => (
+				<section
+					key={year}
+					className='space-y-2'>
+					<div className='flex items-baseline gap-2 border-b border-white/15 px-0.5 py-1'>
+						<h4 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h4>
+						<span className='text-[10px] opacity-60'>
+							{(byYear.get(year) || []).length} {(byYear.get(year) || []).length === 1 ? 'entry' : 'entries'}
+						</span>
+					</div>
+					<div className='relative ml-1.5 space-y-0 border-l-2 border-white/20 pl-3.5'>
+						{(byYear.get(year) || []).map((entry, ei) => (
+							<article
+								key={`${year}-${ei}-${entry.date}`}
+								className='relative pb-3.5 last:pb-1'>
+								<span
+									aria-hidden
+									className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
+								/>
+								<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+									<span className='font-mono font-semibold opacity-90'>
+										{entry.date && entry.date !== 'Undated' ? formatDisplayDate(entry.date) || formatSummaryDateLabel(entry.date) : 'Undated'}
+									</span>
+									{entry.sourceTag ?
+										<span className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>{entry.sourceTag}</span>
+									:	null}
+								</div>
+								<p className='m-0 mt-1 text-[12px] leading-relaxed text-white/90'>
+									{renderSummaryInline(entry.text, 'font-bold text-white')}
+								</p>
+							</article>
+						))}
+					</div>
+				</section>
+			))}
+		</div>
+	);
+}
+
+/** All profile summaries: prose paragraphs mixed with Timeline-tab rail styling for dated sections. */
 function ProfileSummaryText({ text }: { text: string }) {
 	const raw = String(text || '').trim();
 	if (!raw) return null;
@@ -1281,7 +1443,7 @@ function ProfileSummaryText({ text }: { text: string }) {
 		return t.length > 0;
 	});
 
-	// Keep document order for prose/grid; sort only contiguous year-card runs (newest first).
+	// Keep document order for prose/grid/timeline; sort only contiguous year-card runs (newest first).
 	const renderItems: SummaryBlock[] = [];
 	for (let i = 0; i < blocks.length; ) {
 		const b = blocks[i];
@@ -1301,8 +1463,65 @@ function ProfileSummaryText({ text }: { text: string }) {
 
 	return (
 		<div className='mt-2 max-w-3xl rounded-lg border border-white/15 bg-[#0b1220] p-3 text-xs leading-relaxed text-white shadow-sm'>
-			<div className='space-y-2.5'>
+			<div className='space-y-3'>
 				{renderItems.map((block, idx) => {
+					if (block.kind === 'heading') {
+						return (
+							<h3
+								key={`h-${idx}`}
+								className='m-0 border-b border-white/10 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[#FDBA74]'>
+								{block.text}
+							</h3>
+						);
+					}
+					if (block.kind === 'timeline') {
+						return (
+							<SummaryTimelineRail
+								key={`t-${idx}`}
+								entries={block.entries}
+							/>
+						);
+					}
+					if (block.kind === 'bullets') {
+						return (
+							<ul
+								key={`b-${idx}`}
+								className='m-0 list-none space-y-2 p-0'>
+								{block.entries.map((entry, bi) => (
+									<li
+										key={`b-${idx}-${bi}`}
+										className='rounded border border-white/10 bg-white/5 px-2.5 py-1.5'>
+										{entry.title ?
+											<div className='text-[11px] font-semibold text-[#FDBA74]'>{entry.title}</div>
+										:	null}
+										{entry.href && !entry.title ?
+											<a
+												href={entry.href}
+												target='_blank'
+												rel='noreferrer'
+												className='break-all text-[11px] text-sky-300 underline'>
+												{entry.text || entry.href}
+											</a>
+										:	<p className='m-0 mt-0.5 text-[12px] leading-snug text-white/90'>
+												{renderSummaryInline(entry.text, 'font-bold text-white')}
+												{entry.href ?
+													<>
+														{' '}
+														<a
+															href={entry.href}
+															target='_blank'
+															rel='noreferrer'
+															className='text-sky-300 underline'>
+															Source ↗
+														</a>
+													</>
+												:	null}
+											</p>}
+									</li>
+								))}
+							</ul>
+						);
+					}
 					if (block.kind === 'year') {
 						return (
 							<SummarySectionCard
@@ -1339,7 +1558,7 @@ function ProfileSummaryText({ text }: { text: string }) {
 					return (
 						<p
 							key={`p-${idx}`}
-							className='m-0 text-[12px] text-white'>
+							className='m-0 text-[12px] leading-relaxed text-white'>
 							{renderSummaryInline(block.text, 'font-bold text-white')}
 						</p>
 					);
