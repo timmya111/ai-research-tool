@@ -2638,8 +2638,16 @@ export function mergeProfiles(
 		const nextStatus: ProfileStatus =
 			keep.status === 'pinned' || merge.status === 'pinned' ? 'pinned' : keep.status;
 		// Keep both summaries when each has unique content (do not drop the shorter side).
-		const keepSum = keep.summary.trim();
-		const mergeSum = merge.summary.trim();
+		// Strip embedded images / data-URIs so merged overview text stays prose-only.
+		const stripSummaryImages = (s: string) =>
+			String(s || '')
+				.replace(/!\[[^\]]*]\(\s*(?:data:image\/[^)\s]+|[^)\s]+\.(?:png|jpe?g|gif|webp|svg|bmp|tiff?)(?:\?[^)\s]*)?)\s*\)/gi, '')
+				.replace(/<img\b[^>]*>/gi, '')
+				.replace(/data:image\/[a-z0-9+.-]+;base64,[a-z0-9+/=\s]+/gi, '')
+				.replace(/\n{3,}/g, '\n\n')
+				.trim();
+		const keepSum = stripSummaryImages(keep.summary);
+		const mergeSum = stripSummaryImages(merge.summary);
 		let nextSummary = keepSum || mergeSum;
 		if (keepSum && mergeSum) {
 			const keepNorm = keepSum.toLowerCase();

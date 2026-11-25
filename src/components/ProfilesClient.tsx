@@ -1331,6 +1331,16 @@ function formatSummaryDatePart(part: string): string {
 		if (month >= 1 && month <= 12) return `${SUMMARY_MONTH_NAMES[month - 1]} ${mmYyyy[2]}`;
 	}
 	if (/^(?:18|19|20)\d{2}$/.test(s)) return s;
+	const seasonYear = s.match(/^(Spring|Summer|Fall|Autumn|Winter)\s+((?:18|19|20)\d{2})$/i);
+	if (seasonYear) return `${seasonYear[1]} ${seasonYear[2]}`;
+	const monYear = s.match(
+		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:18|19|20)\d{2})$/i,
+	);
+	if (monYear) {
+		const key = monYear[1].toLowerCase().replace(/\.$/, '').slice(0, 3);
+		const idx = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(key);
+		if (idx >= 0) return `${SUMMARY_MONTH_NAMES[idx]} ${monYear[2]}`;
+	}
 	return s;
 }
 
@@ -1400,26 +1410,9 @@ const SUMMARY_BULLET_RE = /^[-*•]\s+(.+)$/;
 // Prefer full dates (YYYY-MM-DD / MM-DD-YYYY) before bare years so
 // "2025-06-09 — …" does not split into date=2025 + text="06-09 — …".
 const SUMMARY_DATED_BULLET_RE =
-	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
 const SUMMARY_TITLED_BULLET_RE = /^\*\*([^*]+)\*\*\s*[—–:\-]\s*(.+)$/;
 const SUMMARY_URL_RE = /^(https?:\/\/\S+)$/i;
-
-/** Emphasize numeric year/date tokens as markdown bold (rendered via marked). */
-function emphasizeSummaryYearTokens(text: string): string {
-	const src = String(text || '');
-	const yearRe = new RegExp(`\\b(?:${SUMMARY_YEAR_TOKEN})\\b`, 'g');
-	return src.replace(yearRe, (...args: unknown[]) => {
-		const match = String(args[0] || '');
-		const offset = Number(args[args.length - 2] || 0);
-		const before = src.slice(Math.max(0, offset - 2), offset);
-		const after = src.slice(offset + match.length, offset + match.length + 2);
-		if (before.endsWith('**') || after.startsWith('**')) return match;
-		const lineStart = src.lastIndexOf('\n', offset) + 1;
-		const prefix = src.slice(lineStart, offset);
-		if (/https?:\/\/\S*$/i.test(prefix)) return match;
-		return `**${formatSummaryDateLabel(match)}**`;
-	});
-}
 
 function SummaryMarkdown({
 	text,
@@ -1430,8 +1423,9 @@ function SummaryMarkdown({
 	inline?: boolean;
 	className?: string;
 }) {
-	const prepared = emphasizeSummaryYearTokens(String(text || ''));
-	const html = summaryMarkdownToHtml(prepared, { inline });
+	// Do not auto-bold year/date tokens inside summary prose — timeline rail date
+	// chips already carry the date styling via summaryTimelineDateLabel.
+	const html = summaryMarkdownToHtml(String(text || ''), { inline });
 	if (!html) return null;
 	if (inline) {
 		return (
@@ -1676,6 +1670,16 @@ function looksLikeSummaryDateLabel(raw: string | null | undefined): boolean {
 	) {
 		return true;
 	}
+	// Month + year without day (October 2023) — common on sparse project timelines.
+	if (
+		/^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}$/i.test(
+			s,
+		)
+	) {
+		return true;
+	}
+	// Season + year (Spring 2025 / Fall 2026).
+	if (/^(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}$/i.test(s)) return true;
 	return false;
 }
 

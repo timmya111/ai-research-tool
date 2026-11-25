@@ -3,11 +3,14 @@
  * Poll curated construction / military / geotech RSS feeds and create
  * historic_event profiles for new articles (deduped by source URL).
  * Fetches each article page and stores cleaned full text in summary
- * (ads/nav/related/junk stripped via Readability + heuristics).
+ * (ads/nav/related/junk stripped via Readability + heuristics), then
+ * auto-rewrites Overview to lead + Timeline rail via news-rss-format-card
+ * (sparse/no-date articles → reduced expressive paragraphs under pub date).
  *
  *   pnpm news:rss              # one-shot
  *   pnpm news:rss:loop         # poll every NEWS_RSS_INTERVAL_MS (default 30m)
  *   NEWS_RSS_BACKFILL_FULL=1 pnpm news:rss   # refill summaries on existing news_rss events
+ *   NEWS_RSS_AUTO_FORMAT=0 pnpm news:rss     # skip Overview Timeline rewrite after create
  *   NEWS_RSS_MAX_PER_FEED=20 NEWS_RSS_DRY_RUN=1 pnpm news:rss
  */
 import crypto from 'node:crypto';
@@ -19,12 +22,23 @@ import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import { classifySoftJournalism } from './lib/news-rss-soft-journalism.mjs';
 import { DEFAULT_FOCUS_TOPICS, itemMatchesFocusTopics } from './lib/news-rss-focus-topics.mjs';
+import { fetchArticleBody as fetchArticleBodyShared, extractFromHtml as extractFromHtmlShared, cleanArticleText as cleanArticleTextShared } from './lib/news-rss-article-body.mjs';
+import { formatOne, loadProfileByRef } from './news-rss-format-card.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const CATALOG = path.join(ROOT, '.data', 'news-feeds', 'construction-infra-feeds.json');
-const STATE_PATH = path.join(ROOT, '.data', 'news-feeds', 'construction-infra-state.json');
-const MONITOR_PATH = path.join(ROOT, '.data', 'monitors', 'news-rss-construction-infra.json');
+const CATALOG = path.resolve(
+	ROOT,
+	process.env.NEWS_RSS_CATALOG || '.data/news-feeds/construction-infra-feeds.json',
+);
+const STATE_PATH = path.resolve(
+	ROOT,
+	process.env.NEWS_RSS_STATE || '.data/news-feeds/construction-infra-state.json',
+);
+const MONITOR_PATH = path.resolve(
+	ROOT,
+	process.env.NEWS_RSS_MONITOR || '.data/monitors/news-rss-construction-infra.json',
+);
 const PROFILES_DB = path.join(ROOT, '.data', 'profiles', 'profiles.sqlite');
 const BASE_URL = String(process.env.BASE_URL || 'http://127.0.0.1:3333').replace(/\/$/, '');
 const MAX_PER_FEED = Math.max(1, Number(process.env.NEWS_RSS_MAX_PER_FEED || 25));
@@ -39,6 +53,9 @@ const INTERVAL_MS = Math.max(
 	60_000,
 	Number(process.env.NEWS_RSS_INTERVAL_MS) || 30 * 60 * 1000,
 );
+/** After create, rewrite Overview into lead + Timeline rail (sparse paragraphs under pub date when needed). */
+const AUTO_FORMAT = !/^(0|false|no)$/i.test(String(process.env.NEWS_RSS_AUTO_FORMAT || '1'));
+const AUTO_FORMAT_RESCRAPE = /^(1|true|yes)$/i.test(String(process.env.NEWS_RSS_AUTO_FORMAT_RESCRAPE || '0'));
 const UA =
 	process.env.NEWS_RSS_UA ||
 	'Mozilla/5.0 (compatible; ai-research-tool-news-rss/1.0; +http://localhost:3333)';
@@ -359,15 +376,8 @@ function extractFromHtml(html, pageUrl) {
 }
 
 async function fetchArticleBody(url) {
-	const { text: html, finalUrl } = await fetchText(
-		url,
-		'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-	);
-	if (/just a moment|cf-browser-verification|attention required|access denied/i.test(html.slice(0, 2000))) {
-		throw new Error('blocked/challenge page');
-	}
-	const extracted = extractFromHtml(html, finalUrl);
-	return { ...extracted, finalUrl, htmlChars: html.length };
+	// Shared Readability + ad/junk strip (scripts/lib/news-rss-article-body.mjs)
+	return fetchArticleBodyShared(url, { timeoutMs: FETCH_TIMEOUT_MS, ua: UA });
 }
 
 async function resolveArticleText(item) {
@@ -616,7 +626,7 @@ async function pollOnce() {
 
 	const enabled = catalog.feeds.filter((f) => f.enabled && f.rss);
 	console.log(
-		`[news-rss] feeds=${enabled.length}/${catalog.feeds.length} maxPerFeed=${MAX_PER_FEED} fetchArticle=${FETCH_ARTICLE} dryRun=${DRY_RUN} focusDefault=${!!catalog.defaultMatchFocusTopics} base=${BASE_URL}`,
+		`[news-rss] feeds=${enabled.length}/${catalog.feeds.length} maxPerFeed=${MAX_PER_FEED} fetchArticle=${FETCH_ARTICLE} autoFormat=${AUTO_FORMAT} dryRun=${DRY_RUN} focusDefault=${!!catalog.defaultMatchFocusTopics} base=${BASE_URL}`,
 	);
 
 	const summary = {
@@ -707,6 +717,28 @@ async function pollOnce() {
 					}
 					const created = await createEvent({ feed, item, article });
 					known.add(url);
+					let formatStatus = null;
+					if (AUTO_FORMAT && created?.id && !DRY_RUN) {
+						try {
+							// Ingest already fetched full text — default skip rescrape for speed.
+							const fresh = loadProfileByRef({ id: created.id }) || created;
+							const fmt = await formatOne(fresh, {
+								quiet: true,
+								rescrape: AUTO_FORMAT_RESCRAPE,
+								related: false,
+							});
+							formatStatus = fmt?.status || 'ok';
+							console.log(
+								`[news-rss] ↪ format ${feed.id}: ${String(created.slug || item.title).slice(0, 64)} (${formatStatus})`,
+							);
+						} catch (fmtErr) {
+							formatStatus = 'format_error';
+							console.error(
+								`[news-rss] ↪ format fail ${feed.id}:`,
+								fmtErr instanceof Error ? fmtErr.message : fmtErr,
+							);
+						}
+					}
 					state.seenUrls[url] = {
 						at: new Date().toISOString(),
 						feedId: feed.id,
@@ -714,6 +746,7 @@ async function pollOnce() {
 						slug: created?.slug || null,
 						articleChars: article.text?.length || 0,
 						articleMethod: article.method || null,
+						formatStatus,
 					};
 					feedStat.created += 1;
 					summary.created += 1;
@@ -784,7 +817,11 @@ async function main() {
 	}
 }
 
-main().catch((err) => {
-	console.error(err);
-	process.exit(1);
-});
+const isMain =
+	Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+	main().catch((err) => {
+		console.error(err);
+		process.exit(1);
+	});
+}

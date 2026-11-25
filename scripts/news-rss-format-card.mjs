@@ -8,18 +8,22 @@
  *   pnpm news:rss:format -- --slug=historic_event:news-asce-…
  *   pnpm news:rss:format -- --url=http://127.0.0.1:3333/profiles/historic_event/…
  *   pnpm news:rss:format -- --unformatted [--limit=N] [--related]
+ *   pnpm news:rss:format -- --unformatted --bucket=tx_ok_crime --force --rescrape
  *   NEWS_RSS_FORMAT_DRY_RUN=1 pnpm news:rss:format -- --slug=…
  *
  * Optional: --related also lists near-topic peers (does not merge unless
  * NEWS_RSS_FORMAT_MERGE_RELATED=1 and peer count is small, ≤4).
- * Batch: --unformatted formats active news_rss historic_events missing
- * overviewStyle=lead_plus_timeline_rail / ## Timeline (skips already formatted).
+ * Batch: --unformatted formats active/pinned news_rss historic_events missing
+ * overviewStyle=lead_plus_timeline_rail / ## Timeline (skips already formatted
+ * unless --force). --rescrape fetches each sourceUrl HTML body (Readability,
+ * ads/junk stripped) and uses that text for milestones instead of thin RSS copy.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { classifySoftJournalism } from './lib/news-rss-soft-journalism.mjs';
+import { fetchArticleBody } from './lib/news-rss-article-body.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -69,10 +73,23 @@ function stripTags(s) {
 }
 
 function parseArgs(argv) {
-	const out = { id: null, slug: null, url: null, related: false, unformatted: false, limit: null, bucket: null };
+	const out = {
+		id: null,
+		slug: null,
+		url: null,
+		related: false,
+		unformatted: false,
+		force: false,
+		rescrape: !/^(0|false|no)$/i.test(String(process.env.NEWS_RSS_FORMAT_RESCRAPE || '1')),
+		limit: null,
+		bucket: null,
+	};
 	for (const a of argv) {
 		if (a === '--related' || a === '--related=1') out.related = true;
 		else if (a === '--unformatted' || a === '--all-unformatted') out.unformatted = true;
+		else if (a === '--force' || a === '--force=1') out.force = true;
+		else if (a === '--rescrape' || a === '--rescrape=1') out.rescrape = true;
+		else if (a === '--no-rescrape' || a === '--rescrape=0') out.rescrape = false;
 		else if (a.startsWith('--id=')) out.id = a.slice(5);
 		else if (a.startsWith('--slug=')) out.slug = a.slice(7);
 		else if (a.startsWith('--url=')) out.url = a.slice(6);
@@ -233,7 +250,7 @@ function findRelatedPeers(profile, peers, { minScore = 0.38, limit = 6 } = {}) {
 		.map((x) => ({ ...x.p, _score: x.score }));
 }
 
-function firstSentences(text, maxChars = 280) {
+function firstSentences(text, maxChars = 280, { pack = false } = {}) {
 	const clean = String(text || '')
 		.replace(/\s+/g, ' ')
 		.replace(/^Tagged with:.*$/gim, '')
@@ -245,19 +262,20 @@ function firstSentences(text, maxChars = 280) {
 	if (!clean) return '';
 	// Protect common abbreviations so "Nov. 17" is not treated as a sentence end.
 	const protected_ = clean
-		.replace(/\b(Mr|Mrs|Ms|Dr|Prof|Gov|Sen|Rep|Gen|Nov|Oct|Sep|Sept|Dec|Jan|Feb|Mar|Apr|Jun|Jul|Aug|St|U\.S|U\.K|Inc|Ltd|Co)\./gi, '$1˘');
+		.replace(/\b(Mr|Mrs|Ms|Dr|Prof|Gov|Sen|Rep|Gen|Nov|Oct|Sep|Sept|Dec|Jan|Feb|Mar|Apr|Jun|Jul|Aug|St|U\.S|U\.K|Inc|Ltd|Co|Defra|DEFRA|IWA)\./gi, '$1˘');
 	const parts = protected_.split(/(?<=[.!?])\s+/).map((p) => p.replace(/˘/g, '.'));
 	let out = '';
 	for (const p of parts) {
 		if (!p) continue;
 		if (!out) {
 			out = p;
-			if (out.length >= 80) break;
+			// Sparse paragraph mode packs multiple sentences up to maxChars.
+			if (!pack && out.length >= 80) break;
 			continue;
 		}
 		if ((out + ' ' + p).length > maxChars) break;
 		out = `${out} ${p}`;
-		if (out.length >= 140) break;
+		if (!pack && out.length >= 140) break;
 	}
 	let clipped = out.slice(0, maxChars).trim();
 	// Prefer a word boundary over mid-token cuts when hard-capping.
@@ -447,8 +465,17 @@ function cleanArticleBody(summary) {
 		.replace(/^Source:\s*.*$/gim, '')
 		.replace(/^https?:\/\/\S+\s*$/gim, '')
 		.replace(/^SEE ALSO:.*$/gim, '')
+		.replace(/^Editor['’]s note:.*$/gim, '')
+		.replace(/^Permission granted by\b.*$/gim, '')
+		.replace(/^Tagged with:.*$/gim, '')
+		.replace(/^(?:CONSTRUCTION DIVE|CONSTRUCTION EXEC(?:UTIVE)?|DEFENSE DAILY|FEDERAL NEWS NETWORK|GROUND ENGINEERING)\s*:\s*/gim, '')
+		.replace(/^(?:HAMILTON ESPINOSA|[A-Z][A-Z .'-]{2,40})\s*:\s*(?=[A-Z])/gm, '')
 		.replace(/^(?:Courtesy of|Image courtesy|Photo(?:\s+credit)?|Credit|Advertisement|Sponsored|Related stories?|Subscribe|Newsletter|Sign up|Read more|More from)\b.*$/gim, '')
+		.replace(/^[^\n]{0,80}\((?:Courtesy(?:\s*:\s*)?(?:APD|HPD|OKCPD)?|KXAN|KHOU|KVUE|KFOR|photo\/[^)]+)\)\s*$/gim, '')
 		.replace(/^Pictured is\b[^\n]*$/gim, '')
+		.replace(/^Exterior of the .*$/gim, '')
+		.replace(/^Apartment complex is an .*$/gim, '')
+		.replace(/^['‘].{0,60}['’],?\s*(?:Woman|Man|Neighbor|Resident).{0,40}(?:witnessed|says|said).*$/gim, '')
 		.replace(/^Copyright\b[\s\S]*$/gim, '')
 		.replace(/^(?:Published|Updated)\s+[A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}.*$/gim, '')
 		.replace(/^Dive Insight:?\s*$/gim, '')
@@ -469,6 +496,13 @@ function cleanArticleBody(summary) {
 		// Glued sentences from RSS extractors: "power.Hasina" → "power. Hasina".
 		// Require Capital+lowercase so "U.S. Space" / "U.K. defence" stay intact.
 		.replace(/\.(?=[A-Z][a-z])/g, '. ')
+		// Closing-quote glued to next sentence: them."However → them." However
+		.replace(/([.!?])"(?=[A-Z])/g, '$1" ')
+		.replace(/([.!?])\u201d(?=[A-Z])/g, '$1\u201d ')
+		// Subhead crumbs glued to prose: "five areas:Recognise" / "infrastructureCanals" / "2028The"
+		.replace(/:([A-Z])/g, ': $1')
+		.replace(/([a-z])([A-Z][a-z]{2,})/g, '$1. $2')
+		.replace(/(\d)([A-Z][a-z])/g, '$1. $2')
 		// Normalize spaced abbreviations so "U. S." is not treated as a sentence end.
 		.replace(/\bU\.\s+S\./g, 'U.S.')
 		.replace(/\bU\.\s+K\./g, 'U.K.')
@@ -519,8 +553,12 @@ function isJunkSectionLine(line) {
 	if (!s) return true;
 	if (/^(courtesy of|image courtesy|photo|credit|advertisement|sponsored|related|subscribe|newsletter|sign up|read more|more from|tagged with|share this|follow us)\b/i.test(s))
 		return true;
+	if (/\((?:Courtesy|KXAN|KHOU|KVUE|KFOR|ABC\d+|photo\/|AP|Getty)[^)]*\)\s*$/i.test(s) && s.length < 120) return true;
+	if (/^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}\s*\((?:Courtesy|KXAN|KHOU|photo)/i.test(s)) return true;
 	if (/^(?:published|updated|dive insight|sponsored content|senior reporter|staff reporter)\b/i.test(s)) return true;
 	if (/^dive insight:?$/i.test(s)) return true;
+	// Program-of-spaces crumbs from construction features (not section heads).
+	if (/^(?:\d[\d,]+\s+square feet|approximately\s+\d|increased rentable space|the ability to add)\b/i.test(s)) return true;
 	if (/\b(magazine|national safety council)\b/i.test(s) && s.length < 70) return true;
 	// Interview Q&A leftovers / laughter
 	if (/^(?:hahahaha|laughs?|inaudible)\b/i.test(s)) return true;
@@ -826,6 +864,95 @@ function extractNumberedProvisions(body, profile) {
 	return bullets;
 }
 
+/** Local TX/OK crime / public-safety TV wire claims. */
+function extractLocalCrimeClaims(body, profile) {
+	const bullets = [];
+	const sentenceAt = (matchIndex) => takeSentenceFrom(body, sentenceStartAt(body, matchIndex));
+	const patterns = [
+		{
+			title: 'Arrests / charges',
+			re: /\b(?:arrested|taken into custody|face[sd]? (?:aggravated |felony )?(?:assault|robbery|murder|homicide|weapon) charges?|charged with)\b/i,
+		},
+		{
+			title: 'Shooting / incident',
+			re: /\b(?:robbery-related[- ]shooting|shooting (?:call|that happened|in)|double homicide|shots fired|barricaded)\b/i,
+		},
+		{
+			title: 'Victim status',
+			re: /\b(?:life-threatening injuries|in the hospital|pronounced dead|killed|wounded|injured)\b/i,
+		},
+		{
+			title: 'Police response',
+			re: /\b(?:officers responded|police (?:responded|say|said)|SWAT|investigation is still active)\b/i,
+		},
+		{
+			title: 'Suspect identified',
+			re: /\b(?:[A-Z][a-z]+ (?:[A-Z][a-z]+ )?[A-Z][a-z]+),\s*\d{1,2},?\s+(?:pictured above,?\s+)?is the suspect police identified\b|\bsuspect(?:s)? police identified\b/i,
+		},
+		{
+			title: 'Custody / jail',
+			re: /\b(?:still in custody|jail records|booked into|held without bond)\b/i,
+		},
+		{
+			title: 'Location',
+			re: /\b(?:Apartments? on|Boulevard|near Burlington|Third Ward|east Austin|southwest Austin|NW \d+)/i,
+		},
+		{
+			title: 'Witness / neighborhood',
+			re: /\b(?:witnessed shooting|heard the gunshots|broader safety concerns|district representative)\b/i,
+		},
+		{
+			title: 'Property / org statement',
+			re: /\b(?:Foundation Communities|executive director said|cooperating with (?:APD|police)|providing counseling)\b/i,
+		},
+		{
+			title: 'Chase / weapon recovery',
+			re: /\b(?:gun with (?:a )?switch|switch recovered|after (?:a )?chase|detained)\b/i,
+		},
+		{
+			title: 'Court / sentence motion',
+			re: /\b(?:motion for stay|stay of execution|death (?:row|sentence)|convicted)\b/i,
+		},
+	];
+	const seen = new Set();
+	for (const spec of patterns) {
+		const flags = spec.re.flags.includes('g') ? spec.re.flags : `${spec.re.flags}g`;
+		const globalRe = new RegExp(spec.re.source, flags);
+		const hits = [...body.matchAll(globalRe)];
+		if (!hits.length) continue;
+		let bestSentence = null;
+		let bestScore = -1;
+		for (const hit of hits) {
+			if (hit.index == null) continue;
+			const sentence = sentenceAt(hit.index);
+			if (sentence.length < 45) continue;
+			let score = headlineOverlapScore({ text: sentence, title: '' }, profile);
+			if (/^(?:Advertisement|Related|Subscribe|Watch|Listen)\b/i.test(sentence)) score -= 5;
+			if (score > bestScore) {
+				bestScore = score;
+				bestSentence = sentence;
+			}
+		}
+		if (!bestSentence) continue;
+		let sentence = bestSentence
+			.replace(/\bpictured above,?\s*/gi, '')
+			.replace(/^(?:Boulevard|Avenue|Street|Road|Drive)\.\s+/i, '')
+			.replace(/^[a-z][^.?!]{0,40}?\.\s+(?=[A-Z])/g, '')
+			.trim();
+		if (sentence.length < 45) continue;
+		const key = sentence.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 70);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		bullets.push({
+			iso: dateClaim(sentence, profile) || profile.startDate || null,
+			title: spec.title,
+			text: sentence.endsWith('.') ? sentence : `${sentence}.`,
+			kind: 'highlight',
+		});
+	}
+	return bullets;
+}
+
 /** Generic: section-like short lines + dated sentences. */
 function extractGenericMilestones(body, profile) {
 	const bullets = [];
@@ -861,17 +988,31 @@ function extractGenericMilestones(body, profile) {
 		'$1˘',
 	);
 	const datedSentenceRe =
-		/[^.!?\n]*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d+\s+weeks?\s+ago|\d+(?:st|nd|rd|th)?\s+anniversary)[^.!?\n]*[.!?]/gi;
+		/[^.!?\n]*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|(?:spring|summer|fall|autumn|winter)\s+of\s+(?:18|19|20)\d{2}|(?:in|opened in|expansion in)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d+\s+weeks?\s+ago|\d+(?:st|nd|rd|th)?\s+anniversary)[^.!?\n]*[.!?]/gi;
 	for (const hit of protectedBody.matchAll(datedSentenceRe)) {
 		const sentence = hit[0].replace(/˘/g, '.').replace(/\s+/g, ' ').trim();
-		if (sentence.length < 50 || sentence.length > 320) continue;
+		if (sentence.length < 50 || sentence.length > 520) continue;
 		if (/^Source:/i.test(sentence)) continue;
 		if (isJunkSectionLine(sentence)) continue;
 		// Drop truncated abbrev tails / mid-abbreviation starts ("S. Space" from a broken U.S.).
 		if (/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.\s*$/i.test(sentence)) continue;
 		if (/^[A-Z]\.\s/.test(sentence)) continue;
+		// Bare square-footage list crumbs are not milestones.
+		if (/^\d[\d,]+\s+square feet\b/i.test(sentence) && sentence.length < 120) continue;
+		const season = sentence.match(/\b(spring|summer|fall|autumn|winter)\s+of\s+((?:18|19|20)\d{2})\b/i);
+		const yearOnly = sentence.match(/\b(?:opened|expansion|approved|demolished|underway|built|completed)\b[^.!?]{0,40}\bin\s+((?:18|19|20)\d{2})\b/i);
+		let iso =
+			dateClaim(sentence, profile, {
+				allowYearOnly: /\b(?:in|opened in|expansion in)\s+(?:18|19|20)\d{2}\b/i.test(sentence),
+			}) || null;
+		if (season) {
+			const seasonMonth = { spring: '04', summer: '07', fall: '10', autumn: '10', winter: '01' };
+			iso = `${season[2]}-${seasonMonth[season[1].toLowerCase()] || '06'}-01`;
+		} else if (!iso && yearOnly) {
+			iso = `${yearOnly[1]}-01-01`;
+		}
 		bullets.push({
-			iso: dateClaim(sentence, profile),
+			iso,
 			title: sentence.slice(0, 70).replace(/[,:;]\s*$/, ''),
 			text: sentence,
 			kind: 'dated',
@@ -944,7 +1085,7 @@ function datePrecisionScore(bullet, profile) {
 }
 
 function prioritizeBullets(bullets, profile = {}) {
-	const rank = { overall: 0, grade: 1, provision: 1, highlight: 2, section: 3, dated: 4 };
+	const rank = { overall: 0, grade: 1, provision: 1, highlight: 2, section: 3, dated: 4, paragraph: 5 };
 	return [...bullets].sort((a, b) => {
 		const ra = rank[a.kind] ?? 9;
 		const rb = rank[b.kind] ?? 9;
@@ -957,6 +1098,134 @@ function prioritizeBullets(bullets, profile = {}) {
 		if (pa !== pb) return pb - pa;
 		return String(a.iso || '').localeCompare(String(b.iso || ''));
 	});
+}
+
+/**
+ * True when the article body has no meaningful internal calendar anchors.
+ * Those cards should be wrapped under the content/publication date as reduced paragraphs
+ * (even if crime/breaking highlight extractors fired — thin pub-date crumbs are worse).
+ */
+function isSparseDateArticle(body, bullets, profile) {
+	// Scan body for month/season/full dates independent of extractor hits.
+	const dateHits = String(body || '').match(
+		/\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}\b|\b(?:spring|summer|fall|autumn|winter)\s+of\s+(?:18|19|20)\d{2}\b|\b(?:18|19|20)\d{2}-\d{2}-\d{2}\b/gi,
+	);
+	if (!dateHits || dateHits.length === 0) return true;
+
+	const structured = (bullets || []).some((b) =>
+		['overall', 'grade', 'provision'].includes(b.kind),
+	);
+	if (structured) return false;
+	const pub = String(profile.startDate || '').slice(0, 10);
+	const distinctContentIsos = new Set();
+	for (const b of bullets || []) {
+		const iso = String(b.iso || '').slice(0, 10);
+		if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
+		if (pub && iso === pub) continue;
+		distinctContentIsos.add(iso);
+	}
+	return distinctContentIsos.size < 2;
+}
+
+/**
+ * Split a sparse/no-date article into a few reduced paragraphs, all keyed to the
+ * content/publication date (profile.startDate). Prefer sense-making chunks over
+ * dumping the full article onto the Timeline rail.
+ */
+function extractSparseDateParagraphs(body, profile) {
+	const iso = profile.startDate || null;
+	const cleaned = cleanArticleBody(body)
+		.replace(/\s+/g, ' ')
+		.replace(/([.!?])"(?=[A-Z])/g, '$1" ')
+		.replace(/([.!?])\u201d(?=[A-Z])/g, '$1\u201d ')
+		.trim();
+	if (!cleaned) return [];
+
+	const protected_ = cleaned.replace(
+		/\b(Mr|Mrs|Ms|Dr|Prof|Gov|Sen|Rep|Gen|Nov|Oct|Sep|Sept|Dec|Jan|Feb|Mar|Apr|Jun|Jul|Aug|St|U\.S|U\.K|Inc|Ltd|Co|vs|No|Defra|DEFRA|IWA)\./gi,
+		'$1˘',
+	);
+	const sentences = protected_
+		.split(/(?<=[.!?])\s+/)
+		.map((s) => s.replace(/˘/g, '.').replace(/^["'\u201c\u201d]+|["'\u201c\u201d]+$/g, '').trim())
+		.filter(
+			(s) =>
+				s.length >= 50 &&
+				!isJunkSectionLine(s) &&
+				!/^Source:/i.test(s) &&
+				!/^[a-z]/.test(s) &&
+				// Drop orphan quote tails / single attribution crumbs / interview chrome.
+				!/^(?:he said|she said|they said)\b/i.test(s) &&
+				!/^our waterways have a future\b/i.test(s) &&
+				!/^Editor['’]s note\b/i.test(s) &&
+				!/^(?:This interview has been edited|Here, .+ talks with)\b/i.test(s) &&
+				!/^(?:CONSTRUCTION DIVE|HAMILTON ESPINOSA)\b/i.test(s) &&
+				!/^Permission granted by\b/i.test(s),
+		);
+
+	const groups = [];
+	let buf = [];
+	let bufLen = 0;
+	const flush = () => {
+		if (!buf.length) return;
+		const text = buf.join(' ').replace(/\s+/g, ' ').trim();
+		buf = [];
+		bufLen = 0;
+		if (text.length < 70) return;
+		groups.push(text);
+	};
+	for (const s of sentences) {
+		const boundary =
+			buf.length >= 1 &&
+			(/^(?:Based on|IWA calls|Recognise waterways|Establish a Defra|Devolve waterway|Put canals|Make climate resilience|Bill Esterson|Charlie Norman|The report concludes|However, the report|Waterway closures|The consequences|The report follows|Smart Void(?:'s|’s)? key capabilities|By replacing|The Smart Void unit|Captured data flows|Tony Morgani|Morgani continued)\b/i.test(
+				s,
+			) ||
+				bufLen >= 420);
+		if (boundary) flush();
+		buf.push(s);
+		bufLen += s.length;
+		// Keep capability / product-claim clusters together longer.
+		const keepLong =
+			/key capabilities include|Infrastructure Intelligence|Network Rail|RADAR|nurse stations|automated guided|Dusty|RFID/i.test(
+				buf.join(' '),
+			);
+		if (buf.length >= (keepLong ? 5 : 3) || bufLen >= (keepLong ? 620 : 520)) flush();
+	}
+	flush();
+
+	// Merge tiny adjacent groups so the rail has fewer, fuller paragraphs.
+	const merged = [];
+	for (const g of groups) {
+		if (merged.length && merged[merged.length - 1].length < 180 && g.length < 260) {
+			merged[merged.length - 1] = `${merged[merged.length - 1]} ${g}`;
+		} else {
+			merged.push(g);
+		}
+	}
+
+	// Overview rail must stay more expressive than the Timeline tab — pack longer keypoint paragraphs.
+	const maxParas = Math.min(5, Math.max(3, Number(process.env.NEWS_RSS_FORMAT_SPARSE_PARAS || 4) || 4));
+	const out = [];
+	for (const g of merged.slice(0, maxParas + 2)) {
+		const reduced = firstSentences(g, 520, { pack: true }) || g.slice(0, 520).trim();
+		if (reduced.length < 70) continue;
+		out.push({
+			iso,
+			title: '',
+			text: reduced,
+			kind: 'paragraph',
+		});
+		if (out.length >= maxParas) break;
+	}
+	if (out.length === 0 && cleaned) {
+		out.push({
+			iso,
+			title: '',
+			text: firstSentences(cleaned, 360, { pack: true }) || cleaned.slice(0, 360),
+			kind: 'paragraph',
+		});
+	}
+	return out;
 }
 
 function extractMilestones(profile) {
@@ -975,6 +1244,14 @@ function extractMilestones(profile) {
 		bullets = bullets.concat(extractColaFederalClaims(body, profile));
 	}
 	if (
+		/shooting|homicide|arrest|robbery|barricad|shots fired|juvenile|aggravated assault|SWAT|murder|gun with|switch recovered|stay of execution|Fort Hood|crime|police department|APD|HPD|OKC|east Austin|Third Ward/i.test(
+			head,
+		) ||
+		profile.metadata?.newsBucket === 'tx_ok_crime'
+	) {
+		bullets = bullets.concat(extractLocalCrimeClaims(body, profile));
+	}
+	if (
 		/detonat|lead azide|ammunition plant|evacuat|appeals court|stockpile|bomb-making|hazardous|sentinel|vandenberg|ribbon[- ]cutting|military construction|LGM-35A|ACME|classified information|declassif|breaks ground|broken ground|groundbreaking|data center|Gilbane|Empire AI|cyberattack|breached|CIA|open[- ]source intelligence|car bomb|wounding more than|guerrilla|Farc|FARC|peace deal|drone(?:s)? dropped|explosives? on the police|narcoterrorism|Cerberus|acquires?|acquiring|satellite manufacturing|Space Systems business|OneWeb|private equity|Jensen Huang|Nvidia|reinstate|reinstated|cheers and applause/i.test(
 			head,
 		) ||
@@ -986,6 +1263,11 @@ function extractMilestones(profile) {
 	bullets = bullets.concat(extractGenericMilestones(body, profile));
 
 	bullets = prioritizeBullets(dedupeBullets(bullets), profile);
+	if (bullets.length === 0 || isSparseDateArticle(body, bullets, profile)) {
+		// No usable dates inside the article → wrap reduced paragraphs under the content/publication date.
+		const sparse = extractSparseDateParagraphs(body, profile);
+		if (sparse.length) bullets = sparse;
+	}
 	if (bullets.length === 0) {
 		bullets.push({
 			iso: profile.startDate,
@@ -1037,6 +1319,28 @@ function deriveWikiQueries(profile, bullets) {
 	if (/\bFERS\b|Federal Employees Retirement System/i.test(blob)) q.add('Federal Employees Retirement System');
 	if (/\bCSRS\b|Civil Service Retirement System/i.test(blob)) q.add('Civil Service Retirement System');
 	if (/thrift savings plan|\bTSP\b/i.test(blob)) q.add('Thrift Savings Plan');
+	if (
+		profile.metadata?.newsBucket === 'tx_ok_crime' ||
+		/shooting|homicide|arrest|robbery|barricad|shots fired|aggravated assault|SWAT|juvenile/i.test(blob)
+	) {
+		if (/austin|apd|east austin|kxan|kvue/i.test(blob)) {
+			q.add('Austin Police Department');
+			q.add('Austin, Texas');
+		}
+		if (/houston|hpd|khou|third ward|abc13/i.test(blob)) {
+			q.add('Houston Police Department');
+			q.add('Houston');
+		}
+		if (/oklahoma city|okc|kfor|edmond/i.test(blob)) {
+			q.add('Oklahoma City Police Department');
+			q.add('Oklahoma City');
+		}
+		if (/fort hood|stay of execution|death (?:row|sentence)/i.test(blob)) {
+			q.add('Fort Hood shooting');
+			q.add('Capital punishment in Texas');
+		}
+		if (/SWAT|barricad/i.test(blob)) q.add('SWAT');
+	}
 	if (/lead azide/i.test(blob)) {
 		q.add('Lead azide');
 		q.add('Primary explosive');
@@ -1051,6 +1355,36 @@ function deriveWikiQueries(profile, bullets) {
 	if (/\bOSHA\b|occupational safety and health/i.test(blob)) q.add('Occupational Safety and Health Administration');
 	if (/\bFEMA\b/i.test(blob)) q.add('Federal Emergency Management Agency');
 	if (/\bUSACE\b|army corps of engineers/i.test(blob)) q.add('United States Army Corps of Engineers');
+	if (/inland waterways?|canals? and (?:navigable )?rivers?|Waterways for the Future|\bIWA\b/i.test(blob)) {
+		q.add('Inland Waterways Association');
+		q.add('Canals of the United Kingdom');
+	}
+	if (/\bDefra\b|Department for Environment, Food and Rural Affairs/i.test(blob)) {
+		q.add('Department for Environment, Food and Rural Affairs');
+	}
+	if (/Cartagena|Colombian police|hostage/i.test(blob)) {
+		q.add('Cartagena, Colombia');
+		q.add('National Police of Colombia');
+	}
+	if (/\bDPR Construction\b|DPR exec|healthcare builds/i.test(blob)) {
+		q.add('DPR Construction');
+		q.add('Health care in the United States');
+	}
+	if (/DYWIDAG|Smart Void|ballast voids?|Network Rail.?s RADAR/i.test(blob)) {
+		q.add('DYWIDAG');
+		q.add('Network Rail');
+		q.add('Track (rail transport)');
+	}
+	if (/Dark Eagle|Long Range Hypersonic Weapon|\bLRHW\b|Conventional Prompt Strike/i.test(blob)) {
+		q.add('Long-Range Hypersonic Weapon');
+		q.add('Conventional Prompt Strike');
+		q.add('Hypersonic weapon');
+	}
+	if (/\bDART\b|Dimorphos|Didymos|Hera mission|NEO Surveyor|Apophis/i.test(blob)) {
+		q.add('Double Asteroid Redirection Test');
+		q.add('Hera (space mission)');
+		q.add('99942 Apophis');
+	}
 	if (/\bnuclear plant|small modular|SMR\b/i.test(blob)) q.add('Nuclear power in the United States');
 	if (/\bdata center/i.test(blob)) q.add('Data center');
 	if (/\bpermitting reform\b/i.test(blob)) q.add('National Environmental Policy Act');
@@ -1326,23 +1660,54 @@ function buildFormattedSummary(profile, bullets, wikiNotes, { relatedCount = 0, 
 	const bodyClean = isolatePrimaryStory(profile.summary, profile)
 		.replace(/^An article from\b[^.]*(?:\.|$)/i, '')
 		.trim();
-	const leadProse = pickLeadProse(bodyClean, profile, highlightLead);
+	const sparseParagraphMode = bullets.length > 0 && bullets.every((b) => b.kind === 'paragraph');
+	// Sparse/no-date cards: prefer a title-framed lead over a mid-article sentence.
+	let leadProse = pickLeadProse(bodyClean, profile, sparseParagraphMode ? null : highlightLead);
+	if (sparseParagraphMode) {
+		const title = String(profile.name || '').trim();
+		const packed = firstSentences(bodyClean, 220, { pack: true });
+		if (title && packed && !packed.toLowerCase().includes(title.toLowerCase().slice(0, 24))) {
+			leadProse = firstSentences(`${title}. ${packed}`, 280, { pack: true }) || title;
+		} else if (title && (!leadProse || leadProse.length < 80)) {
+			leadProse = title;
+		}
+	}
 	const lead = [
 		leadProse,
-		`Fact-checked against the local Wikipedia library and reduced to dated milestones${relatedCount > 1 ? ` (pieced with ${relatedCount} related items)` : ''}.`,
+		sparseParagraphMode
+			? `Reduced under the content date${relatedCount > 1 ? ` (pieced with ${relatedCount} related items)` : ''}.`
+			: `Fact-checked against the local Wikipedia library and reduced to dated milestones${relatedCount > 1 ? ` (pieced with ${relatedCount} related items)` : ''}.`,
 		startLong ? `Keyed to ${startLong}.` : '',
 	]
 		.filter(Boolean)
 		.join(' ');
 
-	const timelineLines = bullets.map((b) => {
-		// Prefer a date found in the claim; otherwise use the source/publication date on the card.
-		const iso = b.iso || startIso || profile.startDate || null;
-		const label = isoToLong(iso) || iso || (profile.startDate ? isoToLong(profile.startDate) || profile.startDate : null) || 'Undated';
-		const claim = (b.text || b.title || '').replace(/\s+/g, ' ').trim();
-		const titleBit = b.title && !claim.toLowerCase().startsWith(String(b.title).toLowerCase().slice(0, 24)) ? `${b.title} — ` : '';
-		return `- **${label}** — ${titleBit}${claim}${feedTag}`;
-	});
+	const leadKey = leadProse
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '')
+		.slice(0, 80);
+	const timelineLines = bullets
+		.map((b) => {
+			// Prefer a date found in the claim; otherwise use the source/publication date on the card.
+			const iso = b.iso || startIso || profile.startDate || null;
+			const label = isoToLong(iso) || iso || (profile.startDate ? isoToLong(profile.startDate) || profile.startDate : null) || 'Undated';
+			const claim = (b.text || b.title || '').replace(/\s+/g, ' ').trim();
+			// Sparse paragraph mode: no title prefix — the reduced paragraph is the entry.
+			const titleBit =
+				b.kind === 'paragraph' || !b.title
+					? ''
+					: !claim.toLowerCase().startsWith(String(b.title).toLowerCase().slice(0, 24))
+						? `${b.title} — `
+						: '';
+			return {
+				kind: b.kind,
+				claimKey: claim.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 80),
+				line: `- **${label}** — ${titleBit}${claim}${feedTag}`,
+			};
+		})
+		// Drop the first sparse paragraph when it merely repeats the lead.
+		.filter((row, idx) => !(sparseParagraphMode && idx === 0 && leadKey && row.claimKey.startsWith(leadKey.slice(0, 48))))
+		.map((row) => row.line);
 
 	const wikiLines = wikiNotes.length
 		? wikiNotes.map((w) => {
@@ -1420,7 +1785,7 @@ function isAlreadyFormatted(profile) {
 	return false;
 }
 
-function listUnformattedNews({ bucket = null, limit = null } = {}) {
+function listUnformattedNews({ bucket = null, limit = null, force = false } = {}) {
 	const db = new DatabaseSync(PROFILES_DB, { readonly: true });
 	try {
 		const rows = db
@@ -1428,7 +1793,7 @@ function listUnformattedNews({ bucket = null, limit = null } = {}) {
 				`SELECT id, slug, name, start_date, end_date, summary, metadata_json
          FROM profiles
          WHERE profile_type = 'historic_event'
-           AND status = 'active'
+           AND status IN ('active', 'pinned')
            AND (metadata_json LIKE '%newsFeedId%' OR metadata_json LIKE '%"news_rss"%' OR slug LIKE 'historic_event:news-%')
          ORDER BY COALESCE(start_date, '') DESC, updated_at DESC`,
 			)
@@ -1440,6 +1805,16 @@ function listUnformattedNews({ bucket = null, limit = null } = {}) {
 				metadata = JSON.parse(r.metadata_json || '{}');
 			} catch {
 				metadata = {};
+			}
+			// Never auto-clobber hand-tuned expressive cards unless explicitly forced AND
+			// NEWS_RSS_FORMAT_FORCE_CURATED=1 (batch --force alone skips dated_expressive /
+			// sparse curated formatMode stamps).
+			const curatedMode = String(metadata.formatMode || '');
+			if (
+				!/^(1|true|yes)$/i.test(String(process.env.NEWS_RSS_FORMAT_FORCE_CURATED || '')) &&
+				/^(dated_expressive|sparse_date_paragraphs|manual-curated)/i.test(curatedMode)
+			) {
+				continue;
 			}
 			const profile = {
 				id: r.id,
@@ -1454,9 +1829,10 @@ function listUnformattedNews({ bucket = null, limit = null } = {}) {
 				metadata,
 			};
 			if (bucket && String(metadata.newsBucket || '') !== bucket) continue;
-			if (isAlreadyFormatted(profile)) continue;
-			if (metadata.newsSkipReason === 'soft_journalism') continue;
-			if (classifySoftJournalism({ title: profile.name, summary: profile.summary }).soft) continue;
+			if (!force && isAlreadyFormatted(profile)) continue;
+			const allowSoft = /^(1|true|yes)$/i.test(String(process.env.NEWS_RSS_FORMAT_ALLOW_SOFT || ''));
+			if (!allowSoft && metadata.newsSkipReason === 'soft_journalism') continue;
+			if (!allowSoft && classifySoftJournalism({ title: profile.name, summary: profile.summary }).soft) continue;
 			out.push(profile);
 			if (limit && out.length >= limit) break;
 		}
@@ -1466,8 +1842,45 @@ function listUnformattedNews({ bucket = null, limit = null } = {}) {
 	}
 }
 
-async function formatOne(profile, { related: wantRelated = false, quiet = false } = {}) {
-	if (!quiet) console.log(`[format-card] ${profile.slug} dryRun=${DRY_RUN} kiwix=${KIWIX}`);
+async function rescrapeSourceBodies(profile, related = [], { quiet = false } = {}) {
+	const targets = [profile, ...related].filter((p) => p?.sourceUrl);
+	const scraped = [];
+	for (const p of targets) {
+		const url = String(p.sourceUrl).split('#')[0];
+		try {
+			const page = await fetchArticleBody(url);
+			const text = cleanArticleBody(page.text || '');
+			if (text.length >= 200) {
+				scraped.push({
+					id: p.id,
+					url: page.finalUrl || url,
+					text,
+					method: page.method,
+					byline: page.byline || null,
+					chars: text.length,
+				});
+				if (!quiet) {
+					console.log(
+						`[format-card] scraped ${text.length}c via ${page.method} ← ${String(url).slice(0, 80)}`,
+					);
+				}
+			} else if (!quiet) {
+				console.log(`[format-card] scrape thin (${text.length}c) ← ${String(url).slice(0, 80)}`);
+			}
+		} catch (err) {
+			if (!quiet) {
+				console.log(
+					`[format-card] scrape fail ${String(url).slice(0, 70)}: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
+		await sleep(200);
+	}
+	return scraped;
+}
+
+async function formatOne(profile, { related: wantRelated = false, quiet = false, rescrape = true } = {}) {
+	if (!quiet) console.log(`[format-card] ${profile.slug} dryRun=${DRY_RUN} kiwix=${KIWIX} rescrape=${rescrape}`);
 
 	let related = [];
 	if (wantRelated || MERGE_RELATED) {
@@ -1479,10 +1892,34 @@ async function formatOne(profile, { related: wantRelated = false, quiet = false 
 		}
 	}
 
-	const combinedSummary = [profile, ...related]
+	let scrapeMeta = null;
+	let combinedSummary = [profile, ...related]
 		.map((p) => cleanArticleBody(p.summary))
 		.filter(Boolean)
 		.join('\n\n');
+
+	if (rescrape) {
+		const scraped = await rescrapeSourceBodies(profile, related, { quiet });
+		if (scraped.length) {
+			const scrapedText = scraped.map((s) => s.text).join('\n\n');
+			// Prefer live HTML body when it is richer than the stored summary
+			// (common after a thin timeline rewrite wiped the original article).
+			if (scrapedText.length >= Math.max(400, combinedSummary.length * 0.6)) {
+				combinedSummary = scrapedText;
+			} else {
+				combinedSummary = [scrapedText, combinedSummary].filter(Boolean).join('\n\n');
+			}
+			const primary = scraped.find((s) => s.id === profile.id) || scraped[0];
+			scrapeMeta = {
+				articleChars: primary.chars,
+				articleMethod: primary.method,
+				articleFullTextAt: new Date().toISOString(),
+				articleByline: primary.byline || profile.metadata?.articleByline || null,
+				articleRescrapeAt: new Date().toISOString(),
+			};
+		}
+	}
+
 	const extractProfile = {
 		...profile,
 		summary: combinedSummary || profile.summary,
@@ -1557,6 +1994,7 @@ async function formatOne(profile, { related: wantRelated = false, quiet = false 
 			wikiFactCheck: wikiNotes.map((w) => ({ title: w.title, snippet: w.snippet, link: w.link })),
 			overviewStyle: 'lead_plus_timeline_rail',
 			formattedBy: 'news-rss-format-card',
+			...(scrapeMeta || {}),
 			corpora: [
 				...new Set([
 					...(Array.isArray(profile.metadata?.corpora) ? profile.metadata.corpora.map(String) : []),
@@ -1577,15 +2015,24 @@ async function formatOne(profile, { related: wantRelated = false, quiet = false 
 
 	for (const b of bullets) {
 		try {
+			// Timeline tab stays shorter than Overview rail paragraphs — keypoint titles + brief line.
+			const tabTitle =
+				b.kind === 'paragraph'
+					? firstSentences(b.text || profile.name, 90, { pack: false }) || String(profile.name).slice(0, 90)
+					: String(b.title || profile.name).slice(0, 180);
+			const tabSummary =
+				b.kind === 'paragraph'
+					? firstSentences(b.text || '', 180, { pack: true })
+					: String(b.text || b.title || '').slice(0, 220);
 			await addTimeline(profile.id, {
-				title: String(b.title || profile.name).slice(0, 180),
-				summary: String(b.text || b.title || '').slice(0, 500),
+				title: tabTitle.slice(0, 180),
+				summary: tabSummary.slice(0, 240),
 				eventDate: b.iso || startDate || profile.startDate,
 				angle: 'general',
 				entryKind: 'observation',
 				sourceCorpus: `news_rss:${profile.feed || 'unknown'}`,
 				sourceUrl: profile.sourceUrl,
-				sourceRef: `${profile.sourceUrl || profile.slug}#${String(b.kind)}-${String(b.title || '')
+				sourceRef: `${profile.sourceUrl || profile.slug}#${String(b.kind)}-${String(b.title || tabTitle || '')
 					.toLowerCase()
 					.replace(/[^a-z0-9]+/g, '-')
 					.slice(0, 40)}`,
@@ -1600,11 +2047,13 @@ async function formatOne(profile, { related: wantRelated = false, quiet = false 
 	return { ...report, status: 'ok' };
 }
 
+export { formatOne, loadProfileByRef, listUnformattedNews, isAlreadyFormatted };
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	if (!args.unformatted && !args.id && !args.slug && !args.url) {
 		console.error(
-			'Usage: news-rss-format-card --id=<uuid> | --slug=<slug> | --url=<profile url> | --unformatted [--limit=N] [--bucket=…] [--related]',
+			'Usage: news-rss-format-card --id=<uuid> | --slug=<slug> | --url=<profile url> | --unformatted [--limit=N] [--bucket=…] [--related] [--force] [--rescrape|--no-rescrape]',
 		);
 		process.exit(2);
 	}
@@ -1612,9 +2061,9 @@ async function main() {
 	fs.mkdirSync(OUT_DIR, { recursive: true });
 
 	if (args.unformatted) {
-		const targets = listUnformattedNews({ bucket: args.bucket, limit: args.limit });
+		const targets = listUnformattedNews({ bucket: args.bucket, limit: args.limit, force: args.force });
 		console.log(
-			`[format-card] batch unformatted=${targets.length} dryRun=${DRY_RUN} mergeRelated=${MERGE_RELATED} related=${!!args.related} bucket=${args.bucket || '*'}`,
+			`[format-card] batch unformatted=${targets.length} dryRun=${DRY_RUN} mergeRelated=${MERGE_RELATED} related=${!!args.related} force=${!!args.force} rescrape=${!!args.rescrape} bucket=${args.bucket || '*'}`,
 		);
 		const batch = {
 			at: new Date().toISOString(),
@@ -1632,7 +2081,11 @@ async function main() {
 			const profile = targets[i];
 			process.stdout.write(`[format-card] (${i + 1}/${targets.length}) ${profile.slug.slice(0, 72)} … `);
 			try {
-				const report = await formatOne(profile, { related: args.related || MERGE_RELATED, quiet: true });
+				const report = await formatOne(profile, {
+					related: args.related || MERGE_RELATED,
+					quiet: true,
+					rescrape: args.rescrape,
+				});
 				batch.results.push({
 					id: report.id,
 					slug: report.slug,
@@ -1670,9 +2123,13 @@ async function main() {
 	}
 
 	const soft = classifySoftJournalism({ title: profile.name, summary: profile.summary });
-	if (soft.soft && !/^(1|true|yes)$/i.test(String(process.env.NEWS_RSS_FORMAT_ALLOW_SOFT || ''))) {
+	if (
+		soft.soft &&
+		!args.force &&
+		!/^(1|true|yes)$/i.test(String(process.env.NEWS_RSS_FORMAT_ALLOW_SOFT || ''))
+	) {
 		console.error(
-			`[format-card] skip soft journalism (${soft.reasons.join(', ')}). Set NEWS_RSS_FORMAT_ALLOW_SOFT=1 to override.`,
+			`[format-card] skip soft journalism (${soft.reasons.join(', ')}). Set NEWS_RSS_FORMAT_ALLOW_SOFT=1 or pass --force to override.`,
 		);
 		fs.writeFileSync(
 			path.join(OUT_DIR, 'news-rss-format-card.json'),
@@ -1681,11 +2138,19 @@ async function main() {
 		process.exit(0);
 	}
 
-	const report = await formatOne(profile, { related: args.related || MERGE_RELATED, quiet: false });
+	const report = await formatOne(profile, {
+		related: args.related || MERGE_RELATED,
+		quiet: false,
+		rescrape: args.rescrape,
+	});
 	fs.writeFileSync(path.join(OUT_DIR, 'news-rss-format-card.json'), JSON.stringify(report, null, 2));
 }
 
-main().catch((err) => {
-	console.error('[format-card] fatal', err);
-	process.exit(1);
-});
+const isMain =
+	Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+	main().catch((err) => {
+		console.error('[format-card] fatal', err);
+		process.exit(1);
+	});
+}

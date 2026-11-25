@@ -972,10 +972,20 @@ export default function AlignmentEvidenceList({
 														source URL
 													</a>
 												) : null}
+												{imageUrl ? (
+													<a
+														href={imageUrl}
+														target="_blank"
+														rel="noreferrer"
+														className="text-[#F97316] underline"
+													>
+														open source file
+													</a>
+												) : null}
 											</div>
 											{imageUrl ? (
 												<div>
-													<div className="mb-1 text-[10px] font-semibold opacity-60">
+													<div className="mb-0.5 text-[10px] font-semibold opacity-60">
 														Original file preview
 													</div>
 													{/* eslint-disable-next-line @next/next/no-img-element */}

@@ -108,6 +108,9 @@
 		"physics-congress:assets": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --assets-only",
 		"physics-congress:all": ".venv-monitors/bin/python scripts/physics-congress-corpus.py",
 		"physics-congress:ingest": ".venv-monitors/bin/python scripts/physics-congress-corpus.py --ingest-only",
+		"photonic-quantum:ingest": "node scripts/photonic-quantum-ingest-knowledge.mjs",
+		"tx-ok-crime:ingest": "node scripts/tx-ok-crime-ingest-knowledge.mjs",
+		"news:rss:tx-ok-crime": "NEWS_RSS_CATALOG=.data/news-feeds/tx-ok-crime-feeds.json NEWS_RSS_STATE=.data/news-feeds/tx-ok-crime-state.json NEWS_RSS_MONITOR=.data/monitors/news-rss-tx-ok-crime.json node scripts/news-rss-ingest.mjs",
 		"profiles:import-lippe-biesterfeld": "node scripts/import-lippe-biesterfeld-dutch-royals.mjs",
 		"profiles:import-dallas-elite": "node scripts/import-dallas-elite.mjs",
 		"profiles:backfill-bryan-oil-ids": "node scripts/backfill-bryan-oil-ids.mjs"
