@@ -13,7 +13,10 @@ const splineSansMono = Spline_Sans_Mono({
 });
 
 export const metadata: Metadata = {
-	title: 'AI Research Tool',
+	title: {
+		default: 'AI Research Tool',
+		template: '%s',
+	},
 	description: 'Local Ollama research assistant with adaptive multi-model routing and URL fetch tools.',
 	robots: { index: false, follow: false },
 };

@@ -3141,6 +3141,21 @@ export default function ProfilesClient({
 		return () => clearTimeout(timer);
 	}, [selectedId, mainView, loadDetail]);
 
+	// Browser tab: "Profile Name · Profiles" (or Alignments / Profiles browse).
+	useEffect(() => {
+		const prev = document.title;
+		let next = 'Profiles';
+		if (mainView === 'alignments') {
+			next = 'Alignment Triage · Profiles';
+		} else if (detail?.profile?.name?.trim()) {
+			next = `${detail.profile.name.trim()} · Profiles`;
+		}
+		document.title = next;
+		return () => {
+			document.title = prev;
+		};
+	}, [mainView, detail?.profile?.name]);
+
 	useEffect(() => {
 		if (!selectedId || mainView !== 'profile' || profileTab !== 'timeline') return;
 		const timer = setTimeout(() => {

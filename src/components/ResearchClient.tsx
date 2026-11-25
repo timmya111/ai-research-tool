@@ -423,6 +423,14 @@ export default function ResearchClient() {
 		return () => window.clearTimeout(timer);
 	}, [projectId]);
 
+	useEffect(() => {
+		const prev = document.title;
+		document.title = 'AI Research Tool';
+		return () => {
+			document.title = prev;
+		};
+	}, []);
+
 	/** Load durable chat session from `.data/chat-sessions/current.json`. */
 	useEffect(() => {
 		let cancelled = false;

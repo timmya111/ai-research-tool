@@ -286,7 +286,8 @@ const COUNTRY_PATTERNS: Array<{ code: string; re: RegExp }> = [
 	},
 	{
 		code: 'mx',
-		re: /\b(?:(?<!New\s)Mexico|Mexican|Mexico City|Monterrey|Guadalajara)\b/i,
+		// Exclude "Mexican-American" / "Mexican American" (US ethnic label, not nationality).
+		re: /\b(?:(?<!New\s)Mexico|Mexican(?![- ]Americans?)|Mexico City|Monterrey|Guadalajara)\b/i,
 	},
 	{
 		code: 'sg',
@@ -427,6 +428,7 @@ function scanTextForCountries(text: string, add: (code: string, weight: number) 
 	const raw = String(text || '').trim();
 	if (!raw) return;
 	// Clean out "New England" / "New Mexico" / "New South Wales" / "British Columbia" and pronunciation tags like "Canadian French:"
+	// Also strip US ethnic compounds ("Mexican-American school") so demonyms do not add a foreign flag.
 	const sanitized = raw
 		.replace(/\b(?:Canadian|Quebec|Swiss|Belgian|Louisiana|Cajun)\s+French\b/gi, 'Lang_Fr')
 		.replace(/\b(?:French|German|Spanish|Italian|Russian|Chinese|Japanese|Arabic|Dutch|Polish|Portuguese|Greek|Turkish)\s*:/gi, 'Lang_Pron:')
@@ -434,9 +436,13 @@ function scanTextForCountries(text: string, add: (code: string, weight: number) 
 		.replace(/\bNew Mexico\b/gi, 'New_Mex_US')
 		.replace(/\bNew South Wales\b/gi, 'NSW_AU')
 		.replace(/\bNew Jersey\b/gi, 'New_Jer_US')
-		.replace(/\bBritish Columbia\b/gi, 'BC_Canada');
+		.replace(/\bBritish Columbia\b/gi, 'BC_Canada')
+		.replace(
+			/\b(?:Mexican|Irish|Italian|German|Chinese|Japanese|Korean|Polish|Cuban|Vietnamese|Filipino|Indian|French|Spanish|Russian|Ukrainian|Armenian|Lebanese|Greek|Swedish|Norwegian|Danish|Dutch|Portuguese|Brazilian|Colombian|Puerto\s+Rican)[- ]Americans?\b/gi,
+			'EthnicAm_US',
+		);
 
-	if (/\b(?:New_Eng_US|New_Mex_US|New_Jer_US)\b/.test(sanitized)) add('us', weight);
+	if (/\b(?:New_Eng_US|New_Mex_US|New_Jer_US|EthnicAm_US)\b/.test(sanitized)) add('us', weight);
 	if (/\bNSW_AU\b/.test(sanitized)) add('au', weight);
 	if (/\bBC_Canada\b/.test(sanitized)) add('ca', weight);
 	if (US_STATE_FULL_RE.test(sanitized)) add('us', weight);
