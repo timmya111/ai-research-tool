@@ -989,6 +989,217 @@ function renderClickableOccupation(occupation: string, orgPeers: OccupationOrgPe
 	return parts;
 }
 
+type FamilyRelativePeer = { id: string; name: string; role: string | null };
+
+type FamilyTreeRow =
+	| { kind: 'person'; prefix: string; peer: FamilyRelativePeer; gen: number | null }
+	| { kind: 'label'; prefix: string; text: string };
+
+const FAMILY_ROLE_GEN_RE = /^(\d+)(?:st|nd|rd|th)\s+Generation\s*[·•\-–—]\s*(.+)$/i;
+
+function parseFamilyRelativeRole(role: string | null | undefined): { generation: number | null; branch: string } {
+	const raw = String(role || '').trim();
+	if (!raw) return { generation: null, branch: '' };
+	const m = raw.match(FAMILY_ROLE_GEN_RE);
+	if (!m) return { generation: null, branch: raw };
+	return { generation: Number(m[1]), branch: m[2].trim() };
+}
+
+function compareFamilyNames(a: string, b: string): number {
+	return a.localeCompare(b, undefined, { sensitivity: 'base' });
+}
+
+/** Build ASCII-indented family rows from generation · branch roleLabels (e.g. Rockefeller dynasty). */
+function buildFamilyRelativeTreeRows(peers: FamilyRelativePeer[]): FamilyTreeRow[] | null {
+	const parsed = peers.map((peer) => {
+		const { generation, branch } = parseFamilyRelativeRole(peer.role);
+		return { peer, generation, branch };
+	});
+	const withGen = parsed.filter((p) => p.generation != null);
+	if (withGen.length < 2) return null;
+
+	const byName = (a: (typeof parsed)[number], b: (typeof parsed)[number]) => compareFamilyNames(a.peer.name, b.peer.name);
+	const gen1 = parsed.filter((p) => p.generation === 1).sort(byName);
+	const gen2 = parsed.filter((p) => p.generation === 2).sort(byName);
+	const gen3 = parsed.filter((p) => p.generation === 3).sort(byName);
+	const deeper = parsed.filter((p) => (p.generation ?? 0) >= 4);
+
+	const branchOrder: string[] = [];
+	for (const g of gen3) {
+		if (g.branch && !branchOrder.includes(g.branch)) branchOrder.push(g.branch);
+	}
+	for (const g of deeper) {
+		if (g.branch && !branchOrder.includes(g.branch)) branchOrder.push(g.branch);
+	}
+
+	const rows: FamilyTreeRow[] = [];
+	const pushPerson = (prefix: string, item: (typeof parsed)[number]) => {
+		rows.push({ kind: 'person', prefix, peer: item.peer, gen: item.generation });
+	};
+	const pushLabel = (prefix: string, text: string) => {
+		rows.push({ kind: 'label', prefix, text });
+	};
+
+	const branchBodies = (branch: string) => {
+		const g4 = deeper.filter((p) => p.generation === 4 && p.branch === branch).sort(byName);
+		const g5 = deeper.filter((p) => (p.generation ?? 0) >= 5 && p.branch === branch).sort(byName);
+		return { g4, g5 };
+	};
+
+	const renderBranch = (branch: string, rail: string, isLastBranch: boolean) => {
+		const head = gen3.find((p) => p.branch === branch) || null;
+		const { g4, g5 } = branchBodies(branch);
+		const branchTee = isLastBranch ? '└── ' : '├── ';
+		const branchRail = `${rail}${isLastBranch ? '    ' : '│   '}`;
+
+		if (head) {
+			pushPerson(`${rail}${branchTee}`, head);
+		} else {
+			pushLabel(`${rail}${branchTee}`, branch || 'Other');
+		}
+
+		const hasG4 = g4.length > 0;
+		const hasG5 = g5.length > 0;
+		if (hasG4) {
+			const g4Last = !hasG5;
+			pushLabel(`${branchRail}${g4Last ? '└── ' : '├── '}`, 'Gen 4');
+			const g4Rail = `${branchRail}${g4Last ? '    ' : '│   '}`;
+			g4.forEach((p, i) => {
+				const last = i === g4.length - 1;
+				pushPerson(`${g4Rail}${last ? '└── ' : '├── '}`, p);
+			});
+		}
+		if (hasG5) {
+			pushLabel(`${branchRail}└── `, `Gen ${Math.min(...g5.map((p) => p.generation || 5))}`);
+			const g5Rail = `${branchRail}    `;
+			g5.forEach((p, i) => {
+				const last = i === g5.length - 1;
+				pushPerson(`${g5Rail}${last ? '└── ' : '├── '}`, p);
+			});
+		}
+	};
+
+	const renderBranchesUnder = (rail: string) => {
+		if (branchOrder.length === 0) return;
+		branchOrder.forEach((branch, i) => {
+			renderBranch(branch, rail, i === branchOrder.length - 1);
+		});
+	};
+
+	// Prefer Gen1 → Gen2 → branches when those links exist.
+	// Tee marks are among siblings only; descendants nest under the last sibling’s rail.
+	if (gen1.length > 0) {
+		gen1.forEach((g1, gi) => {
+			const g1Last = gi === gen1.length - 1;
+			pushPerson(`${g1Last ? '└── ' : '├── '}`, g1);
+			const g1Rail = g1Last ? '    ' : '│   ';
+			if (!g1Last) return;
+			if (gen2.length > 0) {
+				gen2.forEach((g2, g2i) => {
+					const g2Last = g2i === gen2.length - 1;
+					pushPerson(`${g1Rail}${g2Last ? '└── ' : '├── '}`, g2);
+					if (g2Last) renderBranchesUnder(`${g1Rail}${g2Last ? '    ' : '│   '}`);
+				});
+			} else {
+				renderBranchesUnder(g1Rail);
+			}
+		});
+	} else if (gen2.length > 0) {
+		gen2.forEach((g2, g2i) => {
+			const g2Last = g2i === gen2.length - 1;
+			pushPerson(`${g2Last ? '└── ' : '├── '}`, g2);
+			if (g2Last) renderBranchesUnder(g2Last ? '    ' : '│   ');
+		});
+	} else {
+		renderBranchesUnder('');
+	}
+
+	// Orphans: generation labeled but unmatched branch, or no generation.
+	const placed = new Set(
+		rows.filter((r): r is Extract<FamilyTreeRow, { kind: 'person' }> => r.kind === 'person').map((r) => r.peer.id),
+	);
+	const orphans = parsed.filter((p) => !placed.has(p.peer.id)).sort(byName);
+	if (orphans.length > 0) {
+		const needHeader = rows.length > 0;
+		if (needHeader) pushLabel('├── ', 'Other relatives');
+		orphans.forEach((p, i) => {
+			const last = i === orphans.length - 1;
+			const rail = needHeader ? '│   ' : '';
+			pushPerson(`${rail}${last ? '└── ' : '├── '}`, p);
+		});
+	}
+
+	return rows.length > 0 ? rows : null;
+}
+
+function FamilyRelativesTree({
+	peers,
+	onJump,
+}: {
+	peers: FamilyRelativePeer[];
+	onJump: (id: string) => void;
+}): ReactNode {
+	const rows = buildFamilyRelativeTreeRows(peers);
+	if (!rows) {
+		return (
+			<div className='mt-1 flex flex-wrap gap-x-2 gap-y-1 leading-snug'>
+				{peers.map((peer) => (
+					<span
+						key={peer.id}
+						className='inline-flex flex-wrap items-baseline gap-1'>
+						<button
+							type='button'
+							onClick={() => onJump(peer.id)}
+							className='cursor-pointer border-0 bg-transparent p-0 text-[11px] font-semibold text-[#F97316] underline'>
+							{peer.name}
+						</button>
+						{peer.role ?
+							<span className='text-[10px] opacity-70'>({peer.role})</span>
+						:	null}
+					</span>
+				))}
+			</div>
+		);
+	}
+
+	return (
+		<div className='mt-1 rounded border border-rose-500/20 bg-black/25 px-2.5 py-2 font-mono text-[11px] leading-snug'>
+			{rows.map((row, i) => {
+				if (row.kind === 'label') {
+					return (
+						<div
+							key={`lbl-${i}`}
+							className='whitespace-pre text-rose-100/55'>
+							<span className='text-rose-200/40'>{row.prefix}</span>
+							{row.text}
+						</div>
+					);
+				}
+				const shortRole =
+					row.gen != null ?
+						`Gen ${row.gen}${row.peer.role && row.gen <= 3 ? ` · ${parseFamilyRelativeRole(row.peer.role).branch}` : ''}`
+					:	row.peer.role;
+				return (
+					<div
+						key={row.peer.id}
+						className='whitespace-pre'>
+						<span className='text-rose-200/40'>{row.prefix}</span>
+						<button
+							type='button'
+							onClick={() => onJump(row.peer.id)}
+							className='cursor-pointer border-0 bg-transparent p-0 font-mono text-[11px] font-semibold text-[#F97316] underline'>
+							{row.peer.name}
+						</button>
+						{shortRole ?
+							<span className='text-[10px] text-rose-100/50'>{`  [${shortRole}]`}</span>
+						:	null}
+					</div>
+				);
+			})}
+		</div>
+	);
+}
+
 /** Color accents for Captured Entity Details cards (by field key). */
 function enrichedDetailCardClass(key: string): string {
 	if (MILITARY_DETAIL_KEYS.has(key)) {
@@ -1189,7 +1400,7 @@ const SUMMARY_BULLET_RE = /^[-*•]\s+(.+)$/;
 // Prefer full dates (YYYY-MM-DD / MM-DD-YYYY) before bare years so
 // "2025-06-09 — …" does not split into date=2025 + text="06-09 — …".
 const SUMMARY_DATED_BULLET_RE =
-	/^(?:\*\*)?((?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
 const SUMMARY_TITLED_BULLET_RE = /^\*\*([^*]+)\*\*\s*[—–:\-]\s*(.+)$/;
 const SUMMARY_URL_RE = /^(https?:\/\/\S+)$/i;
 
@@ -1245,8 +1456,15 @@ function SummaryMarkdown({
  */
 function stripPronunciationGuides(text: string): string {
 	const src = String(text || '');
+	const fences: string[] = [];
+	// Preserve fenced ASCII / code blocks (family trees) before space collapsing.
+	const withFencesMasked = src.replace(/```[\s\S]*?```/g, (block) => {
+		const token = `__FENCE_PH${fences.length}__`;
+		fences.push(block);
+		return token;
+	});
 	const urls: string[] = [];
-	const masked = src.replace(/https?:\/\/[^\s)]+/gi, (url) => {
+	const masked = withFencesMasked.replace(/https?:\/\/[^\s)]+/gi, (url) => {
 		const token = `__URL_PH${urls.length}__`;
 		urls.push(url);
 		return token;
@@ -1270,6 +1488,9 @@ function stripPronunciationGuides(text: string): string {
 	for (let i = 0; i < urls.length; i++) {
 		out = out.replace(`__URL_PH${i}__`, urls[i]);
 	}
+	for (let i = 0; i < fences.length; i++) {
+		out = out.replace(`__FENCE_PH${i}__`, fences[i]);
+	}
 	return out;
 }
 
@@ -1286,6 +1507,7 @@ type SummaryBlock =
 	| { kind: 'timeline'; entries: SummaryTimelineEntry[] }
 	| { kind: 'bullets'; entries: SummaryBulletEntry[] }
 	| { kind: 'prose'; text: string }
+	| { kind: 'pre'; text: string }
 	| { kind: 'disclaimer'; text: string };
 
 function escapeRegExp(value: string): string {
@@ -1438,13 +1660,41 @@ function extractTrailingUrl(text: string): { body: string; href: string | null }
 	return { body: (m[1] || '').trim().replace(/[—–\-\s]+$/g, '').trim(), href: m[2] || m[3] || null };
 }
 
-function parseSummaryBlocks(text: string): SummaryBlock[] {
+/** True when a timeline bold label is a real date (not a claim title like "SSA announces COLA"). */
+function looksLikeSummaryDateLabel(raw: string | null | undefined): boolean {
+	const s = String(raw || '')
+		.replace(/\*\*/g, '')
+		.trim();
+	if (!s || /^undated$/i.test(s)) return false;
+	if (/^(?:18|19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?$/.test(s)) return true;
+	if (/^\d{2}-\d{2}-(?:18|19|20)\d{2}$/.test(s)) return true;
+	if (/^(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present)$/i.test(s)) return true;
+	if (
+		/^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}$/i.test(
+			s,
+		)
+	) {
+		return true;
+	}
+	return false;
+}
+
+/** Prefer a date found in copy; otherwise use the source/publication date on the profile. */
+function resolveSummaryTimelineDate(
+	raw: string | null | undefined,
+	sourceDate: string | null | undefined,
+): string {
+	if (looksLikeSummaryDateLabel(raw)) return String(raw).replace(/\*\*/g, '').trim();
+	if (sourceDate && String(sourceDate).trim()) return String(sourceDate).trim();
+	return 'Undated';
+}
+
+function parseSummaryBlocks(text: string, opts?: { sourceDate?: string | null }): SummaryBlock[] {
+	const sourceDate = opts?.sourceDate ?? null;
 	const cleaned = normalizeSummaryMarkup(stripPronunciationGuides(text));
 	// Keep blank lines only as separators; preserve markdown headings / bullets.
-	const lines = cleaned
-		.split(/\n/)
-		.map((l) => l.trim())
-		.filter(Boolean);
+	// Raw lines (not pre-trimmed) so fenced ASCII trees keep indentation.
+	const rawLines = cleaned.split(/\n/);
 	const blocks: SummaryBlock[] = [];
 	let gridRows: Array<{ label: string; value: string }> = [];
 	let timelineEntries: SummaryTimelineEntry[] = [];
@@ -1472,8 +1722,23 @@ function parseSummaryBlocks(text: string): SummaryBlock[] {
 		flushBullets();
 	};
 
-	for (const rawLine of lines) {
-		let line = rawLine;
+	for (let li = 0; li < rawLines.length; li++) {
+		const trimmedOpen = rawLines[li].trim();
+		if (/^```/.test(trimmedOpen)) {
+			flushCollections();
+			const fenceBody: string[] = [];
+			li += 1;
+			while (li < rawLines.length && !/^```/.test(rawLines[li].trim())) {
+				fenceBody.push(rawLines[li]);
+				li += 1;
+			}
+			blocks.push({ kind: 'pre', text: fenceBody.join('\n').replace(/^\n+|\n+$/g, '') });
+			continue;
+		}
+
+		let line = trimmedOpen;
+		if (!line) continue;
+
 		let trailingDisclaimer: string | null = null;
 		const discIdx = line.search(SUMMARY_DISCLAIMER_RE);
 		if (discIdx === 0) {
@@ -1518,15 +1783,30 @@ function parseSummaryBlocks(text: string): SummaryBlock[] {
 				flushBullets();
 				if (dated) {
 					const split = splitSourceTag(dated[2]);
-					timelineEntries.push({ date: dated[1].replace(/\*\*/g, '').trim(), text: split.body, sourceTag: split.sourceTag });
-				} else {
-					const titled = body.match(SUMMARY_TITLED_BULLET_RE);
-					const split = splitSourceTag(titled ? titled[2] : body);
 					timelineEntries.push({
-						date: titled ? titled[1].trim() : 'Undated',
+						date: resolveSummaryTimelineDate(dated[1], sourceDate),
 						text: split.body,
 						sourceTag: split.sourceTag,
 					});
+				} else {
+					const titled = body.match(SUMMARY_TITLED_BULLET_RE);
+					const split = splitSourceTag(titled ? titled[2] : body);
+					const bold = titled ? titled[1].trim() : '';
+					if (looksLikeSummaryDateLabel(bold)) {
+						timelineEntries.push({
+							date: resolveSummaryTimelineDate(bold, sourceDate),
+							text: split.body,
+							sourceTag: split.sourceTag,
+						});
+					} else {
+						// Claim title without a date in copy → use source/publication date; keep title in text.
+						const claim = bold ? `${bold}${split.body ? ` — ${split.body}` : ''}` : split.body;
+						timelineEntries.push({
+							date: resolveSummaryTimelineDate(null, sourceDate),
+							text: claim,
+							sourceTag: split.sourceTag,
+						});
+					}
 				}
 			} else if (SUMMARY_URL_RE.test(body)) {
 				flushTimeline();
@@ -1725,10 +2005,10 @@ function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
 }
 
 /** All profile summaries: prose paragraphs mixed with Timeline-tab rail styling for dated sections. */
-function ProfileSummaryText({ text }: { text: string }) {
+function ProfileSummaryText({ text, sourceDate = null }: { text: string; sourceDate?: string | null }) {
 	const raw = String(text || '').trim();
 	if (!raw) return null;
-	const blocks = parseSummaryBlocks(raw).filter((b) => {
+	const blocks = parseSummaryBlocks(raw, { sourceDate }).filter((b) => {
 		if (b.kind !== 'year') return true;
 		const t = String(b.text || '')
 			.replace(/^[—–\-\s.]+$/, '')
@@ -1850,6 +2130,15 @@ function ProfileSummaryText({ text }: { text: string }) {
 									</SummarySectionCard>
 								))}
 							</div>
+						);
+					}
+					if (block.kind === 'pre') {
+						return (
+							<pre
+								key={`pre-${idx}`}
+								className='m-0 whitespace-pre rounded border border-white/10 bg-black/35 p-2.5 font-mono text-[11px] leading-snug text-sky-100/95'>
+								{block.text}
+							</pre>
 						);
 					}
 					if (block.kind === 'disclaimer') {
@@ -2201,7 +2490,18 @@ export default function ProfilesClient({
 			try {
 				const res = await fetch(`/api/profiles/${encodeURIComponent(id)}`, { cache: 'no-store' });
 				const data = await res.json();
-				if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
+				if (!res.ok || !data?.ok) {
+					// Soft-journalism / removed cards 404 — leave the dead URL.
+					if (res.status === 404) {
+						setDetail(null);
+						setSelectedId(null);
+						setError(null);
+						skipNextPushRef.current = false;
+						syncUrl({ profile: null, view: 'profile' }, 'replace');
+						return;
+					}
+					throw new Error(data?.error || `Failed (${res.status})`);
+				}
 				const loaded = data as ProfileDetail;
 				setDetail(loaded);
 				setProfileEditing(false);
@@ -4619,7 +4919,10 @@ export default function ProfilesClient({
 												</div>
 											:	<div className='mt-1'>
 													{detail.profile.summary ?
-														<ProfileSummaryText text={detail.profile.summary} />
+														<ProfileSummaryText
+															text={detail.profile.summary}
+															sourceDate={detail.profile.startDate}
+														/>
 													:	<p className='m-0 text-xs italic opacity-60'>No summary yet.</p>}
 												</div>
 											}
@@ -4867,23 +5170,10 @@ export default function ProfilesClient({
 																		{familyPeers.length > 0 ?
 																			<div className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass('familyAndRelatives')}`}>
 																				<div className='text-[10px] font-semibold uppercase opacity-65'>Family / Relatives</div>
-																				<div className='mt-1 flex flex-wrap gap-x-2 gap-y-1 leading-snug'>
-																					{familyPeers.map((peer) => (
-																						<span
-																							key={peer.id}
-																							className='inline-flex flex-wrap items-baseline gap-1'>
-																							<button
-																								type='button'
-																								onClick={() => jumpToProfile(peer.id)}
-																								className='cursor-pointer border-0 bg-transparent p-0 text-[11px] font-semibold text-[#F97316] underline'>
-																								{peer.name}
-																							</button>
-																							{peer.role ?
-																								<span className='text-[10px] opacity-70'>({peer.role})</span>
-																							:	null}
-																						</span>
-																					))}
-																				</div>
+																				<FamilyRelativesTree
+																					peers={familyPeers}
+																					onJump={jumpToProfile}
+																				/>
 																			</div>
 																		:	null}
 																		{highlightRow ?
@@ -5624,7 +5914,7 @@ export default function ProfilesClient({
 																		{previousWork.length > 0 ?
 																			<div>
 																				<div className='mb-1.5 text-[11px] font-semibold uppercase tracking-wide opacity-70'>Previous Employment ({previousWork.length})</div>
-																				<div className='max-h-[460px] space-y-1.5 overflow-y-auto pr-1'>{previousWork.map(renderWorkRow)}</div>
+																				<div className='space-y-1.5'>{previousWork.map(renderWorkRow)}</div>
 																			</div>
 																		:	null}
 																	</div>
@@ -5927,7 +6217,7 @@ export default function ProfilesClient({
 																			'All connected organizations and schools are listed in Employment History & Education above.'
 																		:	'No typed links recorded yet.'}
 																	</p>
-																:	<div className='max-h-[840px] space-y-1.5 overflow-y-auto pr-1'>
+																:	<div className='space-y-1.5'>
 																		{filteredLinks.map(({ link: l, connStatus }) => {
 																			const isOut = l.fromProfileId === detail.profile.id;
 																			const peerId = isOut ? l.toProfileId : l.fromProfileId;
@@ -6022,11 +6312,17 @@ export default function ProfilesClient({
 													{timeline.entries.length === 0 ?
 														<p className='text-xs opacity-70'>No timeline entries yet. Add one below or link dated historic events to this profile.</p>
 													:	(() => {
+															const sourceDate = detail?.profile?.startDate || null;
 															const byYear = new Map<string, typeof timeline.entries>();
 															for (const entry of timeline.entries) {
-																const y = entry.eventDate && /^\d{4}/.test(entry.eventDate) ? entry.eventDate.slice(0, 4) : 'Undated';
+																const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
+																const y =
+																	resolved && /^\d{4}/.test(resolved) ? resolved.slice(0, 4)
+																	: resolved && /\b((?:18|19|20)\d{2})\b/.test(resolved) ?
+																		(resolved.match(/\b((?:18|19|20)\d{2})\b/) || [])[1]
+																	:	'Undated';
 																const list = byYear.get(y) || [];
-																list.push(entry);
+																list.push({ ...entry, eventDate: resolved === 'Undated' ? entry.eventDate : resolved });
 																byYear.set(y, list);
 															}
 															const years = [...byYear.keys()].sort((a, b) => {
@@ -6045,7 +6341,8 @@ export default function ProfilesClient({
 																		}> = [];
 																		const dateIndex = new Map<string, number>();
 																		for (const entry of yearEntries) {
-																			const key = summaryTimelineDateKey(entry.eventDate);
+																			const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
+																			const key = summaryTimelineDateKey(resolved);
 																			const existing = dateIndex.get(key);
 																			if (existing != null) {
 																				dateGroups[existing].entries.push(entry);
@@ -6054,7 +6351,7 @@ export default function ProfilesClient({
 																			dateIndex.set(key, dateGroups.length);
 																			dateGroups.push({
 																				key,
-																				label: entry.eventDate ? formatDisplayDate(entry.eventDate) || summaryTimelineDateLabel(entry.eventDate) : 'Undated',
+																				label: summaryTimelineDateLabel(resolved),
 																				entries: [entry],
 																			});
 																		}

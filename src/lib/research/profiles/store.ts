@@ -1292,6 +1292,9 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		params.push(filter.status);
 	}
 
+	// Soft interview/opinion journalism is archived out of historic timelines — never list it.
+	where.push(`COALESCE(json_extract(p.metadata_json, '$.newsSkipReason'), '') != 'soft_journalism'`);
+
 	if (filter.tag && PROFILE_TYPES.includes(filter.tag)) {
 		where.push(
 			`(
@@ -1642,6 +1645,10 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 	const db = getProfilesDb();
 	const profile = getProfile(idOrSlug, db);
 	if (!profile) return null;
+	// Hidden soft-journalism cards: treat as not found so direct URLs cannot open them.
+	if (String((profile.metadata as Record<string, unknown> | null)?.newsSkipReason || '') === 'soft_journalism') {
+		return null;
+	}
 
 	const aliasRows = db
 		.prepare('SELECT * FROM profile_aliases WHERE profile_id = ? ORDER BY confidence DESC, alias ASC')

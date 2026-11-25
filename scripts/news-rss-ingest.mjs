@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
+import { classifySoftJournalism } from './lib/news-rss-soft-journalism.mjs';
+import { DEFAULT_FOCUS_TOPICS, itemMatchesFocusTopics } from './lib/news-rss-focus-topics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -418,14 +420,19 @@ function buildSummary({ feed, item, article }) {
 	return parts.filter(Boolean).join('\n\n').slice(0, SUMMARY_MAX);
 }
 
-function resolveKeywords(feed, catalogKeywords) {
+function resolveKeywords(feed, catalog) {
+	const catalogKeywords = Array.isArray(catalog?.keywordBoost) ? catalog.keywordBoost : [];
+	const focusTopics = Array.isArray(catalog?.focusTopics) && catalog.focusTopics.length ? catalog.focusTopics : DEFAULT_FOCUS_TOPICS;
 	if (Array.isArray(feed.includeKeywords) && feed.includeKeywords.length) {
-		return feed.includeKeywords.map(String);
+		return { mode: 'include', keywords: feed.includeKeywords.map(String) };
 	}
 	if (feed.matchCatalogKeywords) {
-		return (catalogKeywords || []).map(String);
+		return { mode: 'include', keywords: catalogKeywords.map(String) };
 	}
-	return null;
+	if (feed.matchFocusTopics === true || (feed.matchFocusTopics !== false && catalog?.defaultMatchFocusTopics)) {
+		return { mode: 'focus', keywords: focusTopics.map(String) };
+	}
+	return { mode: 'all', keywords: null };
 }
 
 function itemMatchesKeywords(item, keywords) {
@@ -608,9 +615,8 @@ async function pollOnce() {
 	for (const u of Object.keys(state.seenUrls || {})) known.add(normalizeUrl(u));
 
 	const enabled = catalog.feeds.filter((f) => f.enabled && f.rss);
-	const catalogKeywords = Array.isArray(catalog.keywordBoost) ? catalog.keywordBoost : [];
 	console.log(
-		`[news-rss] feeds=${enabled.length}/${catalog.feeds.length} maxPerFeed=${MAX_PER_FEED} fetchArticle=${FETCH_ARTICLE} dryRun=${DRY_RUN} base=${BASE_URL}`,
+		`[news-rss] feeds=${enabled.length}/${catalog.feeds.length} maxPerFeed=${MAX_PER_FEED} fetchArticle=${FETCH_ARTICLE} dryRun=${DRY_RUN} focusDefault=${!!catalog.defaultMatchFocusTopics} base=${BASE_URL}`,
 	);
 
 	const summary = {
@@ -631,13 +637,13 @@ async function pollOnce() {
 			errors: 0,
 			error: null,
 		};
-		const keywords = resolveKeywords(feed, catalogKeywords);
+		const kw = resolveKeywords(feed, catalog);
 		try {
 			const xml = await fetchFeed(feed.rss);
 			const items = parseRssItems(xml).slice(0, MAX_PER_FEED);
 			feedStat.fetched = items.length;
 			console.log(
-				`[news-rss] ${feed.id}: items=${items.length}${keywords ? ` keywords=${keywords.length}` : ''}`,
+				`[news-rss] ${feed.id}: items=${items.length} filter=${kw.mode}${kw.keywords ? `(${kw.keywords.length})` : ''}`,
 			);
 			for (const item of items) {
 				const url = normalizeUrl(item.link);
@@ -646,13 +652,59 @@ async function pollOnce() {
 					summary.skipped += 1;
 					continue;
 				}
-				if (!itemMatchesKeywords(item, keywords)) {
+				const topicOk =
+					kw.mode === 'all' ? true
+					: kw.mode === 'focus' ? itemMatchesFocusTopics(item, kw.keywords)
+					:	itemMatchesKeywords(item, kw.keywords);
+				if (!topicOk) {
 					feedStat.filtered += 1;
 					summary.filtered += 1;
 					continue;
 				}
+				const softPre = classifySoftJournalism({
+					title: item.title,
+					summary: `${item.description || ''}\n${item.rssBody || ''}`,
+				});
+				if (softPre.soft) {
+					feedStat.filtered += 1;
+					summary.filtered += 1;
+					known.add(url);
+					state.seenUrls[url] = {
+						at: new Date().toISOString(),
+						feedId: feed.id,
+						title: item.title,
+						skipped: 'soft_journalism',
+						reasons: softPre.reasons,
+					};
+					console.log(
+						`[news-rss] ~ soft skip ${feed.id}: ${String(item.title).slice(0, 70)} (${softPre.reasons.join(',')})`,
+					);
+					continue;
+				}
 				try {
 					const article = await resolveArticleText(item);
+					const softPost = classifySoftJournalism({
+						title: item.title,
+						summary: article.text || item.description || '',
+					});
+					if (softPost.soft) {
+						feedStat.filtered += 1;
+						summary.filtered += 1;
+						known.add(url);
+						state.seenUrls[url] = {
+							at: new Date().toISOString(),
+							feedId: feed.id,
+							title: item.title,
+							skipped: 'soft_journalism',
+							reasons: softPost.reasons,
+							articleChars: article.text?.length || 0,
+						};
+						console.log(
+							`[news-rss] ~ soft skip after fetch ${feed.id}: ${String(item.title).slice(0, 70)} (${softPost.reasons.join(',')})`,
+						);
+						await sleep(80);
+						continue;
+					}
 					const created = await createEvent({ feed, item, article });
 					known.add(url);
 					state.seenUrls[url] = {

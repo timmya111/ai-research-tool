@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { classifySoftJournalism } from './lib/news-rss-soft-journalism.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -258,7 +259,13 @@ function firstSentences(text, maxChars = 280) {
 		out = `${out} ${p}`;
 		if (out.length >= 140) break;
 	}
-	return out.slice(0, maxChars).trim();
+	let clipped = out.slice(0, maxChars).trim();
+	// Prefer a word boundary over mid-token cuts when hard-capping.
+	if (clipped.length >= maxChars) {
+		const cut = clipped.lastIndexOf(' ');
+		if (cut >= Math.floor(maxChars * 0.6)) clipped = clipped.slice(0, cut).trim();
+	}
+	return clipped.replace(/[,:;–—-]\s*$/, '').trim();
 }
 
 function isoToLong(iso) {
@@ -310,6 +317,14 @@ function parseLooseDate(text, { allowYearOnly = false, fallbackYear = null } = {
 		const mi = MONTH_MAP[mon[1].toLowerCase().replace(/\.$/, '')];
 		if (mi) return `${mon[3]}-${String(mi).padStart(2, '0')}-${String(Number(mon[2])).padStart(2, '0')}`;
 	}
+	// UK / BBC style: "5 August 2024" / "16 December 2026"
+	const dayMon = s.match(
+		/\b(\d{1,2})(?:st|nd|rd|th)?\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?(?:,)?\s+((?:18|19|20)\d{2})\b/i,
+	);
+	if (dayMon) {
+		const mi = MONTH_MAP[dayMon[2].toLowerCase().replace(/\.$/, '')];
+		if (mi) return `${dayMon[3]}-${String(mi).padStart(2, '0')}-${String(Number(dayMon[1])).padStart(2, '0')}`;
+	}
 	// "Nov. 17" / "November 17" without year — borrow fallbackYear (report year / profile year)
 	const monDay = s.match(
 		/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b/i,
@@ -320,11 +335,99 @@ function parseLooseDate(text, { allowYearOnly = false, fallbackYear = null } = {
 			return `${fallbackYear}-${String(mi).padStart(2, '0')}-${String(Number(monDay[2])).padStart(2, '0')}`;
 		}
 	}
+	// "16 December" without year (UK day-month) — borrow fallbackYear
+	const dayMonNoYear = s.match(
+		/\b(\d{1,2})(?:st|nd|rd|th)?\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\b/i,
+	);
+	if (dayMonNoYear && fallbackYear) {
+		const mi = MONTH_MAP[dayMonNoYear[2].toLowerCase().replace(/\.$/, '')];
+		if (mi) {
+			return `${fallbackYear}-${String(mi).padStart(2, '0')}-${String(Number(dayMonNoYear[1])).padStart(2, '0')}`;
+		}
+	}
+	// "August 2024" / "in May 2025" — month+year, day unknown → YYYY-MM-01
+	// Skip background "since August 2024" / "from August 2022 to …" clauses.
+	const monYear = s.match(
+		/\b(?:in\s+)?(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?,?\s+((?:18|19|20)\d{2})\b/i,
+	);
+	if (monYear && monYear.index != null) {
+		const before = s.slice(Math.max(0, monYear.index - 8), monYear.index);
+		if (!/\b(?:since|from)\s+$/i.test(before)) {
+			const mi = MONTH_MAP[monYear[1].toLowerCase().replace(/\.$/, '')];
+			if (mi) return `${monYear[2]}-${String(mi).padStart(2, '0')}-01`;
+		}
+	}
 	if (allowYearOnly) {
 		const yearOnly = s.match(/\bin\s+((?:18|19|20)\d{2})\b/i);
 		if (yearOnly) return `${yearOnly[1]}-01-01`;
 	}
 	return null;
+}
+
+const WORD_NUM = {
+	a: 1,
+	an: 1,
+	one: 1,
+	two: 2,
+	three: 3,
+	four: 4,
+	five: 5,
+	six: 6,
+	seven: 7,
+	eight: 8,
+	nine: 9,
+	ten: 10,
+	eleven: 11,
+	twelve: 12,
+};
+
+function parseCountToken(tok) {
+	const t = String(tok || '').toLowerCase();
+	if (/^\d+$/.test(t)) return Number(t);
+	return WORD_NUM[t] || null;
+}
+
+/** Resolve "3 weeks ago" / "Three weeks ago" / "10th anniversary of … 2016" against a base ISO date. */
+function parseRelativeOrAnniversaryDate(text, fallbackYear = null, baseIso = null) {
+	const s = String(text || '');
+	const weeksAgo = s.match(/\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+weeks?\s+ago\b/i);
+	if (weeksAgo && baseIso && /^\d{4}-\d{2}-\d{2}$/.test(baseIso)) {
+		const n = parseCountToken(weeksAgo[1]);
+		const d = new Date(`${baseIso}T12:00:00Z`);
+		if (n && !Number.isNaN(d.getTime())) {
+			d.setUTCDate(d.getUTCDate() - n * 7);
+			return d.toISOString().slice(0, 10);
+		}
+	}
+	const ann = s.match(/\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:st|nd|rd|th)?\s+anniversary\b/i);
+	const yearHit = s.match(/\b((?:18|19|20)\d{2})\b/);
+	// Only date the claim to the anniversary year when the sentence is about the anniversary /
+	// peace deal itself — not when a current attack merely falls on the eve of one.
+	const anniversaryIsClaim =
+		!!ann &&
+		/\b(?:anniversary|peace deal|peace agreement|signed the|signing of)\b/i.test(s) &&
+		!/\b(?:car bomb|went off|exploded|wounding|killed|drones? dropped|tears through)\b/i.test(s);
+	if (anniversaryIsClaim && yearHit && baseIso && /^\d{4}-\d{2}-\d{2}$/.test(baseIso)) {
+		return `${yearHit[1]}-${baseIso.slice(5)}`;
+	}
+	if (anniversaryIsClaim && fallbackYear && baseIso && /^\d{4}-\d{2}-\d{2}$/.test(baseIso)) {
+		const n = parseCountToken(ann[1]);
+		if (n) {
+			const y = Number(fallbackYear) - n;
+			if (y >= 1800 && y <= 2100) return `${y}-${baseIso.slice(5)}`;
+		}
+	}
+	return null;
+}
+
+function dateClaim(text, profile, { allowYearOnly = false } = {}) {
+	const fallbackYear = (profile.startDate || '').slice(0, 4) || null;
+	return (
+		parseLooseDate(text, { allowYearOnly, fallbackYear }) ||
+		parseRelativeOrAnniversaryDate(text, fallbackYear, profile.startDate) ||
+		profile.startDate ||
+		null
+	);
 }
 
 function reportCardYear(body, profile) {
@@ -338,13 +441,77 @@ function reportCardYear(body, profile) {
 function cleanArticleBody(summary) {
 	return String(summary || '')
 		.replace(/\r/g, '')
+		// BBC / wire copy sometimes embeds zero-width / word-joiner chars.
+		.replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '')
 		.replace(/^This audio is auto-generated\..*$/gim, '')
 		.replace(/^Source:\s*.*$/gim, '')
 		.replace(/^https?:\/\/\S+\s*$/gim, '')
 		.replace(/^SEE ALSO:.*$/gim, '')
 		.replace(/^(?:Courtesy of|Image courtesy|Photo(?:\s+credit)?|Credit|Advertisement|Sponsored|Related stories?|Subscribe|Newsletter|Sign up|Read more|More from)\b.*$/gim, '')
+		.replace(/^Pictured is\b[^\n]*$/gim, '')
+		.replace(/^Copyright\b[\s\S]*$/gim, '')
+		.replace(/^(?:Published|Updated)\s+[A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}.*$/gim, '')
+		.replace(/^Dive Insight:?\s*$/gim, '')
+		.replace(/^An article from\b[^\n]*$/gim, '')
+		.replace(/^Senior Reporter\b[^\n]*$/gim, '')
+		// Inline photo captions glued to the lede (Defense Daily / wire).
+		.replace(/\bA OneWeb satellite built by[^.]*\.\s*/gi, '')
+		.replace(/\bPhoto:\s*Airbus U\.S\. Space\s*(?:&|and)\s*Defense\s*/gi, '')
+		.replace(/\bPhoto:\s*[A-Z][\w .,&-]{2,60}(?=\s*(?:Private equity|Cerberus|[A-Z][a-z]+ (?:is|has|said|announced)))/g, '')
+		// Drop prior format-card chrome if re-running on an already rewritten summary.
+		.replace(/\s*Fact-checked against the local Wikipedia library[\s\S]*$/i, '')
+		.replace(/\n## (?:Timeline|Local Wikipedia cross-check|Source articles)\b[\s\S]*$/i, '')
+		// Interview transcripts: drop "Firstname Lastname" speaker cues at line starts.
+		.replace(
+			/^(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\s+(?=(?:Well|Let’s|Let's|And|But|However|Exactly|So|Why|What|The|It|Federal|Military|Although|Hahahaha|Separately|They|He|She|I |You |We ))/gm,
+			'',
+		)
+		// Glued sentences from RSS extractors: "power.Hasina" → "power. Hasina".
+		// Require Capital+lowercase so "U.S. Space" / "U.K. defence" stay intact.
+		.replace(/\.(?=[A-Z][a-z])/g, '. ')
+		// Normalize spaced abbreviations so "U. S." is not treated as a sentence end.
+		.replace(/\bU\.\s+S\./g, 'U.S.')
+		.replace(/\bU\.\s+K\./g, 'U.K.')
 		.replace(/\n{3,}/g, '\n\n')
 		.trim();
+}
+
+/**
+ * Federal Newscast / multi-brief pages concatenate unrelated items after "-- Reporter".
+ * Keep the lead brief that matches the card title when possible.
+ */
+function isolatePrimaryStory(summary, profile = {}) {
+	let text = cleanArticleBody(summary);
+	if (!text) return '';
+	// Split on FNN-style bylines: "-- Silvia Oakland"
+	const parts = text
+		.split(/\n\s*--\s+[A-Z][^\n]{1,80}\s*(?:\n|$)/)
+		.map((p) => p.trim())
+		.filter((p) => p.length >= 80);
+	if (parts.length >= 2) {
+		const title = String(profile.name || '');
+		const keys = title
+			.toLowerCase()
+			.split(/[^a-z0-9]+/)
+			.filter((w) => w.length >= 5 && !/rolls|improve|system|about|after|before|their|there|which|would/.test(w));
+		let best = parts[0];
+		let bestScore = -1;
+		for (const p of parts) {
+			const low = p.toLowerCase();
+			const score = keys.reduce((n, k) => n + (low.includes(k) ? 1 : 0), 0);
+			if (score > bestScore) {
+				bestScore = score;
+				best = p;
+			}
+		}
+		text = bestScore > 0 ? best : parts[0];
+	}
+	// Newscast pages often glue the next brief on the same paragraph (no byline break).
+	const glued = text.search(
+		/\b(?:The Federal Labor Relations Authority|President Donald Trump'?s pick to lead the National Science Foundation|The nominee for the top oversight job|Agencies are being told to move forward with modernizing|The White House is reshuffling plans|The Office of Personnel Management has outlined|A key lawsuit challenging the Pentagon'?s transgender)\b/,
+	);
+	if (glued > 160) text = text.slice(0, glued).trim();
+	return text.trim();
 }
 
 function isJunkSectionLine(line) {
@@ -352,7 +519,12 @@ function isJunkSectionLine(line) {
 	if (!s) return true;
 	if (/^(courtesy of|image courtesy|photo|credit|advertisement|sponsored|related|subscribe|newsletter|sign up|read more|more from|tagged with|share this|follow us)\b/i.test(s))
 		return true;
+	if (/^(?:published|updated|dive insight|sponsored content|senior reporter|staff reporter)\b/i.test(s)) return true;
+	if (/^dive insight:?$/i.test(s)) return true;
 	if (/\b(magazine|national safety council)\b/i.test(s) && s.length < 70) return true;
+	// Interview Q&A leftovers / laughter
+	if (/^(?:hahahaha|laughs?|inaudible)\b/i.test(s)) return true;
+	if (/^(?:[A-Z][a-z]+\s+){1,3}(?:Well|Let’s|Let's|And|But)\b/.test(s) && s.length < 100) return true;
 	// Product / sidebar chrome often Title Case without a verb.
 	if (
 		/\b(fall protection|rescue equipment|personal protective|safety glasses|hard hat|scaffolding)\b/i.test(s) &&
@@ -456,29 +628,39 @@ function extractAsceReportCard(body, profile) {
 	return bullets;
 }
 
+/** Nearest sentence start at or before matchIndex (last boundary in the lookback window). */
+function sentenceStartAt(body, matchIndex, lookback = 240) {
+	const windowStart = Math.max(0, matchIndex - lookback);
+	const back = body.slice(windowStart, matchIndex);
+	const re = /(?:^|[.!?]\s+|[\n])([A-Z(“"‘])/g;
+	let lastStart = windowStart === 0 && /^[A-Z(“"‘]/.test(body) ? 0 : matchIndex;
+	let m;
+	while ((m = re.exec(back))) {
+		const boundaryLen = m[0].length - 1; // exclude the capital
+		lastStart = windowStart + m.index + boundaryLen;
+	}
+	if (lastStart < matchIndex && /[.!?\s\n]/.test(body[lastStart] || '')) lastStart += 1;
+	return lastStart;
+}
+
+function takeSentenceFrom(body, start) {
+	const slice = body.slice(start);
+	const protected_ = slice.replace(
+		/\b(Mr|Mrs|Ms|Dr|Prof|Gov|Sen|Rep|Gen|Nov|Oct|Sep|Sept|Dec|Jan|Feb|Mar|Apr|Jun|Jul|Aug|St|U\.S|U\.K|Inc|Ltd|Co|Maj)\./gi,
+		'$1˘',
+	);
+	const m = protected_.match(/^[\s\S]{12,420}?(?:\.(?:\s|$)|$)/);
+	return (m ? m[0] : protected_.slice(0, 280))
+		.replace(/˘/g, '.')
+		.replace(/\s+/g, ' ')
+		.replace(/^(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\s+(?=(?:Well|Let’s|Let's|And|But|However|The|It|Federal|Military|So|Why|What))/, '')
+		.trim();
+}
+
 /** Breaking / military / hazmat news: pull concrete operational claims. */
 function extractBreakingClaims(body, profile) {
 	const bullets = [];
-	const sentenceAt = (matchIndex) => {
-		let start = matchIndex;
-		while (start > 0 && !/[.!?]\s/.test(body.slice(start - 2, start))) start--;
-		if (start > 0) start = Math.min(matchIndex, start + (body[start] === ' ' ? 1 : 0));
-		// Prefer walking back to a capital letter after newline/space.
-		const back = body.slice(Math.max(0, matchIndex - 220), matchIndex);
-		const cap = back.search(/(?:^|[.!?]\s+|[\n])([A-Z(“"‘])/);
-		if (cap >= 0) {
-			const abs = Math.max(0, matchIndex - 220) + cap;
-			const ch = body[abs];
-			start = /[.!?\s\n]/.test(ch) ? abs + 1 : abs;
-		}
-		const slice = body.slice(start);
-		const protected_ = slice.replace(
-			/\b(Mr|Mrs|Ms|Dr|Prof|Gov|Sen|Rep|Gen|Nov|Oct|Sep|Sept|Dec|Jan|Feb|Mar|Apr|Jun|Jul|Aug|St|U\.S|U\.K|Inc|Ltd|Co|Maj)\./gi,
-			'$1˘',
-		);
-		const m = protected_.match(/^[\s\S]{12,420}?(?:\.(?:\s|$)|$)/);
-		return (m ? m[0] : protected_.slice(0, 280)).replace(/˘/g, '.').replace(/\s+/g, ' ').trim();
-	};
+	const sentenceAt = (matchIndex) => takeSentenceFrom(body, sentenceStartAt(body, matchIndex));
 	const patterns = [
 		{ title: 'Controlled detonation planned', re: /\b(?:plans to|will|set to)\s+detonate\b/i },
 		{ title: 'Stockpile / volume', re: /\b(?:five tons|\d+\s+barrels|entire stockpile of lead azide)\b/i },
@@ -486,7 +668,19 @@ function extractBreakingClaims(body, profile) {
 		{ title: 'Court approval', re: /\bthree-judge panel of the 8th U\.S\. Circuit Court of Appeals\b|\bwon approval for the detonation from the federal appeals court\b/i },
 		{ title: 'Schedule change', re: /\b(?:reschedul\w+ the detonation|initially planned for last Friday)\b/i },
 		{ title: 'Evacuation / public notice', re: /\b(?:within \d+ miles|seal(?:ing)? their windows|may be evacuated)\b/i },
-		{ title: 'Army leadership statement', re: /\b(?:Inaction is no longer an option|Acting Secretary of the Army|Maj\.?\s*Gen\.?\s+\w+)\b/i },
+		{ title: 'Army leadership statement', re: /\b(?:Inaction is no longer an option|Acting Secretary of the Army)\b/i },
+		{ title: 'Ribbon-cutting / facility complete', re: /\bribbon[- ]cutting\b[^]{0,120}(?:finished|completion|completed|facility)\b|\b(?:has finished|work on)\b[^]{0,120}\b(?:Facility|facility)\b/i },
+		{ title: 'Military construction milestone', re: /\bfirst completed military construction project\b|\bmilitary construction project at Vandenberg\b/i },
+		{ title: 'Program / system', re: /\bLGM-35A Sentinel\b|\bintercontinental ballistic missile program\b/i },
+		{ title: 'ACME classification system', re: /\bACME system\b|\bclassify and declassify millions of documents\b/i },
+		{ title: 'Classified records cost', re: /records management costs taxpayers more than \$[\d.]+ billion|\b\$15 billion each year\b/i },
+		{ title: 'Automation / AI workflows', re: /\bartificial intelligence and automated workflows\b|\bmove away from repetitive, manual reviews\b/i },
+		{ title: 'DoD classified-info rollout', re: /\bDefense Department is rolling out a new system\b|\bimprove how it handles classified information\b/i },
+		{ title: 'Cyber breach reported', re: /\b(?:was )?breached in a cyberattack\b|\bcyberattack\b[^]{0,80}\bbreach|\bbreach\b[^]{0,80}\b(?:unclassified|system)\b/i },
+		{ title: 'No classified data involved', re: /\bdid not involve any classified information\b|\bbreach did not involve any classified\b/i },
+		{ title: 'Open-source intelligence system', re: /\bopen[- ]source intelligence\b|\bhandles open source intelligence\b/i },
+		{ title: 'Issue resolved', re: /\bissue has been resolved\b|\bbreach .{0,40}resolved\b/i },
+		{ title: 'Related outages context', re: /\bNational Security Agency\b[^]{0,80}offline|\bFBI is investigating an apparent hack\b|\bnationwide ground stop\b/i },
 		{ title: 'Presidential / political twist', re: /\bTrump\b[^]{0,160}(?:ordered the Army|detonat|without court approval)/i },
 		{ title: 'Plant / location', re: /\bIowa Army Ammunition Plant in Middletown\b/i },
 		{ title: 'Environmental challenge', re: /\benvironmental groups that sued to stop the detonation\b/i },
@@ -497,8 +691,101 @@ function extractBreakingClaims(body, profile) {
 		{ title: 'Funding commitment', re: /\b(?:commits?|announced|awarded|approved)\b[^]{0,100}\$[\d,.]+ ?(?:million|billion|M|B)\b|\b\$[\d,.]+ ?(?:million|billion)\b[^]{0,80}(?:to build|funding|grant|investment)\b/i },
 		{ title: 'Contract award', re: /\b(?:awarded|won|signed)\b[^]{0,80}\b(?:contract|task order|IDIQ)\b|\b\$[\d,.]+ ?(?:billion|million)\b[^]{0,60}\bconstruction\b/i },
 		{ title: 'Court / permitting fight', re: /\b(?:battle|sued|lawsuit|appeals? court|injunction|permitting reform)\b/i },
-		{ title: 'Nuclear / energy project', re: /\b(?:nuclear plant|small modular|SMR|power authority|data center)\b/i },
+		{ title: 'Nuclear / energy project', re: /\b(?:nuclear plant|small modular|\bSMR\b|power authority)\b/i },
+		{ title: 'Data center project', re: /\b(?:data center|supercomputing center)\b/i },
+		{ title: 'Groundbreaking', re: /\b(?:broken ground|breaks ground|groundbreaking ceremony)\b/i },
+		{ title: 'Project value', re: /\$[\d.]+ ?(?:million|M)\b[^]{0,80}(?:data center|facility|construction|project)|(?:data center|facility|project)\b[^]{0,80}\$[\d.]+ ?(?:million|M)\b/i },
+		{ title: 'Permit / moratorium context', re: /\b(?:moratorium|paused certain state environmental permits|exempt(?:s|ion)? from the moratorium)\b/i },
 		{ title: 'Infrastructure vote', re: /\b(?:Senate|House|Congress)\b[^]{0,100}\b(?:passes|passed|confirm|nominee|infrastructure|permitting)\b/i },
+		// Attacks / conflict / political violence
+		{ title: 'Car bomb attack', re: /\bcar bomb\b[^]{0,100}(?:went off|exploded|explosion|wounding|killed|attack|tears through)/i },
+		{ title: 'Attack casualties', re: /\bwounding more than \d+|\bmore than \d+ (?:people )?(?:wounded|injured)|(?:three adults and a baby|at least \d+) (?:were )?killed\b/i },
+		{ title: 'Related drone / explosives attack', re: /\bdrones? dropped explosives\b|\bdrones? .{0,60}(?:police headquarters|army barracks)\b/i },
+		{ title: 'Peace deal anniversary', re: /\b\d+(?:st|nd|rd|th)?\s+anniversary of the (?:signing of a )?peace deal\b|\b2016 (?:peace )?(?:agreement|deal)\b/i },
+		{ title: 'Armed group / guerrilla context', re: /\b(?:dissident )?Farc\b|\bRevolutionary Armed Forces of Colombia\b|\bnarcoterrorism\b|\bguerrilla group\b/i },
+		{ title: 'Political response', re: /\bcrack down on ["“]?narcoterrorism["”]?|\bfalse peace\b|\btotal peace["”']?\s*strategy\b/i },
+		// M&A / private-equity space & defense deals
+		{ title: 'Acquisition announced', re: /\b(?:is acquiring|to acquire|set to acquire|announced the acquisition|acquires)\b[^]{0,120}\b(?:satellite|Space Systems|manufacturing business|business of)\b/i },
+		{ title: 'Deal terms / close', re: /\bTerms of the deal were not disclosed\b|\bexpected to close by the end of the year\b|\bdid not include a price tag\b/i },
+		{ title: 'Satellite production capacity', re: /\bbuilt more than \d+ satellites\b|\bOneWeb constellation\b|\bSpace Development Agency'?s?\b|\bSDA\b[^]{0,40}constellation/i },
+		{ title: 'Facility / HQ', re: /\bHeadquartered in Merritt Island\b|\b200,000-square-foot facility\b|\badjacent to the Kennedy Space Center\b/i },
+		{ title: 'Buyer investment thesis', re: /\bCerberus intends to invest\b|\bU\.S\.-owned satellite platform\b|\bCerberus Supply Chain\b/i },
+		{ title: 'Seller strategic shift', re: /\bAirbus U\.S\. is doubling down\b|\bautonomous aircraft capabilities\b|\bAirbus US CEO\b/i },
+		// Corporate leadership / market shocks
+		{ title: 'CEO reinstated', re: /\b(?:unanimously voted to reinstate|reinstated (?:him )?as (?:CEO|chief executive|boss|president)|reinstate\w* (?:as )?(?:CEO|chief executive))\b/i },
+		{ title: 'CEO resignation', re: /\b(?:forced to resign|originally resigning|resigned as (?:CEO|chief executive)|resign following)\b/i },
+		{ title: 'Office return / workforce reaction', re: /\b(?:cheers and applause|returned to (?:the )?Nvidia office|returns to Nvidia|gauges the reaction)\b/i },
+		{ title: 'Market reaction', re: /\b(?:market value rose by nearly \$\d|\badded almost \$\d trillion|share price (?:jumped|rose|skyrocketed)(?: by)? (?:about |more than )?\d+%|Nasdaq climbing)\b/i },
+		{ title: 'Political intervention claim', re: /\b(?:Trump (?:said|says) he (?:convinced|brokered)|brokered a deal|convinced Nvidia to reinstate)\b/i },
+		{ title: 'Board / chairman statement', re: /\bbest interests of our stockholders\b|\bchairman of Nvidia'?s board\b|\bHarvey Jones\b/i },
+		{ title: 'Congressional / political backlash', re: /\b(?:indefensible, irresponsible|called the (?:decision|reinstatement)|"reckless")\b|\bElizabeth Warren\b[^]{0,80}reinstat|\bHakeem Jeffries\b[^]{0,80}reinstat/i },
+	];
+	const seen = new Set();
+	for (const spec of patterns) {
+		const flags = spec.re.flags.includes('g') ? spec.re.flags : `${spec.re.flags}g`;
+		const globalRe = new RegExp(spec.re.source, flags);
+		const hits = [...body.matchAll(globalRe)];
+		if (!hits.length) continue;
+		// Prefer the hit whose sentence best overlaps the headline (e.g. Villavicencio over prior Tolima).
+		let bestSentence = null;
+		let bestScore = -1;
+		for (const hit of hits) {
+			if (hit.index == null) continue;
+			const sentence = sentenceAt(hit.index);
+			if (sentence.length < 40) continue;
+			let score = headlineOverlapScore({ text: sentence, title: '' }, profile);
+			// Prefer the main incident over prior-incident framing sentences.
+			if (/^(?:Three weeks ago|Earlier(?:\s+this|\s+on)?|And earlier|Last (?:week|month)|Meanwhile)\b/i.test(sentence)) {
+				score -= 3;
+			}
+			if (/\bwent off\b|\btears through\b|\bwounding more\b|\bexploded\b/i.test(sentence)) score += 2;
+			if (score > bestScore) {
+				bestScore = score;
+				bestSentence = sentence;
+			}
+		}
+		if (!bestSentence) continue;
+		const key = bestSentence.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 70);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		bullets.push({
+			iso: dateClaim(bestSentence, profile),
+			title: spec.title,
+			text: bestSentence.endsWith('.') ? bestSentence : `${bestSentence}.`,
+			kind: 'highlight',
+		});
+	}
+	// If the headline itself states the attack and the body never repeats it, seed a highlight from the title.
+	const title = String(profile.name || '');
+	if (/\b(?:car bomb|bombing|wounding more than|killed|attack|explosion)\b/i.test(title)) {
+		const key = title.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 70);
+		if (!seen.has(key)) {
+			seen.add(key);
+			bullets.unshift({
+				iso: profile.startDate || null,
+				title: 'Headline attack',
+				text: /\.$/.test(title) ? title : `${title}.`,
+				kind: 'highlight',
+			});
+		}
+	}
+	return bullets;
+}
+
+/** Federal COLA / FERS / CSRS / Social Security interview or explainers. */
+function extractColaFederalClaims(body, profile) {
+	const bullets = [];
+	const sentenceAt = (matchIndex) => takeSentenceFrom(body, sentenceStartAt(body, matchIndex));
+	const patterns = [
+		{ title: 'SSA announces COLA', re: /\bSocial Security Administration has announced a [\d.]+%\s*COLA\b/i },
+		{ title: 'Military / VA COLA', re: /\bMilitary retirees and individuals getting VA disability payments also get a [\d.]+%\s*increase\b/i },
+		{ title: 'CSRS full COLA', re: /\bcivil service retirement system will get a [\d.]+%\s*increase\b/i },
+		{ title: 'FERS skinny COLA', re: /\bskinny COLA\b[^]{0,160}(?:[\d.]+%\s*minus\s*1%|only get a [\d.]+ percent)/i },
+		{ title: 'Historical size', re: /\bfourth highest in 20 years\b/i },
+		{ title: 'Typical paycheck impact', re: /\$350,?\s*\$360 more per month\b/i },
+		{ title: 'Debt ceiling watch', re: /\bdebt ceiling\b[^]{0,100}(?:scheduled to expire|expire sometime)\b/i },
+		{ title: 'Entitlement formula', re: /\bentitlements, such as Social Security, Medicare\b/i },
+		{ title: 'COLA vs active pay', re: /\bpay increase for federal employees compared to the retirement COLA\b/i },
 	];
 	const seen = new Set();
 	for (const spec of patterns) {
@@ -509,11 +796,9 @@ function extractBreakingClaims(body, profile) {
 		const key = sentence.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 70);
 		if (seen.has(key)) continue;
 		seen.add(key);
+		// Key COLA claims to the card/announcement date — ignore historical years (1987 FERS, 2009 peak).
 		bullets.push({
-			iso:
-				parseLooseDate(sentence, {
-					fallbackYear: (profile.startDate || '').slice(0, 4) || null,
-				}) || profile.startDate,
+			iso: profile.startDate,
 			title: spec.title,
 			text: sentence.endsWith('.') ? sentence : `${sentence}.`,
 			kind: 'highlight',
@@ -562,7 +847,7 @@ function extractGenericMilestones(body, profile) {
 			const text = firstSentences(after, 220) || line;
 			if (isJunkSectionLine(text) || text.length < 40) continue;
 			bullets.push({
-				iso: parseLooseDate(after) || profile.startDate,
+				iso: dateClaim(after, profile),
 				title: line,
 				text,
 				kind: 'section',
@@ -576,16 +861,17 @@ function extractGenericMilestones(body, profile) {
 		'$1˘',
 	);
 	const datedSentenceRe =
-		/[^.!?\n]*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|(?:18|19|20)\d{2}-\d{2}-\d{2})[^.!?\n]*[.!?]/gi;
+		/[^.!?\n]*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d+\s+weeks?\s+ago|\d+(?:st|nd|rd|th)?\s+anniversary)[^.!?\n]*[.!?]/gi;
 	for (const hit of protectedBody.matchAll(datedSentenceRe)) {
 		const sentence = hit[0].replace(/˘/g, '.').replace(/\s+/g, ' ').trim();
 		if (sentence.length < 50 || sentence.length > 320) continue;
 		if (/^Source:/i.test(sentence)) continue;
 		if (isJunkSectionLine(sentence)) continue;
-		// Drop truncated abbrev tails that slipped through.
+		// Drop truncated abbrev tails / mid-abbreviation starts ("S. Space" from a broken U.S.).
 		if (/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.\s*$/i.test(sentence)) continue;
+		if (/^[A-Z]\.\s/.test(sentence)) continue;
 		bullets.push({
-			iso: parseLooseDate(sentence) || profile.startDate,
+			iso: dateClaim(sentence, profile),
 			title: sentence.slice(0, 70).replace(/[,:;]\s*$/, ''),
 			text: sentence,
 			kind: 'dated',
@@ -617,18 +903,64 @@ function dedupeBullets(bullets) {
 	return out;
 }
 
-function prioritizeBullets(bullets) {
+function headlineOverlapScore(bullet, profile) {
+	const title = String(profile?.name || '').toLowerCase();
+	const text = `${bullet.title || ''} ${bullet.text || ''}`.toLowerCase();
+	if (!title || !text) return 0;
+	const keys = title
+		.split(/[^a-z0-9]+/)
+		.filter((w) => w.length >= 4 && !/says|plans|return|after|from|with|that|this|have|been|will|into/.test(w));
+	let hit = 0;
+	for (const k of keys) if (text.includes(k)) hit++;
+	// Strong boost when the bullet carries the headline's calendar day (e.g. "16 December").
+	const dayInTitle = title.match(/\b(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b/);
+	if (dayInTitle && text.includes(`${dayInTitle[1]} ${dayInTitle[2].slice(0, 3)}`)) hit += 3;
+	else if (dayInTitle) {
+		const mon = dayInTitle[2];
+		if (text.includes(dayInTitle[1]) && text.includes(mon)) hit += 3;
+	}
+	return hit;
+}
+
+function datePrecisionScore(bullet, profile) {
+	const iso = String(bullet.iso || '');
+	const text = `${bullet.title || ''} ${bullet.text || ''}`;
+	const start = String(profile?.startDate || '');
+	if (!iso) return 0;
+	// Explicit day+month in the claim text → highest precision.
+	if (
+		/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/i.test(
+			text,
+		) ||
+		/\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2}\b/i.test(
+			text,
+		)
+	) {
+		return 3;
+	}
+	if (iso === start) return 1;
+	if (/-\d{2}-01$/.test(iso)) return 2;
+	return 2;
+}
+
+function prioritizeBullets(bullets, profile = {}) {
 	const rank = { overall: 0, grade: 1, provision: 1, highlight: 2, section: 3, dated: 4 };
 	return [...bullets].sort((a, b) => {
 		const ra = rank[a.kind] ?? 9;
 		const rb = rank[b.kind] ?? 9;
 		if (ra !== rb) return ra - rb;
+		const oa = headlineOverlapScore(a, profile);
+		const ob = headlineOverlapScore(b, profile);
+		if (oa !== ob) return ob - oa;
+		const pa = datePrecisionScore(a, profile);
+		const pb = datePrecisionScore(b, profile);
+		if (pa !== pb) return pb - pa;
 		return String(a.iso || '').localeCompare(String(b.iso || ''));
 	});
 }
 
 function extractMilestones(profile) {
-	const body = cleanArticleBody(profile.summary);
+	const body = isolatePrimaryStory(profile.summary, profile);
 	const name = profile.name || '';
 	const head = `${name}\n${body.slice(0, 800)}`;
 	let bullets = [];
@@ -639,17 +971,21 @@ function extractMilestones(profile) {
 	if (/\b\d{1,2}[.)]\s+\S/.test(body) && /don’t|don't|never|provision|refuse|accept/i.test(body)) {
 		bullets = bullets.concat(extractNumberedProvisions(body, profile));
 	}
+	if (/\bCOLA\b|cost-?of-?living|skinny COLA|\bFERS\b|\bCSRS\b/i.test(head)) {
+		bullets = bullets.concat(extractColaFederalClaims(body, profile));
+	}
 	if (
-		/detonat|lead azide|ammunition plant|evacuat|appeals court|stockpile|bomb-making|hazardous/i.test(head) ||
+		/detonat|lead azide|ammunition plant|evacuat|appeals court|stockpile|bomb-making|hazardous|sentinel|vandenberg|ribbon[- ]cutting|military construction|LGM-35A|ACME|classified information|declassif|breaks ground|broken ground|groundbreaking|data center|Gilbane|Empire AI|cyberattack|breached|CIA|open[- ]source intelligence|car bomb|wounding more than|guerrilla|Farc|FARC|peace deal|drone(?:s)? dropped|explosives? on the police|narcoterrorism|Cerberus|acquires?|acquiring|satellite manufacturing|Space Systems business|OneWeb|private equity|Jensen Huang|Nvidia|reinstate|reinstated|cheers and applause/i.test(
+			head,
+		) ||
 		bullets.length < 3
 	) {
 		bullets = bullets.concat(extractBreakingClaims(body, profile));
 	}
-	if (bullets.length < 4) {
-		bullets = bullets.concat(extractGenericMilestones(body, profile));
-	}
+	// Always merge dated sentences / section heads; dedupe keeps claim highlights preferred.
+	bullets = bullets.concat(extractGenericMilestones(body, profile));
 
-	bullets = prioritizeBullets(dedupeBullets(bullets));
+	bullets = prioritizeBullets(dedupeBullets(bullets), profile);
 	if (bullets.length === 0) {
 		bullets.push({
 			iso: profile.startDate,
@@ -658,7 +994,8 @@ function extractMilestones(profile) {
 			kind: 'dated',
 		});
 	}
-	return bullets.slice(0, MAX_BULLETS);
+	// Select by relevance/precision, then render Timeline in chronological order.
+	return bullets.slice(0, MAX_BULLETS).sort((a, b) => String(a.iso || '').localeCompare(String(b.iso || '')));
 }
 
 const WIKI_STOP_TITLE_WORDS = new Set(
@@ -686,10 +1023,20 @@ function deriveWikiQueries(profile, bullets) {
 		q.add('Merit shop');
 	}
 	if (/critical minerals?/i.test(name)) q.add('United States critical materials list');
-	if (/liquidated damages|indemnity|construction contract/i.test(profile.summary.slice(0, 600))) {
+	if (
+		/liquidated damages|construction contract/i.test(profile.summary.slice(0, 600)) ||
+		(/\bindemnity\b/i.test(profile.summary.slice(0, 600)) && /contract|damages|liability|hold harmless/i.test(profile.summary.slice(0, 600)))
+	) {
 		q.add('Construction contract');
 		q.add('Liquidated damages');
 	}
+	if (/\bCOLA\b|cost-?of-?living adjustment/i.test(blob)) {
+		q.add('Cost-of-living adjustment');
+		q.add('Social Security (United States)');
+	}
+	if (/\bFERS\b|Federal Employees Retirement System/i.test(blob)) q.add('Federal Employees Retirement System');
+	if (/\bCSRS\b|Civil Service Retirement System/i.test(blob)) q.add('Civil Service Retirement System');
+	if (/thrift savings plan|\bTSP\b/i.test(blob)) q.add('Thrift Savings Plan');
 	if (/lead azide/i.test(blob)) {
 		q.add('Lead azide');
 		q.add('Primary explosive');
@@ -708,8 +1055,67 @@ function deriveWikiQueries(profile, bullets) {
 	if (/\bdata center/i.test(blob)) q.add('Data center');
 	if (/\bpermitting reform\b/i.test(blob)) q.add('National Environmental Policy Act');
 	if (/\bGreat Lakes\b.*\bport|\bport\b.*\bGreat Lakes\b/i.test(blob)) q.add('Great Lakes');
+	if (/\bLGM-35A Sentinel\b|Sentinel intercontinental/i.test(blob)) {
+		q.add('LGM-35A Sentinel');
+		q.add('LGM-30 Minuteman');
+	}
+	if (/Vandenberg Space Force Base|Vandenberg Air Force Base/i.test(blob)) q.add('Vandenberg Space Force Base');
+	if (/Air Force Global Strike Command|\bAFGSC\b/i.test(blob)) q.add('Air Force Global Strike Command');
+	if (/\bACME system\b|classify and declassify/i.test(blob) || /\bimprove how it handles classified information\b/i.test(blob)) {
+		q.add('Classified information');
+		q.add('United States Department of Defense');
+		q.add('Declassification');
+	}
+	if (/\bAir Force'?s ACME\b|\bACME system\b/i.test(blob)) q.add('United States Air Force');
+	if (/\bCIA\b|Central Intelligence Agency/i.test(blob)) q.add('Central Intelligence Agency');
+	if (/\bopen[- ]source intelligence\b|\bOSINT\b/i.test(blob)) q.add('Open-source intelligence');
+	if (/\bcyberattack\b|\bcyber attack\b|\bbreached\b/i.test(blob) && /\bCIA\b|intelligence|NSA|FBI\b/i.test(blob)) {
+		q.add('Cyberwarfare');
+		q.add('Central Intelligence Agency');
+	}
+	if (/\bNational Security Agency\b|\bNSA\b/i.test(blob) && /offline|classified/i.test(blob)) q.add('National Security Agency');
+	if (/\bGilbane\b/i.test(blob)) q.add('Gilbane Building Company');
+	if (/\bEmpire AI\b/i.test(blob)) q.add('University at Buffalo');
+	if (/University at Buffalo|\bUB\b.*Amherst/i.test(blob)) q.add('University at Buffalo');
+	if (/Kathy Hochul/i.test(blob)) q.add('Kathy Hochul');
+	if (/Sheikh Hasina/i.test(blob)) {
+		q.add('Sheikh Hasina');
+		q.add('Awami League');
+		q.add('Bangladesh');
+	}
+	if (/Sheikh Mujibur Rahman/i.test(blob)) q.add('Sheikh Mujibur Rahman');
+	if (/Muhammad Yunus/i.test(blob)) q.add('Muhammad Yunus');
+	if (/Victory Day/i.test(blob) && /Bangladesh/i.test(blob)) q.add('Victory Day (Bangladesh)');
+	if (/Bangladesh Nationalist Party|\bBNP\b/i.test(blob) && /Bangladesh|Hasina|Dhaka/i.test(blob)) {
+		q.add('Bangladesh Nationalist Party');
+	}
+	if (/Tarique Rahman/i.test(blob)) q.add('Tarique Rahman');
+	if (/\b(?:car bomb|Villavicencio|Farc|FARC|Revolutionary Armed Forces of Colombia|Colombia)\b/i.test(blob)) {
+		if (/\bColombia|Villavicencio|Farc|FARC\b/i.test(blob)) q.add('Colombia');
+		if (/\bFarc\b|FARC|Revolutionary Armed Forces of Colombia/i.test(blob)) {
+			q.add('Revolutionary Armed Forces of Colombia');
+		}
+		if (/\bpeace deal\b|2016 (?:peace )?(?:agreement|deal)|Colombian peace|total peace/i.test(blob)) {
+			q.add('Colombian peace process');
+		}
+		if (/\bVillavicencio\b/i.test(blob)) q.add('Villavicencio');
+		if (/\bJuan Manuel Santos\b/i.test(blob)) q.add('Juan Manuel Santos');
+	}
+	if (/\bCerberus Capital Management\b/i.test(blob)) q.add('Cerberus Capital Management');
+	if (/\bAirbus\b/i.test(blob) && /(?:satellite|Space Systems|Space & Defense|Space Defense)/i.test(blob)) {
+		q.add('Airbus');
+		q.add('Airbus Defence and Space');
+	}
+	if (/\bOneWeb\b/i.test(blob)) q.add('OneWeb');
+	if (/\bSpace Development Agency\b|\bSDA\b/i.test(blob) && /satellite|constellation/i.test(blob)) {
+		q.add('Space Development Agency');
+	}
+	if (/\bKennedy Space Center\b|Merritt Island/i.test(blob)) q.add('Kennedy Space Center');
+	if (/\bJensen Huang\b/i.test(blob)) q.add('Jensen Huang');
+	if (/\bNvidia\b/i.test(blob)) q.add('Nvidia');
 
 	// Multi-word Title Case phrases from the headline only (skip single junk words).
+	// Headline person/place names are kept even when isJunkSectionLine would flag short Title Case.
 	for (const m of name.matchAll(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\b/g)) {
 		const phrase = m[1];
 		const words = phrase.split(/\s+/);
@@ -717,7 +1123,8 @@ function deriveWikiQueries(profile, bullets) {
 		if (WIKI_STOP_TITLE_WORDS.has(last)) continue;
 		if (words.every((w) => WIKI_STOP_TITLE_WORDS.has(w.toLowerCase()))) continue;
 		if (words.filter((w) => WIKI_STOP_TITLE_WORDS.has(w.toLowerCase())).length >= Math.ceil(words.length / 2)) continue;
-		if (isJunkSectionLine(phrase)) continue;
+		// Skip generic "… Manufacturing Business" / verb-y headline fragments.
+		if (/^(?:Acquires|Acquire|Satellite Manufacturing Business|Manufacturing Business)\b/i.test(phrase)) continue;
 		if (words.length >= 2) q.add(phrase);
 	}
 
@@ -734,12 +1141,20 @@ function deriveWikiQueries(profile, bullets) {
 }
 
 async function fetchText(url, { timeoutMs = 20_000, retries = 2 } = {}) {
+	// Prefer curl for kiwix — Node undici can assert-crash on mid-response socket ends.
+	const { execFile } = await import('node:child_process');
+	const { promisify } = await import('node:util');
+	const execFileAsync = promisify(execFile);
 	let lastErr = null;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
-			const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			return await res.text();
+			const { stdout } = await execFileAsync(
+				'curl',
+				['-sS', '-L', '--max-time', String(Math.ceil(timeoutMs / 1000)), String(url)],
+				{ maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+			);
+			if (!stdout) throw new Error('empty body');
+			return stdout;
 		} catch (err) {
 			lastErr = err;
 			await sleep(200 + attempt * 300);
@@ -808,6 +1223,45 @@ function isUsefulWikiHit(hit, query) {
 	return overlap >= need && overlap / qTokens.length >= 0.6;
 }
 
+/**
+ * Prefer a highlight or a title-overlapping sentence over prior-incident openers
+ * ("Three weeks ago…", "And earlier…") so leads match the card headline.
+ */
+function pickLeadProse(bodyClean, profile, highlightLead) {
+	if (highlightLead?.text) return firstSentences(highlightLead.text, 280);
+	const title = String(profile.name || '');
+	const clean = String(bodyClean || '').trim();
+	if (!clean) return title || firstSentences(cleanArticleBody(profile.summary), 240) || '';
+
+	const protected_ = clean
+		.replace(/\b(Mr|Mrs|Ms|Dr|Prof|Gov|Sen|Rep|Gen|Nov|Oct|Sep|Sept|Dec|Jan|Feb|Mar|Apr|Jun|Jul|Aug|St|U\.S|U\.K|Inc|Ltd|Co)\./gi, '$1˘');
+	const sentences = protected_
+		.split(/(?<=[.!?])\s+/)
+		.map((p) => p.replace(/˘/g, '.').trim())
+		.filter((p) => p.length >= 40);
+
+	let best = null;
+	let bestScore = 0;
+	for (const s of sentences.slice(0, 10)) {
+		const score = headlineOverlapScore({ text: s, title: '' }, profile);
+		if (score > bestScore) {
+			bestScore = score;
+			best = s;
+		}
+	}
+	if (bestScore >= 2 && best) return firstSentences(best, 280);
+
+	if (/^(?:Three weeks ago|Earlier(?:\s+this|\s+on)?|And earlier|Last (?:week|month)|Meanwhile|Separately)\b/i.test(clean)) {
+		const main = sentences.find((s) =>
+			/\b(?:went off|wounding|car bomb in|exploded|tears through|killed|injured)\b/i.test(s),
+		);
+		if (main) return firstSentences(`${title}. ${main}`, 300);
+		return title;
+	}
+
+	return firstSentences(clean, 240) || firstSentences(cleanArticleBody(profile.summary), 240) || title;
+}
+
 async function collectWikiNotes(queries) {
 	const notes = [];
 	for (const q of queries) {
@@ -855,8 +1309,26 @@ function buildFormattedSummary(profile, bullets, wikiNotes, { relatedCount = 0, 
 	const endIso = null;
 	const startLong = isoToLong(startIso) || startIso || 'undated';
 
+	const highlightLead =
+		bullets.find((b) => b.kind === 'highlight' && /SSA announces|COLA for 2027|announced a [\d.]+%\s*COLA/i.test(`${b.title} ${b.text}`)) ||
+		bullets.find((b) =>
+			b.kind === 'highlight' &&
+			/Car bomb attack|Attack casualties|Related drone|Peace deal anniversary|Acquisition announced|CEO reinstated|Office return/i.test(String(b.title || '')),
+		) ||
+		bullets.find((b) =>
+			b.kind === 'highlight' &&
+			/Ribbon-cutting|Military construction|Facility complete|Program \/ system|ACME|Classified records|DoD classified|Automation \/ AI|Groundbreaking|Data center project|Project value|Cyber breach|Open-source intelligence|No classified data|Deal terms|Satellite production|Facility \/ HQ|Buyer investment|Seller strategic|Market reaction|CEO resignation|Political intervention|Board \/ chairman/i.test(
+				String(b.title || ''),
+			),
+		) ||
+		bullets.find((b) => b.kind === 'highlight' && /COLA|SSA|FERS|CSRS|OSHA|detonat|Settlement|Funding|Peace deal|drone/i.test(String(b.title || ''))) ||
+		bullets.find((b) => b.kind === 'highlight' && /Headline attack/i.test(String(b.title || '')));
+	const bodyClean = isolatePrimaryStory(profile.summary, profile)
+		.replace(/^An article from\b[^.]*(?:\.|$)/i, '')
+		.trim();
+	const leadProse = pickLeadProse(bodyClean, profile, highlightLead);
 	const lead = [
-		firstSentences(cleanArticleBody(profile.summary), 240) || profile.name,
+		leadProse,
 		`Fact-checked against the local Wikipedia library and reduced to dated milestones${relatedCount > 1 ? ` (pieced with ${relatedCount} related items)` : ''}.`,
 		startLong ? `Keyed to ${startLong}.` : '',
 	]
@@ -864,7 +1336,9 @@ function buildFormattedSummary(profile, bullets, wikiNotes, { relatedCount = 0, 
 		.join(' ');
 
 	const timelineLines = bullets.map((b) => {
-		const label = isoToLong(b.iso) || b.iso || 'Undated';
+		// Prefer a date found in the claim; otherwise use the source/publication date on the card.
+		const iso = b.iso || startIso || profile.startDate || null;
+		const label = isoToLong(iso) || iso || (profile.startDate ? isoToLong(profile.startDate) || profile.startDate : null) || 'Undated';
 		const claim = (b.text || b.title || '').replace(/\s+/g, ' ').trim();
 		const titleBit = b.title && !claim.toLowerCase().startsWith(String(b.title).toLowerCase().slice(0, 24)) ? `${b.title} — ` : '';
 		return `- **${label}** — ${titleBit}${claim}${feedTag}`;
@@ -981,6 +1455,8 @@ function listUnformattedNews({ bucket = null, limit = null } = {}) {
 			};
 			if (bucket && String(metadata.newsBucket || '') !== bucket) continue;
 			if (isAlreadyFormatted(profile)) continue;
+			if (metadata.newsSkipReason === 'soft_journalism') continue;
+			if (classifySoftJournalism({ title: profile.name, summary: profile.summary }).soft) continue;
 			out.push(profile);
 			if (limit && out.length >= limit) break;
 		}
@@ -1013,7 +1489,11 @@ async function formatOne(profile, { related: wantRelated = false, quiet = false 
 		name: profile.name,
 	};
 
-	const bullets = extractMilestones(extractProfile);
+	const bullets = extractMilestones(extractProfile).map((b) => ({
+		...b,
+		// Claims with no date in copy inherit the source/publication date on the card.
+		iso: b.iso || profile.startDate || null,
+	}));
 	if (!quiet) {
 		console.log(`[format-card] milestones=${bullets.length}`);
 		for (const b of bullets) console.log(`  - ${b.iso || 'undated'} [${b.kind}] ${String(b.title).slice(0, 70)}`);
@@ -1187,6 +1667,18 @@ async function main() {
 	if (!profile) {
 		console.error('[format-card] profile not found', args);
 		process.exit(1);
+	}
+
+	const soft = classifySoftJournalism({ title: profile.name, summary: profile.summary });
+	if (soft.soft && !/^(1|true|yes)$/i.test(String(process.env.NEWS_RSS_FORMAT_ALLOW_SOFT || ''))) {
+		console.error(
+			`[format-card] skip soft journalism (${soft.reasons.join(', ')}). Set NEWS_RSS_FORMAT_ALLOW_SOFT=1 to override.`,
+		);
+		fs.writeFileSync(
+			path.join(OUT_DIR, 'news-rss-format-card.json'),
+			JSON.stringify({ status: 'skipped_soft_journalism', slug: profile.slug, ...soft }, null, 2),
+		);
+		process.exit(0);
 	}
 
 	const report = await formatOne(profile, { related: args.related || MERGE_RELATED, quiet: false });

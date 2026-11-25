@@ -185,7 +185,7 @@ function parseResultsPage(html, pageUrl) {
 
 	const table = doc.querySelector('table');
 	const filings = [];
-	if (!table) return { filings, totalResults, totalPages, htmlLen: html.length };
+	if (!table) return { filings, totalResults, totalPages, htmlLen: html.length, dataRows: 0, noDetailRows: 0 };
 
 	const headerCells = [...table.querySelectorAll('thead th')].map((th) => normalizeText(th.textContent));
 	const headers =
@@ -211,10 +211,19 @@ function parseResultsPage(html, pageUrl) {
 
 	const rowEls = table.querySelectorAll('tbody tr');
 	const rows = rowEls.length ? rowEls : table.querySelectorAll('tr');
+	let dataRows = 0;
+	let noDetailRows = 0;
 	for (const tr of rows) {
 		if (tr.querySelector('th')) continue;
+		if (!tr.querySelector('td')) continue;
+		dataRows += 1;
 		const a = tr.querySelector('a[href*="/detail/"]');
-		if (!a) continue;
+		// Some instrument types (e.g. JUDGE) render result rows with no /detail/ link —
+		// treat as non-ingestible, not as a fetch failure (avoids infinite empty retries).
+		if (!a) {
+			noDetailRows += 1;
+			continue;
+		}
 		let href = a.getAttribute('href') || '';
 		if (href.startsWith('/')) href = `https://okcountyrecords.com${href}`;
 		// Classic: /detail/{site}/{instrumentNo}/{id}
@@ -276,7 +285,7 @@ function parseResultsPage(html, pageUrl) {
 		});
 	}
 
-	return { filings, totalResults, totalPages, htmlLen: html.length };
+	return { filings, totalResults, totalPages, htmlLen: html.length, dataRows, noDetailRows };
 }
 
 async function postFilings(filings) {
@@ -348,6 +357,14 @@ async function main() {
 					const pastEnd = state.totalPages != null && page > state.totalPages;
 					const expectMore = !pastEnd;
 
+					// Rows present but no /detail/ links (JUDGE / locked) — advance, do not retry forever.
+					if (!parsed.filings.length && (parsed.noDetailRows || 0) > 0) {
+						log(
+							`page ${page}: no-detail rows=${parsed.noDetailRows}/${parsed.dataRows} htmlLen=${parsed.htmlLen} — skipping non-link instruments`,
+						);
+						break;
+					}
+
 					if (!parsed.filings.length && expectMore) {
 						log(
 							`page ${page} empty attempt=${fetchAttempts} htmlLen=${parsed.htmlLen} — backing off ${EMPTY_BACKOFF_MS}ms`,
@@ -378,16 +395,22 @@ async function main() {
 			}
 
 			const fresh = parsed.filings.filter((f) => f.id && !processed.has(f.id));
+			const skippedNoDetail = (parsed.noDetailRows || 0) > 0 && !parsed.filings.length;
 			log(
-				`page ${page}: rows=${parsed.filings.length} new=${fresh.length} totalResults=${state.totalResults} totalPages=${state.totalPages}`,
+				`page ${page}: rows=${parsed.filings.length} new=${fresh.length} noDetail=${parsed.noDetailRows || 0} totalResults=${state.totalResults} totalPages=${state.totalPages}`,
 			);
 
 			if (!parsed.filings.length) {
-				emptyStreak += 1;
-				const pastEnd = state.totalPages != null && page > state.totalPages;
-				if (pastEnd || emptyStreak >= 3) {
-					log(pastEnd ? `past totalPages=${state.totalPages} — done` : 'confirmed end of results');
-					break;
+				if (skippedNoDetail) {
+					// Non-ingestible instrument page (e.g. JUDGE) — keep walking the range.
+					emptyStreak = 0;
+				} else {
+					emptyStreak += 1;
+					const pastEnd = state.totalPages != null && page > state.totalPages;
+					if (pastEnd || emptyStreak >= 3) {
+						log(pastEnd ? `past totalPages=${state.totalPages} — done` : 'confirmed end of results');
+						break;
+					}
 				}
 			} else {
 				emptyStreak = 0;

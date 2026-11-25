@@ -46,6 +46,9 @@ renderer.listitem = function listitem(this: Renderer, item: Tokens.ListItem) {
 renderer.codespan = ({ text }: Tokens.Codespan) =>
 	`<code class="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px] text-sky-200">${escapeHtml(text)}</code>`;
 
+renderer.code = ({ text }: Tokens.Code) =>
+	`<pre class="m-0 whitespace-pre rounded border border-white/10 bg-black/35 p-2.5 font-mono text-[11px] leading-snug text-sky-100/95"><code class="font-mono text-[11px] text-sky-100/95">${escapeHtml(text)}</code></pre>`;
+
 marked.use({
 	renderer,
 	gfm: true,
@@ -64,6 +67,7 @@ const ALLOWED_TAGS = [
 	'ol',
 	'li',
 	'code',
+	'pre',
 	'span',
 	'h1',
 	'h2',
