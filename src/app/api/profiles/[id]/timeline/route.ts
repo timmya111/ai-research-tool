@@ -27,6 +27,9 @@ export async function GET(request: Request, context: Ctx) {
 	const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
 	const detectGaps = url.searchParams.get('detectGaps') !== '0';
 	const fillFromKnowledge = url.searchParams.get('fillFromKnowledge') !== '0';
+	const includeLinkedParam = url.searchParams.get('includeLinkedEvents');
+	const includeLinkedEvents =
+		includeLinkedParam == null ? undefined : includeLinkedParam !== '0' && includeLinkedParam !== 'false';
 
 	const result = getProfileTimeline(decodeURIComponent(String(id || '').trim()), {
 		from,
@@ -37,6 +40,7 @@ export async function GET(request: Request, context: Ctx) {
 		limit,
 		detectGaps,
 		fillFromKnowledge,
+		includeLinkedEvents,
 	});
 	if (!result) {
 		return NextResponse.json({ ok: false, error: 'Profile not found' }, { status: 404 });

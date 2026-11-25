@@ -69,7 +69,8 @@ function mapDossierKind(kind: string, name: string): ProfileType {
 	const k = String(kind || '').toLowerCase();
 	if (k === 'person') return 'person';
 	if (k === 'family_hub' || k === 'family') return 'nonprofit';
-	if (k === 'place' || k === 'location' || k === 'event') return 'historic_event';
+	if (k === 'place' || k === 'location' || k === 'region' || k === 'corridor') return 'region';
+	if (k === 'event') return 'historic_event';
 	if (k === 'org' || k === 'company' || k === 'firm') return classifyOrgType(name);
 	return classifyOrgType(name, k);
 }

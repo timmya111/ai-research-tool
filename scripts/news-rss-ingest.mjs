@@ -422,12 +422,32 @@ async function resolveArticleText(item) {
 }
 
 function buildSummary({ feed, item, article }) {
-	const parts = [];
-	if (article.text) parts.push(article.text.trim());
-	else if (item.description) parts.push(item.description.trim());
-	parts.push(`Source: ${feed.name}`);
-	parts.push(item.link);
-	return parts.filter(Boolean).join('\n\n').slice(0, SUMMARY_MAX);
+	const body = (article.text || item.description || '').trim();
+	const startDate = toIsoDate(item.pubDate) || 'Undated';
+	const paras = body ? body.split(/\n\n+/).map((p) => p.trim()).filter(Boolean) : [];
+	let leadIdx = 0;
+	if (
+		paras.length > 1 &&
+		/^(A |An |The )/.test(paras[0]) &&
+		/\(Photo by|\bPhoto:\b/i.test(paras[0]) &&
+		paras[1].length > 80
+	) {
+		leadIdx = 1;
+	}
+	const lead = paras[leadIdx] || String(item.title || 'News event').trim();
+	const claim =
+		(lead.split(/(?<=[.!?])\s+/)[0] || lead || item.title || 'News event')
+			.replace(/\s+/g, ' ')
+			.trim()
+			.slice(0, 320);
+	const before = paras.slice(0, leadIdx);
+	const after = paras.slice(leadIdx + 1);
+	const lines = [];
+	if (before.length) lines.push(...before, '');
+	lines.push(lead, '', '## Timeline', `- **${startDate}** — ${claim}`, '');
+	if (after.length) lines.push(after.join('\n\n'), '');
+	lines.push(`Source: ${feed.name}`, item.link);
+	return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, SUMMARY_MAX);
 }
 
 function resolveKeywords(feed, catalog) {
@@ -487,6 +507,8 @@ async function createEvent({ feed, item, article }) {
 			articleFullTextAt: new Date().toISOString(),
 			articleByline: article.byline || null,
 			ingestedAt: new Date().toISOString(),
+			overviewStyle: 'lead_plus_timeline_rail',
+			formatMode: 'dated_expressive',
 		},
 		identifiers: [{ scheme: 'url', value: normalizeUrl(item.link) }],
 		categoryTags: [],

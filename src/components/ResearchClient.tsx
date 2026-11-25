@@ -71,6 +71,7 @@ type SuggestedExample = {
 const BRYAN_PROJECT_NAME = 'Bryan County';
 const SEISMIC_PROJECT_NAME = 'OK TX Seismic';
 const TORNADO_PROJECT_NAME = 'OK TX Tornadoes';
+const RESEARCH_DRIVE_PROJECT_NAME = 'Research Drive';
 
 /**
  * Suggested research chips: Bryan OKCR knowledge (2016→current), charts, and
@@ -201,6 +202,49 @@ const TORNADO_EXAMPLES: SuggestedExample[] = [
 		projectName: TORNADO_PROJECT_NAME,
 		question:
 			'Using the OK TX Tornadoes knowledge store, search for tornadoes in Murray County, Oklahoma (and close variants). Prefer NCEI narrative digests for county context and SPC digests for track/EF details.',
+	},
+];
+
+/**
+ * Research Drive OCR / family-record chips (local staging under .data/research-drive/).
+ * Prefer the "Research Drive" knowledge project with Auto-retrieve on.
+ */
+const RESEARCH_DRIVE_EXAMPLES: SuggestedExample[] = [
+	{
+		label: 'Ella Macek · Fort Bend marriage',
+		projectName: RESEARCH_DRIVE_PROJECT_NAME,
+		question:
+			'Using the Research Drive knowledge store, provide information on Ella Macek associated with marriage in Fort Bend. Prefer OCR digests for IMG_1628 / IMG_1629 (Arthur Timothy King folder) and any Ella Olga Hejl Macek biography notes. Say whether she is a party to a marriage or an official on the license. Cite book/page, dates, and parties from the hits only.',
+	},
+	{
+		label: 'King–Park license: clerk or spouse?',
+		projectName: RESEARCH_DRIVE_PROJECT_NAME,
+		question:
+			'On the Arthur Timothy King and Kui-Suk Park Fort Bend marriage license (Research Drive OCR), was Ella Macek a spouse or the county clerk/deputy? Cite the local OCR evidence (IMG_1628, IMG_1629) with book/page and issue date.',
+	},
+	{
+		label: 'King–Park book / page / issue date',
+		projectName: RESEARCH_DRIVE_PROJECT_NAME,
+		question:
+			'From Research Drive OCR of the King–Park Fort Bend marriage records, what book and page number recorded the marriage, and what date was the license issued in Richmond? Name the clerk who signed.',
+	},
+	{
+		label: 'Ella Olga Hejl · 1940 marriage',
+		projectName: RESEARCH_DRIVE_PROJECT_NAME,
+		question:
+			'When and where did Ella Olga Hejl marry Charles Wesley Macek? How does that relate to Fort Bend County? Use the Research Drive biography note and OCR; distinguish her own marriage from licenses she signed as clerk.',
+	},
+	{
+		label: 'Ella Macek · Fort Bend life beyond clerk',
+		projectName: RESEARCH_DRIVE_PROJECT_NAME,
+		question:
+			'Besides signing Fort Bend marriage licenses as county clerk/deputy, what Fort Bend work or residence is Ella Olga Macek associated with in the Research Drive knowledge store? Summarize birth, marriage, library/bookmobile work, Rosenberg/Needville residence, and death when present.',
+	},
+	{
+		label: 'Ella Macek · clerk vs own marriage summary',
+		projectName: RESEARCH_DRIVE_PROJECT_NAME,
+		question:
+			'Summarize Ella Macek in a short table: (1) clerk/deputy role on the 1974 King–Park Fort Bend license, (2) her own 1940 marriage to Charles Wesley Macek, (3) later Fort Bend life. Cite Research Drive OCR and biography notes only; do not invent details.',
 	},
 ];
 
@@ -676,6 +720,11 @@ export default function ResearchClient() {
 				} else if (wantedName === TORNADO_PROJECT_NAME) {
 					setError(
 						`Knowledge project "${TORNADO_PROJECT_NAME}" not found. Run pnpm tornado:download && pnpm tornado:ingest.`,
+					);
+					return;
+				} else if (wantedName === RESEARCH_DRIVE_PROJECT_NAME) {
+					setError(
+						`Knowledge project "${RESEARCH_DRIVE_PROJECT_NAME}" not found. Run pnpm research-drive:ocr && pnpm research-drive:ingest.`,
 					);
 					return;
 				}
@@ -1305,6 +1354,31 @@ export default function ResearchClient() {
 											title={example.question}
 											onClick={() => void applyBryanExample(example)}
 											className="max-w-full cursor-pointer rounded-full border border-amber-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-amber-950 dark:border-amber-400/30 dark:bg-zinc-950/60 dark:text-amber-50"
+										>
+											{example.label}
+										</button>
+									))}
+								</div>
+							</div>
+							<div className="mt-3 border-t border-emerald-700/20 pt-3 dark:border-emerald-400/20">
+								<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+									<p className="m-0 text-sm font-semibold text-violet-950 dark:text-violet-100">
+										Research Drive (OCR / family records)
+									</p>
+									<p className="m-0 text-[11px] opacity-70">
+										Selects project <strong>Research Drive</strong> · Auto-retrieve on · Ella Macek /
+										Fort Bend
+									</p>
+								</div>
+								<div className="flex flex-wrap gap-2">
+									{RESEARCH_DRIVE_EXAMPLES.map((example) => (
+										<button
+											key={example.label}
+											type="button"
+											disabled={busy}
+											title={example.question}
+											onClick={() => void applyBryanExample(example)}
+											className="max-w-full cursor-pointer rounded-full border border-violet-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-violet-950 dark:border-violet-400/30 dark:bg-zinc-950/60 dark:text-violet-50"
 										>
 											{example.label}
 										</button>

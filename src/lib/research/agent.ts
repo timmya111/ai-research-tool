@@ -223,10 +223,48 @@ async function runToolAgentLoop(options: {
 				});
 			}
 		}
+
+		// Rounds exhausted while the model still wanted tools — force one final
+		// no-tools synthesis from whatever evidence is already in the thread.
+		const synthesizeHint =
+			toolTrace.length > 0
+				? `You have used all ${options.maxRounds} tool rounds. Do NOT call any more tools. Using only the tool results already in this conversation, write a clear final answer to the user's question. Cite concrete evidence from those results. If evidence is incomplete, say what you found and what is still missing.`
+				: `You have used all ${options.maxRounds} tool rounds without usable tool results. Do NOT call any more tools. Answer from what you already know in this conversation, and clearly say what you could not verify.`;
+		messages.push({ role: 'user', content: synthesizeHint });
+		try {
+			const { message: finalMessage } = await ollamaChat({
+				model: options.model,
+				messages,
+				// Explicitly omit tools so the model must produce prose.
+			});
+			messages.push(finalMessage);
+			const synthesized = assistantMessageText(finalMessage).trim();
+			if (synthesized) {
+				return {
+					ok: true,
+					answer: synthesized,
+					messages,
+					toolTrace,
+				};
+			}
+		} catch (synthErr: unknown) {
+			const synthText = synthErr instanceof Error ? synthErr.message : String(synthErr);
+			console.error('[agent] synthesize-on-limit failed', synthText);
+		}
+
+		const fallbackBits = toolTrace
+			.slice(0, 6)
+			.map((t) => {
+				const preview = stringifyToolResultForModel(t.result).slice(0, 400);
+				return `- ${t.tool}: ${preview}`;
+			})
+			.join('\n');
 		return {
 			ok: true,
 			answer:
-				'I hit the tool-round limit before a final answer. Check the tool trace and ask a more specific follow-up.',
+				toolTrace.length > 0
+					? `Tool-round limit reached after ${options.maxRounds} rounds; synthesis also failed. Partial tool evidence:\n${fallbackBits}\n\nAsk a more specific follow-up, or raise RESEARCH_AGENT_MAX_ROUNDS.`
+					: 'I hit the tool-round limit before a final answer. Check the tool trace and ask a more specific follow-up.',
 			messages,
 			toolTrace,
 		};
@@ -349,7 +387,11 @@ export async function runResearchAgent(options: {
 		availableModels: options.availableModels,
 		forceModel: requested === RESEARCH_AUTO_MODEL ? null : requested,
 	});
-	const maxRounds = Math.max(1, Math.min(8, options.maxRounds ?? 5));
+	const envDefault = Number(process.env.RESEARCH_AGENT_MAX_ROUNDS);
+	const defaultRounds =
+		Number.isFinite(envDefault) && envDefault > 0 ? Math.floor(envDefault) : 8;
+	// Soft default 8; hard cap 12 (was 5 / 8). Env RESEARCH_AGENT_MAX_ROUNDS overrides default.
+	const maxRounds = Math.max(1, Math.min(12, options.maxRounds ?? defaultRounds));
 	const history = Array.isArray(options.history) ? options.history : [];
 	const aboutNodeGraph = Boolean(options.aboutNodeGraph);
 	const canvasSnapshot =

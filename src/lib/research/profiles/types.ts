@@ -5,6 +5,8 @@ export const ACTOR_PROFILE_TYPES = [
 	'nonprofit',
 	'medical_hospital',
 	'government',
+	/** Geographic / geophysical corridors (electrotelluric, tectonic, basin descriptions). Prefer region names over city lists. */
+	'region',
 ] as const;
 
 export const NARRATIVE_PROFILE_TYPES = [
@@ -352,6 +354,14 @@ export type TimelineEntry = {
 	originProfileId?: string;
 	originProfileName?: string;
 	originProfileType?: ProfileType;
+	originProfileSlug?: string;
+	/**
+	 * Resolved in-app profile for title navigation (another historic_event matched by
+	 * origin ownership, exact title, or source URL). Omit when it is the viewing card.
+	 */
+	linkedProfileId?: string;
+	linkedProfileSlug?: string;
+	linkedProfileName?: string;
 	metadata: Record<string, unknown>;
 	createdAt: string;
 };

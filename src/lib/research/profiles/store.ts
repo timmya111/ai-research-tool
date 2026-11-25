@@ -16,6 +16,18 @@ import {
 	pickPreferredWebsiteUrl,
 	sortIdentifiersByUrlPreference,
 } from '@/lib/research/profiles/liveListing';
+
+/** News RSS historic events cite articles — do not promote article URLs to Website ↗. */
+function isNewsRssHistoricProfile(
+	profileType: string | null | undefined,
+	metadata: Record<string, unknown> | null | undefined,
+): boolean {
+	if (String(profileType || '') !== 'historic_event') return false;
+	if (!metadata || typeof metadata !== 'object') return false;
+	if (typeof metadata.newsFeedId === 'string' && metadata.newsFeedId.trim()) return true;
+	const corpora = Array.isArray(metadata.corpora) ? metadata.corpora : [];
+	return corpora.some((c) => /news[_-]?rss/i.test(String(c || '')));
+}
 import {
 	buildSafeFtsQuery,
 	deduplicateLocations,
@@ -107,6 +119,10 @@ function rowToTimeline(r: Record<string, unknown>): TimelineEntry {
 		originProfileName: r.origin_profile_name != null ? String(r.origin_profile_name) : undefined,
 		originProfileType:
 			r.origin_profile_type != null ? (String(r.origin_profile_type) as ProfileType) : undefined,
+		originProfileSlug: r.origin_profile_slug != null ? String(r.origin_profile_slug) : undefined,
+		linkedProfileId: r.linked_profile_id != null ? String(r.linked_profile_id) : undefined,
+		linkedProfileSlug: r.linked_profile_slug != null ? String(r.linked_profile_slug) : undefined,
+		linkedProfileName: r.linked_profile_name != null ? String(r.linked_profile_name) : undefined,
 		metadata: safeJsonParse<Record<string, unknown>>(r.metadata_json, {}),
 		createdAt: String(r.created_at),
 	};
@@ -1681,18 +1697,27 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		profile.hasActiveFinraScope = detectFirmActiveFinraScope(profile.metadata);
 	}
 	// Surface preferred website in metadata for UI "Website ↗" when missing.
-	const preferredWebsite = pickPreferredWebsiteUrl([
-		typeof profile.metadata.website === 'string' ? profile.metadata.website : null,
-		typeof profile.metadata.companyUrl === 'string' ? profile.metadata.companyUrl : null,
-		...identifiers.filter((i) => i.scheme === 'url').map((i) => i.value),
-	]);
-	if (preferredWebsite) {
-		if (profile.metadata.website !== preferredWebsite) {
-			profile.metadata = { ...profile.metadata, website: preferredWebsite };
+	// Skip news RSS historic events — their url identifiers are article citations.
+	if (!isNewsRssHistoricProfile(profile.profileType, profile.metadata)) {
+		const preferredWebsite = pickPreferredWebsiteUrl([
+			typeof profile.metadata.website === 'string' ? profile.metadata.website : null,
+			typeof profile.metadata.companyUrl === 'string' ? profile.metadata.companyUrl : null,
+			...identifiers.filter((i) => i.scheme === 'url').map((i) => i.value),
+		]);
+		if (preferredWebsite) {
+			if (profile.metadata.website !== preferredWebsite) {
+				profile.metadata = { ...profile.metadata, website: preferredWebsite };
+			}
+			if (!profile.metadata.companyUrl) {
+				profile.metadata = { ...profile.metadata, companyUrl: preferredWebsite };
+			}
 		}
-		if (!profile.metadata.companyUrl) {
-			profile.metadata = { ...profile.metadata, companyUrl: preferredWebsite };
-		}
+	} else if (profile.metadata.website || profile.metadata.companyUrl) {
+		// Drop stale article URLs promoted earlier so Sources & Identifiers stays domain-only.
+		const nextMeta = { ...profile.metadata };
+		delete nextMeta.website;
+		delete nextMeta.companyUrl;
+		profile.metadata = nextMeta;
 	}
 
 	const locRows = db
@@ -2625,14 +2650,19 @@ export function mergeProfiles(
 			merge.metadata.website,
 			merge.metadata.companyUrl,
 		];
-		const preferredWebsite = pickPreferredWebsiteUrl([
-			...keepUrlRows.map((r) => r.value),
-			...mergeUrlRows.map((r) => r.value),
-			...metaUrlCandidates.map((v) => (typeof v === 'string' ? v : null)),
-		]);
-		if (preferredWebsite) {
-			mergedMeta.website = preferredWebsite;
-			mergedMeta.companyUrl = preferredWebsite;
+		if (!isNewsRssHistoricProfile(keep.profileType, mergedMeta)) {
+			const preferredWebsite = pickPreferredWebsiteUrl([
+				...keepUrlRows.map((r) => r.value),
+				...mergeUrlRows.map((r) => r.value),
+				...metaUrlCandidates.map((v) => (typeof v === 'string' ? v : null)),
+			]);
+			if (preferredWebsite) {
+				mergedMeta.website = preferredWebsite;
+				mergedMeta.companyUrl = preferredWebsite;
+			}
+		} else {
+			delete mergedMeta.website;
+			delete mergedMeta.companyUrl;
 		}
 
 		const nextStatus: ProfileStatus =
@@ -2773,19 +2803,27 @@ export function mergeProfiles(
 			);
 		}
 		// Recompute preferred website after identifier transfer (merge may have added a better url).
-		const allUrlRows = tx
-			.prepare(
-				`SELECT value FROM profile_identifiers WHERE profile_id = ? AND scheme = 'url'`,
-			)
-			.all(keep.id) as Array<{ value: string }>;
-		const preferredAfter = pickPreferredWebsiteUrl([
-			...allUrlRows.map((r) => r.value),
-			typeof mergedMeta.website === 'string' ? mergedMeta.website : null,
-			typeof mergedMeta.companyUrl === 'string' ? mergedMeta.companyUrl : null,
-		]);
-		if (preferredAfter && preferredAfter !== mergedMeta.website) {
-			mergedMeta.website = preferredAfter;
-			mergedMeta.companyUrl = preferredAfter;
+		if (!isNewsRssHistoricProfile(keep.profileType, mergedMeta)) {
+			const allUrlRows = tx
+				.prepare(
+					`SELECT value FROM profile_identifiers WHERE profile_id = ? AND scheme = 'url'`,
+				)
+				.all(keep.id) as Array<{ value: string }>;
+			const preferredAfter = pickPreferredWebsiteUrl([
+				...allUrlRows.map((r) => r.value),
+				typeof mergedMeta.website === 'string' ? mergedMeta.website : null,
+				typeof mergedMeta.companyUrl === 'string' ? mergedMeta.companyUrl : null,
+			]);
+			if (preferredAfter && preferredAfter !== mergedMeta.website) {
+				mergedMeta.website = preferredAfter;
+				mergedMeta.companyUrl = preferredAfter;
+				tx.prepare(
+					`UPDATE profiles SET metadata_json = ?, updated_at = ? WHERE id = ?`,
+				).run(JSON.stringify(mergedMeta), new Date().toISOString(), keep.id);
+			}
+		} else if (mergedMeta.website || mergedMeta.companyUrl) {
+			delete mergedMeta.website;
+			delete mergedMeta.companyUrl;
 			tx.prepare(
 				`UPDATE profiles SET metadata_json = ?, updated_at = ? WHERE id = ?`,
 			).run(JSON.stringify(mergedMeta), new Date().toISOString(), keep.id);
@@ -2914,6 +2952,7 @@ export function getProfileStats(): ProfileStats {
 		nonprofit: 0,
 		medical_hospital: 0,
 		government: 0,
+		region: 0,
 		historic_event: 0,
 	};
 

@@ -63,6 +63,12 @@ const TYPE_META: Record<ProfileType, { label: string; plural: string; badge: str
 		badge: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/35',
 		group: 'actor',
 	},
+	region: {
+		label: 'Region',
+		plural: 'Regions',
+		badge: 'bg-lime-500/15 text-lime-900 dark:text-lime-200 border-lime-500/35',
+		group: 'actor',
+	},
 	historic_event: {
 		label: 'Historic Event',
 		plural: 'Historic Events',
@@ -137,17 +143,20 @@ function orgHasClosedClues(p: Pick<Profile, 'status' | 'summary' | 'metadata'>):
 }
 
 /**
- * Soft green “current” tint:
+ * Soft green / electric-blue “current” tint:
  * - people: living (no endDate)
  * - firms: not ended, and either a confirmed startDate, live external listing URL,
  *   or ACTIVE FINRA BrokerCheck / SEC IA scope from the visualizer API
  * - education / nonprofit / hospital / government: green by default; gray when
  *   endDate or closed/archived/dissolved clues appear
+ * - region / historic_event: always current — corridors and events have no
+ *   operating status (left-rail stays blue active)
  */
 function isCurrentPersonOrFirm(
 	p: Pick<Profile, 'profileType' | 'status' | 'startDate' | 'endDate' | 'summary' | 'metadata' | 'hasLiveSourceUrl' | 'hasActiveFinraScope'>,
 	identifiers?: Array<{ scheme: string; value: string }> | null,
 ): boolean {
+	if (p.profileType === 'region' || p.profileType === 'historic_event') return true;
 	if (profileHasEnded(p)) return false;
 	if (p.profileType === 'person') return true;
 	if (p.profileType === 'firm') {
@@ -207,7 +216,16 @@ const CURRENT_ACTOR_DETAIL_OUTLINE = `border-[#1e3a8a]/50 border-t-2 border-t-[#
 /** Left-list top controls (match count / Prev / Next). */
 const LEFT_PANEL_TOP_CONTROLS = `border-b border-[#1e3a8a]/50 dark:border-[#3b82f6]/35 ${CURRENT_ACTOR_PANEL_BG}`;
 
-const ALL_TYPES: ProfileType[] = ['historic_event', 'person', 'firm', 'education', 'nonprofit', 'medical_hospital', 'government'];
+const ALL_TYPES: ProfileType[] = [
+	'historic_event',
+	'region',
+	'person',
+	'firm',
+	'education',
+	'nonprofit',
+	'medical_hospital',
+	'government',
+];
 
 const HISTORY_FILTER = 'history';
 const HISTORY_STORAGE_KEY = 'profiles.viewHistory.v1';
@@ -441,17 +459,30 @@ const IDENTIFIER_SCHEME_LABELS: Record<string, string> = {
 	okcr_instrument: 'OKCR',
 };
 
-function sourceLabelFromUrl(raw: string): string | null {
+/** Hostname without leading www (e.g. bbc.co.uk). */
+function hostnameFromUrl(raw: string): string | null {
 	const text = String(raw || '').trim();
 	if (!text) return null;
-	let host = '';
 	try {
 		const withProto = /^https?:\/\//i.test(text) ? text : `https://${text}`;
-		host = new URL(withProto).hostname.replace(/^www\./i, '').toLowerCase();
+		const host = new URL(withProto).hostname.replace(/^www\./i, '').toLowerCase();
+		return host || null;
 	} catch {
 		const m = text.match(/([a-z0-9.-]+\.[a-z]{2,})/i);
-		host = m ? m[1].replace(/^www\./i, '').toLowerCase() : '';
+		return m ? m[1].replace(/^www\./i, '').toLowerCase() : null;
 	}
+}
+
+/** Visible URL text for Contact / Sources bullets — truncate long article links. */
+function truncateDisplayUrl(raw: string, maxLen = 56): string {
+	const s = String(raw || '').trim();
+	if (!s) return s;
+	if (s.length <= maxLen) return s;
+	return `${s.slice(0, Math.max(1, maxLen - 1))}…`;
+}
+
+function sourceLabelFromUrl(raw: string): string | null {
+	const host = hostnameFromUrl(raw);
 	if (!host) return null;
 	if (host.includes('wikipedia.org')) return 'wikipedia';
 	if (host.includes('wikidata.org')) return 'wikidata';
@@ -468,6 +499,14 @@ function sourceLabelFromUrl(raw: string): string | null {
 	const base = host.split('.').slice(0, -1).join('.') || host;
 	const first = base.split('.')[0] || host;
 	return first.replace(/[^a-z0-9-]+/gi, '') || null;
+}
+
+/** Historic events ingested from news RSS — article URLs are citations, not org websites. */
+function isNewsRssHistoricMetadata(meta: Record<string, unknown> | null | undefined): boolean {
+	if (!meta || typeof meta !== 'object') return false;
+	if (typeof meta.newsFeedId === 'string' && meta.newsFeedId.trim()) return true;
+	const corpora = Array.isArray(meta.corpora) ? meta.corpora : [];
+	return corpora.some((c) => /news[_-]?rss/i.test(String(c || '')));
 }
 
 function sourceLabelFromSchemeValue(scheme: string, value: string): string | null {
@@ -1005,18 +1044,158 @@ function parseFamilyRelativeRole(role: string | null | undefined): { generation:
 	return { generation: Number(m[1]), branch: m[2].trim() };
 }
 
+/** Kinship bucket for ASCII grouping when dynasty generation labels are sparse. */
+type FamilyKinshipGroup =
+	| 'spouse'
+	| 'parent'
+	| 'child'
+	| 'sibling'
+	| 'grandparent'
+	| 'grandchild'
+	| 'uncle_aunt'
+	| 'nephew_niece'
+	| 'cousin'
+	| 'in_law'
+	| 'generation'
+	| 'other';
+
+const FAMILY_KINSHIP_ORDER: FamilyKinshipGroup[] = [
+	'spouse',
+	'parent',
+	'grandparent',
+	'child',
+	'grandchild',
+	'sibling',
+	'uncle_aunt',
+	'nephew_niece',
+	'cousin',
+	'in_law',
+	'generation',
+	'other',
+];
+
+const FAMILY_KINSHIP_LABEL: Record<FamilyKinshipGroup, string> = {
+	spouse: 'Spouse',
+	parent: 'Parents',
+	grandparent: 'Grandparents',
+	child: 'Children',
+	grandchild: 'Grandchildren',
+	sibling: 'Siblings',
+	uncle_aunt: 'Uncles / Aunts',
+	nephew_niece: 'Nephews / Nieces',
+	cousin: 'Cousins',
+	in_law: 'In-laws',
+	generation: 'Lineage / branch',
+	other: 'Other relatives',
+};
+
+function roleMentionsPeer(role: string, peerName: string | null | undefined): boolean {
+	const peer = String(peerName || '').trim();
+	if (!peer) return false;
+	const r = role.toLowerCase();
+	const full = peer.toLowerCase();
+	if (r.includes(full)) return true;
+	// Match first+last when middle names differ (e.g. role has "Laura (Lynn) McGee", peer "Laura E. McGee").
+	const parts = full.split(/\s+/).filter((p) => p.length > 1 && !/^[a-z]\.?$/i.test(p));
+	if (parts.length >= 2) {
+		const first = parts[0];
+		const last = parts[parts.length - 1];
+		if (r.includes(first) && r.includes(last)) return true;
+	}
+	return false;
+}
+
+/**
+ * Classify peer into a kinship bucket for ASCII grouping.
+ * roleLabel is usually written from the subject's side ("Son of Laura", "Great-uncle of Timothy").
+ */
+function classifyFamilyKinship(role: string | null | undefined, peerName?: string | null): FamilyKinshipGroup {
+	const raw = String(role || '').trim();
+	if (!raw) return 'other';
+	if (FAMILY_ROLE_GEN_RE.test(raw)) return 'generation';
+	const r = raw.toLowerCase();
+	const aboutPeer = roleMentionsPeer(raw, peerName);
+
+	if (/\bspouses?\b|\bwife\b|\bhusband\b|\bmarried\b/.test(r)) return 'spouse';
+
+	// Subject-of-peer phrasing → invert for the peer's bucket.
+	if (aboutPeer || /^(son|daughter|child|father|mother|parent|uncle|aunt|great[- ]?uncle|great[- ]?aunt|nephew|niece|grandfather|grandmother|grandson|granddaughter|cousin)\s+of\b/i.test(raw)) {
+		if (/^(great[- ]?)?(uncle|aunt)s?\s+of\b/i.test(raw) || /\b(great[- ]?)?(uncle|aunt)\s+of\b/i.test(r)) {
+			return 'nephew_niece';
+		}
+		if (/^(son|daughter|child)\s+of\b/i.test(raw)) return 'parent';
+		if (/^(father|mother|parent)\s+of\b/i.test(raw)) return 'child';
+		if (/^(grandfather|grandmother|grandparent)\s+of\b/i.test(raw)) return 'grandchild';
+		if (/^(grandson|granddaughter|grandchild)\s+of\b/i.test(raw)) return 'grandparent';
+		if (/^(nephew|niece)\s+of\b/i.test(raw)) return 'uncle_aunt';
+		if (/^cousins?\s+of\b/i.test(raw)) return 'cousin';
+	}
+
+	if (/\bgrandparents?\b|\bgrandfather\b|\bgrandmother\b|\bgrandpa\b|\bgrandma\b/.test(r)) return 'grandparent';
+	if (/\bparents?\b|\bfather\b|\bmother\b|\bdad\b|\bmom\b/.test(r)) return 'parent';
+	if (/\bgrandchildren\b|\bgrandson\b|\bgranddaughter\b/.test(r)) return 'grandchild';
+	if (/\b(sons?|daughters?|children|child)\b/.test(r)) return 'child';
+	if (/\bsiblings?\b|\bbrothers?\b|\bsisters?\b/.test(r)) return 'sibling';
+	if (/\bgreat[- ]?uncles?\b|\bgreat[- ]?aunts?\b|\buncles?\b|\baunts?\b/.test(r)) return 'uncle_aunt';
+	if (/\bnephews?\b|\bnieces?\b/.test(r)) return 'nephew_niece';
+	if (/\bcousins?\b/.test(r)) return 'cousin';
+	if (/\bin[- ]laws?\b|\bfather[- ]in[- ]law\b|\bmother[- ]in[- ]law\b|\bson[- ]in[- ]law\b|\bdaughter[- ]in[- ]law\b/.test(r)) {
+		return 'in_law';
+	}
+	return 'other';
+}
+
 function compareFamilyNames(a: string, b: string): number {
 	return a.localeCompare(b, undefined, { sensitivity: 'base' });
 }
 
-/** Build ASCII-indented family rows from generation · branch roleLabels (e.g. Rockefeller dynasty). */
+/** Always-on ASCII family tree. Dynasty gen·branch layout when enough labels exist; otherwise kinship groups. */
 function buildFamilyRelativeTreeRows(peers: FamilyRelativePeer[]): FamilyTreeRow[] | null {
+	if (peers.length === 0) return null;
+
 	const parsed = peers.map((peer) => {
 		const { generation, branch } = parseFamilyRelativeRole(peer.role);
-		return { peer, generation, branch };
+		return { peer, generation, branch, kinship: classifyFamilyKinship(peer.role, peer.name) };
 	});
 	const withGen = parsed.filter((p) => p.generation != null);
-	if (withGen.length < 2) return null;
+
+	/** Flat/grouped ASCII when dynasty structure is thin (< 2 generation labels). */
+	const buildKinshipAsciiRows = (): FamilyTreeRow[] => {
+		const rows: FamilyTreeRow[] = [];
+		const byName = (a: (typeof parsed)[number], b: (typeof parsed)[number]) =>
+			compareFamilyNames(a.peer.name, b.peer.name);
+		const groups = FAMILY_KINSHIP_ORDER.map((g) => ({
+			g,
+			items: parsed.filter((p) => p.kinship === g).sort(byName),
+		})).filter((x) => x.items.length > 0);
+
+		const multiGroup = groups.length > 1;
+		groups.forEach((group, gi) => {
+			const groupLast = gi === groups.length - 1;
+			if (multiGroup) {
+				rows.push({
+					kind: 'label',
+					prefix: groupLast ? '└── ' : '├── ',
+					text: FAMILY_KINSHIP_LABEL[group.g],
+				});
+			}
+			const rail = multiGroup ? (groupLast ? '    ' : '│   ') : '';
+			group.items.forEach((item, ii) => {
+				const last = ii === group.items.length - 1;
+				rows.push({
+					kind: 'person',
+					prefix: `${rail}${last ? '└── ' : '├── '}`,
+					peer: item.peer,
+					gen: item.generation,
+				});
+			});
+		});
+		return rows;
+	};
+
+	if (withGen.length < 2) {
+		return buildKinshipAsciiRows();
+	}
 
 	const byName = (a: (typeof parsed)[number], b: (typeof parsed)[number]) => compareFamilyNames(a.peer.name, b.peer.name);
 	const gen1 = parsed.filter((p) => p.generation === 1).sort(byName);
@@ -1663,6 +1842,9 @@ function looksLikeSummaryDateLabel(raw: string | null | undefined): boolean {
 	if (/^(?:18|19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?$/.test(s)) return true;
 	if (/^\d{2}-\d{2}-(?:18|19|20)\d{2}$/.test(s)) return true;
 	if (/^(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present)$/i.test(s)) return true;
+	// Historical / BCE years used on region corridors (122 BCE, 1669, 1693).
+	if (/^\d{3,4}(?:\s*(?:BCE|BC|CE|AD))?$/i.test(s)) return true;
+	if (/^\d{3,4}\s*[–—-]\s*(?:\d{3,4}|present|Present)$/i.test(s)) return true;
 	if (
 		/^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}$/i.test(
 			s,
@@ -1680,6 +1862,14 @@ function looksLikeSummaryDateLabel(raw: string | null | undefined): boolean {
 	}
 	// Season + year (Spring 2025 / Fall 2026).
 	if (/^(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}$/i.test(s)) return true;
+	// Geological epoch labels on region timelines (Miocene–Recent, Neogene–Present).
+	if (
+		/^(?:Early|Middle|Late|Lower|Upper)?\s*(?:Cambrian|Ordovician|Silurian|Devonian|Carboniferous|Permian|Triassic|Jurassic|Cretaceous|Paleogene|Neogene|Quaternary|Miocene|Pliocene|Pleistocene|Holocene|Precambrian|Mesoproterozoic|Paleoproterozoic)(?:\s*[–—-]\s*(?:Recent|Present|[A-Za-z]+))?$/i.test(
+			s,
+		)
+	) {
+		return true;
+	}
 	return false;
 }
 
@@ -1820,10 +2010,24 @@ function parseSummaryBlocks(text: string, opts?: { sourceDate?: string | null })
 				const titled = body.match(SUMMARY_TITLED_BULLET_RE);
 				if (titled) {
 					const extracted = extractTrailingUrl(titled[2]);
-					bulletEntries.push({ title: titled[1].trim(), text: extracted.body, href: extracted.href });
+					bulletEntries.push({
+						title: titled[1].trim(),
+						text: extracted.body || extracted.href || '',
+						href: extracted.href,
+					});
 				} else {
 					const extracted = extractTrailingUrl(body);
-					bulletEntries.push({ text: extracted.body, href: extracted.href });
+					// "- Website: https://…" left "Website:" as text and hid the URL — keep label + URL.
+					const labelOnly = Boolean(extracted.href && /^[^:]{1,40}:\s*$/.test(extracted.body));
+					if (labelOnly && extracted.href) {
+						bulletEntries.push({
+							title: extracted.body.replace(/:\s*$/, '').trim(),
+							text: extracted.href,
+							href: extracted.href,
+						});
+					} else {
+						bulletEntries.push({ text: extracted.body, href: extracted.href });
+					}
 				}
 			}
 			if (trailingDisclaimer) {
@@ -1887,9 +2091,23 @@ function summaryYearSortKey(yearLabel: string): number {
 	if (yyyyMm) return Number(yyyyMm[1]) * 10_000 + Number(yyyyMm[2]) * 100 + 99;
 	const mmYyyy = raw.match(/\b(\d{2})-((?:18|19|20)\d{2})\b/);
 	if (mmYyyy) return Number(mmYyyy[2]) * 10_000 + Number(mmYyyy[1]) * 100 + 99;
+	// BCE / BC → negative sort key so modern years stay above ancient ones.
+	const bce = raw.match(/^(\d{3,4})\s*(?:BCE|BC)\b/i);
+	if (bce) return -Number(bce[1]) * 10_000;
+	const anyYear = raw.match(/^(\d{3,4})\b/);
+	if (anyYear) return Number(anyYear[1]) * 10_000;
 	const nums = [...raw.matchAll(/\b((?:18|19|20)\d{2})\b/g)].map((m) => Number(m[1]));
-	if (nums.length === 0) return 0;
-	return Math.max(...nums) * 10_000;
+	if (nums.length) return Math.max(...nums) * 10_000;
+	// Geological epoch headers: older than historical BCE so they sort below calendar years.
+	if (/Holocene/i.test(raw)) return -10_000;
+	if (/Pleistocene|Quaternary/i.test(raw)) return -2_000_000;
+	if (/Pliocene|Neogene/i.test(raw)) return -5_000_000;
+	if (/Miocene/i.test(raw)) return -23_000_000;
+	if (/Oligocene|Eocene|Paleocene|Paleogene|Cretaceous|Jurassic|Triassic/i.test(raw)) return -50_000_000;
+	if (/Permian|Carboniferous|Devonian|Silurian|Ordovician|Cambrian|Precambrian|Proterozoic/i.test(raw)) {
+		return -100_000_000;
+	}
+	return 0;
 }
 
 /** Normalize overview timeline dates so "November 24, 2026" and "2026-11-24" share one group. */
@@ -1910,13 +2128,66 @@ function summaryTimelineDateLabel(date: string | null | undefined): string {
 	return formatSummaryDateLabel(raw) || formatDisplayDate(raw) || raw;
 }
 
-function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
+function summaryTimelineYearBucket(date: string | null | undefined): string {
+	const raw = String(date || '').trim();
+	if (!raw || raw === 'Undated') return 'Undated';
+	const bce = raw.match(/^(\d{3,4})\s*(?:BCE|BC)\b/i);
+	if (bce) return `${bce[1]} BCE`;
+	const leading = raw.match(/^(\d{3,4})\b/);
+	if (leading) return leading[1];
+	const modern = raw.match(/\b((?:18|19|20)\d{2})\b/);
+	if (modern) return modern[1];
+	// Geological epoch labels stay as their own year headers.
+	if (
+		/^(?:Early|Middle|Late|Lower|Upper)?\s*(?:Cambrian|Ordovician|Silurian|Devonian|Carboniferous|Permian|Triassic|Jurassic|Cretaceous|Paleogene|Neogene|Quaternary|Miocene|Pliocene|Pleistocene|Holocene|Precambrian|Mesoproterozoic|Paleoproterozoic)/i.test(
+			raw,
+		)
+	) {
+		return raw;
+	}
+	return 'Undated';
+}
+
+type OverviewEventLink = { id: string; slug: string; name: string };
+
+function resolveOverviewEventLink(
+	text: string,
+	links: Record<string, OverviewEventLink> | null | undefined,
+): OverviewEventLink | null {
+	if (!links || !text) return null;
+	const direct = links[text];
+	if (direct) return direct;
+	const trimmed = text.replace(/\s+/g, ' ').trim();
+	if (links[trimmed]) return links[trimmed];
+	// Fall back: any stored query that loosely shares a long prefix / EO id with this claim.
+	const claim = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+	for (const [query, hit] of Object.entries(links)) {
+		const q = query.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+		if (!q || q.length < 8) continue;
+		if (claim === q || claim.startsWith(q) || q.startsWith(claim)) return hit;
+		let i = 0;
+		const lim = Math.min(claim.length, q.length);
+		while (i < lim && claim[i] === q[i]) i += 1;
+		if (i >= 36) return hit;
+		const eoA = claim.match(/\beo\s*(\d{4,5})\b/);
+		const eoB = q.match(/\beo\s*(\d{4,5})\b/);
+		if (eoA && eoB && eoA[1] === eoB[1]) return hit;
+	}
+	return null;
+}
+
+function SummaryTimelineRail({
+	entries,
+	eventLinks = null,
+	onOpenProfile = null,
+}: {
+	entries: SummaryTimelineEntry[];
+	eventLinks?: Record<string, OverviewEventLink> | null;
+	onOpenProfile?: ((idOrSlug: string) => void) | null;
+}) {
 	const byYear = new Map<string, SummaryTimelineEntry[]>();
 	for (const entry of entries) {
-		const y =
-			entry.date && /^\d{4}/.test(entry.date) ? entry.date.slice(0, 4)
-			: entry.date && /\b((?:18|19|20)\d{2})\b/.test(entry.date) ? (entry.date.match(/\b((?:18|19|20)\d{2})\b/) || [])[1]
-			: 'Undated';
+		const y = summaryTimelineYearBucket(entry.date);
 		const list = byYear.get(y) || [];
 		list.push(entry);
 		byYear.set(y, list);
@@ -1924,7 +2195,7 @@ function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
 	const years = [...byYear.keys()].sort((a, b) => {
 		if (a === 'Undated') return 1;
 		if (b === 'Undated') return -1;
-		return b.localeCompare(a);
+		return summaryYearSortKey(b) - summaryYearSortKey(a);
 	});
 	for (const y of years) {
 		const list = byYear.get(y) || [];
@@ -1988,14 +2259,35 @@ function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
 											))}
 										</div>
 										<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2' : 'mt-1'}>
-											{group.entries.map((entry, ei) => (
-												<SummaryMarkdown
-													key={`${group.key}-${ei}`}
-													text={entry.text}
-													inline
-													className='block text-[12px] leading-relaxed text-white/90'
-												/>
-											))}
+											{group.entries.map((entry, ei) => {
+												const link = onOpenProfile
+													? resolveOverviewEventLink(entry.text, eventLinks)
+													: null;
+												if (link && onOpenProfile) {
+													return (
+														<button
+															key={`${group.key}-${ei}`}
+															type='button'
+															onClick={() => onOpenProfile(link.slug || link.id)}
+															title={`Open profile: ${link.name}`}
+															className='block w-full text-left text-[12px] leading-relaxed text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
+															<SummaryMarkdown
+																text={entry.text}
+																inline
+																className='inline text-[12px] leading-relaxed'
+															/>
+														</button>
+													);
+												}
+												return (
+													<SummaryMarkdown
+														key={`${group.key}-${ei}`}
+														text={entry.text}
+														inline
+														className='block text-[12px] leading-relaxed text-white/90'
+													/>
+												);
+											})}
 										</div>
 									</article>
 								);
@@ -2008,17 +2300,149 @@ function SummaryTimelineRail({ entries }: { entries: SummaryTimelineEntry[] }) {
 	);
 }
 
+/** Empty Local Wikipedia cross-check placeholder from news-rss-format-card / topic consolidate. */
+function isEmptyLocalWikiPlaceholder(text: string | null | undefined): boolean {
+	const t = String(text || '')
+		.replace(/^[-*•]\s+/, '')
+		.trim();
+	if (!t) return true;
+	return /no strong local[- ]wiki hits\b/i.test(t);
+}
+
+function isLocalWikipediaCrossCheckHeading(text: string | null | undefined): boolean {
+	return /^local\s+wikipedia\s+cross-?check\b/i.test(String(text || '').trim());
+}
+
+/** Drop the Local Wikipedia heading + body when there are no real wiki hits to show. */
+function stripEmptyLocalWikiCrossCheck(blocks: SummaryBlock[]): SummaryBlock[] {
+	const out: SummaryBlock[] = [];
+	for (let i = 0; i < blocks.length; i++) {
+		const b = blocks[i];
+		if (b.kind === 'heading' && isLocalWikipediaCrossCheckHeading(b.text)) {
+			const next = blocks[i + 1];
+			if (!next) continue;
+			if (next.kind === 'bullets') {
+				const kept = next.entries.filter((e) => {
+					if (isEmptyLocalWikiPlaceholder(e.text)) return false;
+					if (e.title != null && e.title !== '' && isEmptyLocalWikiPlaceholder(e.title)) return false;
+					return true;
+				});
+				if (kept.length === 0) {
+					i += 1; // skip heading + empty bullets
+					continue;
+				}
+				out.push(b);
+				out.push({ kind: 'bullets', entries: kept });
+				i += 1;
+				continue;
+			}
+			if (next.kind === 'prose' && isEmptyLocalWikiPlaceholder(next.text)) {
+				i += 1; // skip heading + placeholder prose
+				continue;
+			}
+			if (next.kind === 'heading') {
+				// Empty section (heading with nothing under it before the next heading).
+				continue;
+			}
+		}
+		if (b.kind === 'bullets') {
+			const kept = b.entries.filter((e) => {
+				if (isEmptyLocalWikiPlaceholder(e.text)) return false;
+				if (e.title != null && e.title !== '' && isEmptyLocalWikiPlaceholder(e.title)) return false;
+				return true;
+			});
+			if (kept.length === 0) continue;
+			if (kept.length !== b.entries.length) {
+				out.push({ kind: 'bullets', entries: kept });
+				continue;
+			}
+		}
+		if (b.kind === 'prose' && isEmptyLocalWikiPlaceholder(b.text)) continue;
+		out.push(b);
+	}
+	return out;
+}
+
+/**
+ * When a historic_event summary has no ## Timeline yet, inject a basic rail from
+ * startDate + title/first sentence so Overview always shows timeline formatting.
+ */
+function ensureHistoricEventTimelineBlocks(
+	blocks: SummaryBlock[],
+	opts: { sourceDate?: string | null; eventTitle?: string | null },
+): SummaryBlock[] {
+	if (blocks.some((b) => b.kind === 'timeline')) return blocks;
+	const date = resolveSummaryTimelineDate(opts.sourceDate, opts.sourceDate);
+	let claim = String(opts.eventTitle || '').trim();
+	if (!claim) {
+		const prose = blocks.find((b) => b.kind === 'prose');
+		if (prose && prose.kind === 'prose') {
+			claim = prose.text
+				.replace(/\s+/g, ' ')
+				.trim()
+				.split(/(?<=[.!?])\s+/)[0]
+				.slice(0, 320);
+		}
+	}
+	if (!claim) claim = 'Event';
+	const timelineBlock: SummaryBlock = {
+		kind: 'timeline',
+		entries: [{ date, text: claim, sourceTag: null }],
+	};
+	const heading: SummaryBlock = { kind: 'heading', text: 'Timeline' };
+	const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+	const claimN = norm(claim);
+	// Keep lead prose above the rail when it adds context beyond the Timeline claim.
+	let cut = 0;
+	while (cut < blocks.length && (blocks[cut].kind === 'prose' || blocks[cut].kind === 'disclaimer')) {
+		cut += 1;
+		if (cut >= 2) break;
+	}
+	if (cut === 0) {
+		return [heading, timelineBlock, ...blocks];
+	}
+	const above = blocks.slice(0, cut).filter((b) => {
+		if (b.kind !== 'prose') return true;
+		const t = norm(b.text || '');
+		return t.length > 0 && t !== claimN;
+	});
+	const below = blocks.slice(cut);
+	if (above.length === 0) {
+		return [heading, timelineBlock, ...below];
+	}
+	return [...above, heading, timelineBlock, ...below];
+}
+
 /** All profile summaries: prose paragraphs mixed with Timeline-tab rail styling for dated sections. */
-function ProfileSummaryText({ text, sourceDate = null }: { text: string; sourceDate?: string | null }) {
+function ProfileSummaryText({
+	text,
+	sourceDate = null,
+	eventTitle = null,
+	ensureEventTimeline = false,
+	eventLinks = null,
+	onOpenProfile = null,
+}: {
+	text: string;
+	sourceDate?: string | null;
+	eventTitle?: string | null;
+	ensureEventTimeline?: boolean;
+	eventLinks?: Record<string, OverviewEventLink> | null;
+	onOpenProfile?: ((idOrSlug: string) => void) | null;
+}) {
 	const raw = String(text || '').trim();
 	if (!raw) return null;
-	const blocks = parseSummaryBlocks(raw, { sourceDate }).filter((b) => {
-		if (b.kind !== 'year') return true;
-		const t = String(b.text || '')
-			.replace(/^[—–\-\s.]+$/, '')
-			.trim();
-		return t.length > 0;
-	});
+	let blocks = stripEmptyLocalWikiCrossCheck(
+		parseSummaryBlocks(raw, { sourceDate }).filter((b) => {
+			if (b.kind !== 'year') return true;
+			const t = String(b.text || '')
+				.replace(/^[—–\-\s.]+$/, '')
+				.trim();
+			return t.length > 0;
+		}),
+	);
+	if (ensureEventTimeline) {
+		blocks = ensureHistoricEventTimelineBlocks(blocks, { sourceDate, eventTitle });
+	}
 
 	// Keep document order for prose/grid/timeline; sort only contiguous year-card runs (newest first).
 	const renderItems: SummaryBlock[] = [];
@@ -2056,6 +2480,8 @@ function ProfileSummaryText({ text, sourceDate = null }: { text: string; sourceD
 							<SummaryTimelineRail
 								key={`t-${idx}`}
 								entries={block.entries}
+								eventLinks={eventLinks}
+								onOpenProfile={onOpenProfile}
 							/>
 						);
 					}
@@ -2064,41 +2490,47 @@ function ProfileSummaryText({ text, sourceDate = null }: { text: string; sourceD
 							<ul
 								key={`b-${idx}`}
 								className='m-0 list-none space-y-2 p-0'>
-								{block.entries.map((entry, bi) => (
-									<li
-										key={`b-${idx}-${bi}`}
-										className='rounded border border-white/10 bg-white/5 px-2.5 py-1.5'>
-										{entry.title ?
-											<div className='text-[11px] font-semibold text-[#FDBA74]'>{entry.title}</div>
-										:	null}
-										{entry.href && !entry.title ?
-											<a
-												href={entry.href}
-												target='_blank'
-												rel='noreferrer'
-												className='break-all text-[11px] text-sky-300 underline'>
-												{entry.text || entry.href}
-											</a>
-										:	<p className='m-0 mt-0.5 text-[12px] leading-snug text-white/90'>
-												<SummaryMarkdown
-													text={entry.text}
-													inline
-												/>
-												{entry.href ?
-													<>
-														{' '}
-														<a
-															href={entry.href}
-															target='_blank'
-															rel='noreferrer'
-															className='text-sky-300 underline'>
-															Source ↗
-														</a>
-													</>
-												:	null}
-											</p>}
-									</li>
-								))}
+								{block.entries.map((entry, bi) => {
+									const href = entry.href || null;
+									const textIsUrl = Boolean(href && entry.text && /^https?:\/\//i.test(entry.text.trim()));
+									const showUrlLink = Boolean(href && (!entry.title || textIsUrl || !entry.text.trim()));
+									return (
+										<li
+											key={`b-${idx}-${bi}`}
+											className='rounded border border-white/10 bg-white/5 px-2.5 py-1.5'>
+											{entry.title ?
+												<div className='text-[11px] font-semibold text-[#FDBA74]'>{entry.title}</div>
+											:	null}
+											{showUrlLink && href ?
+												<a
+													href={href}
+													target='_blank'
+													rel='noreferrer'
+													title={href}
+													className='break-all text-[11px] text-sky-300 underline'>
+													{truncateDisplayUrl(textIsUrl ? entry.text : href)}
+												</a>
+											:	<p className='m-0 mt-0.5 text-[12px] leading-snug text-white/90'>
+													<SummaryMarkdown
+														text={entry.text}
+														inline
+													/>
+													{href ?
+														<>
+															{' '}
+															<a
+																href={href}
+																target='_blank'
+																rel='noreferrer'
+																className='text-sky-300 underline'>
+																Source ↗
+															</a>
+														</>
+													:	null}
+												</p>}
+										</li>
+									);
+								})}
 							</ul>
 						);
 					}
@@ -2276,6 +2708,9 @@ export default function ProfilesClient({
 	// Timeline state
 	const [timeline, setTimeline] = useState<ProfileTimelineResult | null>(null);
 	const [loadingTimeline, setLoadingTimeline] = useState(false);
+	const [overviewEventLinks, setOverviewEventLinks] = useState<Record<string, OverviewEventLink> | null>(
+		null,
+	);
 
 	// Global alignments triage state
 	const [globalAlignments, setGlobalAlignments] = useState<AlignmentCandidate[]>([]);
@@ -2526,12 +2961,14 @@ export default function ProfilesClient({
 		[syncUrl],
 	);
 
-	const loadTimeline = useCallback(async (id: string) => {
+	const loadTimeline = useCallback(async (id: string, opts?: { includeLinkedEvents?: boolean }) => {
 		setLoadingTimeline(true);
 		try {
 			const params = new URLSearchParams();
 			params.set('detectGaps', '0');
 			params.set('limit', '200');
+			if (opts?.includeLinkedEvents === false) params.set('includeLinkedEvents', '0');
+			if (opts?.includeLinkedEvents === true) params.set('includeLinkedEvents', '1');
 			const res = await fetch(`/api/profiles/${encodeURIComponent(id)}/timeline?${params.toString()}`, { cache: 'no-store' });
 			const data = await res.json();
 			if (!res.ok || !data?.ok) throw new Error(data?.error || `Failed (${res.status})`);
@@ -2707,10 +3144,78 @@ export default function ProfilesClient({
 	useEffect(() => {
 		if (!selectedId || mainView !== 'profile' || profileTab !== 'timeline') return;
 		const timer = setTimeout(() => {
-			void loadTimeline(selectedId);
+			void loadTimeline(selectedId, {
+				includeLinkedEvents: detail?.profile?.profileType === 'historic_event' ? false : undefined,
+			});
 		}, 0);
 		return () => clearTimeout(timer);
-	}, [selectedId, mainView, profileTab, loadTimeline]);
+	}, [selectedId, mainView, profileTab, loadTimeline, detail?.profile?.profileType]);
+
+	// Historic events: resolve Overview Timeline claims → event profiles (same linking as Timeline tab).
+	useEffect(() => {
+		if (!detail?.profile?.id || mainView !== 'profile') return;
+		if (detail.profile.profileType !== 'historic_event') {
+			setOverviewEventLinks(null);
+			return;
+		}
+		const profileId = detail.profile.id;
+		const summary = String(detail.profile.summary || '');
+		const claims: string[] = [];
+		for (const m of summary.matchAll(/^-\s+\*\*[^*]+\*\*\s+[—–-]\s+(.+)$/gm)) {
+			const claim = String(m[1] || '').trim();
+			if (claim.length >= 8) claims.push(claim);
+		}
+		let cancelled = false;
+		const timer = setTimeout(() => {
+			void (async () => {
+				const links: Record<string, OverviewEventLink> = {};
+				try {
+					// Prefetch own timeline so tab + overview share linkedProfile* resolution.
+					const params = new URLSearchParams();
+					params.set('detectGaps', '0');
+					params.set('includeLinkedEvents', '0');
+					params.set('limit', '200');
+					const tlRes = await fetch(
+						`/api/profiles/${encodeURIComponent(profileId)}/timeline?${params.toString()}`,
+						{ cache: 'no-store' },
+					);
+					const tlData = await tlRes.json();
+					if (tlData?.ok) {
+						if (!cancelled) setTimeline(tlData as ProfileTimelineResult);
+						for (const e of Array.isArray(tlData.entries) ? tlData.entries : []) {
+							const slug = e.linkedProfileSlug || e.linkedProfileId;
+							if (!slug) continue;
+							const hit: OverviewEventLink = {
+								id: String(e.linkedProfileId || slug),
+								slug: String(e.linkedProfileSlug || slug),
+								name: String(e.linkedProfileName || e.title || slug),
+							};
+							if (e.title) links[String(e.title)] = hit;
+							if (e.summary) links[String(e.summary)] = hit;
+						}
+					}
+					if (claims.length) {
+						const res = await fetch('/api/profiles/resolve-historic-events', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ titles: claims.slice(0, 80), excludeProfileId: profileId }),
+						});
+						const data = await res.json();
+						if (data?.ok && data.links && typeof data.links === 'object') {
+							Object.assign(links, data.links as Record<string, OverviewEventLink>);
+						}
+					}
+				} catch {
+					/* keep whatever we have */
+				}
+				if (!cancelled) setOverviewEventLinks(Object.keys(links).length ? links : null);
+			})();
+		}, 0);
+		return () => {
+			cancelled = true;
+			clearTimeout(timer);
+		};
+	}, [detail?.profile?.id, detail?.profile?.profileType, detail?.profile?.summary, mainView]);
 
 	useEffect(() => {
 		if (mainView !== 'alignments') return;
@@ -4123,6 +4628,7 @@ export default function ProfilesClient({
 									</optgroup>
 									<optgroup label='Events &amp; Timelines'>
 										<option value='historic_event'>Historic Event / Topic</option>
+										<option value='region'>Region (corridor / basin / tectonic zone)</option>
 									</optgroup>
 								</select>
 							</label>
@@ -4158,7 +4664,12 @@ export default function ProfilesClient({
 								<span className='opacity-75'>
 									{newType === 'person' ?
 										'Birth date (optional)'
-									: newType === 'firm' || newType === 'education' || newType === 'nonprofit' || newType === 'medical_hospital' || newType === 'government' ?
+									: newType === 'firm' ||
+										  newType === 'education' ||
+										  newType === 'nonprofit' ||
+										  newType === 'medical_hospital' ||
+										  newType === 'government' ||
+										  newType === 'region' ?
 										'Founded / start (optional)'
 									:	'Start date (optional)'}
 								</span>
@@ -4175,7 +4686,12 @@ export default function ProfilesClient({
 								<span className='opacity-75'>
 									{newType === 'person' ?
 										'Death date (optional)'
-									: newType === 'firm' || newType === 'education' || newType === 'nonprofit' || newType === 'medical_hospital' || newType === 'government' ?
+									: newType === 'firm' ||
+										  newType === 'education' ||
+										  newType === 'nonprofit' ||
+										  newType === 'medical_hospital' ||
+										  newType === 'government' ||
+										  newType === 'region' ?
 										'Dissolved / end (optional)'
 									:	'End date (optional)'}
 								</span>
@@ -4926,6 +5442,14 @@ export default function ProfilesClient({
 														<ProfileSummaryText
 															text={detail.profile.summary}
 															sourceDate={detail.profile.startDate}
+															eventTitle={detail.profile.name}
+															ensureEventTimeline={detail.profile.profileType === 'historic_event'}
+															eventLinks={
+																detail.profile.profileType === 'historic_event' ? overviewEventLinks : null
+															}
+															onOpenProfile={
+																detail.profile.profileType === 'historic_event' ? jumpToProfile : null
+															}
 														/>
 													:	<p className='m-0 text-xs italic opacity-60'>No summary yet.</p>}
 												</div>
@@ -5256,8 +5780,11 @@ export default function ProfilesClient({
 													}
 													return true;
 												});
+												const isNewsRssHistoric =
+													detail.profile.profileType === 'historic_event' && isNewsRssHistoricMetadata(meta);
 												const sourceLabels = collectProfileSourceLabels(detail.identifiers);
 												// Drop URL chips already covered by the Wikipedia meta link.
+												// News RSS article URLs stay as plain domain Sources text (not Website ↗ / bbc ↗).
 												const urlIds = detail.identifiers.filter((idItem) => {
 													if (String(idItem.scheme || '').toLowerCase() !== 'url') return false;
 													if (isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value)) {
@@ -5266,11 +5793,32 @@ export default function ProfilesClient({
 													const href = String(idItem.value || '').trim();
 													if (!href) return false;
 													if (wikiNorm && normalizeHref(href) === wikiNorm) return false;
+													if (isNewsRssHistoric) return false;
 													return true;
 												});
-												const preferredWebsite =
+												const newsDomainLabels: string[] = [];
+												if (isNewsRssHistoric) {
+													const seenDomains = new Set<string>();
+													const pushDomain = (raw: string | null | undefined) => {
+														const host = hostnameFromUrl(String(raw || ''));
+														if (!host || seenDomains.has(host)) return;
+														seenDomains.add(host);
+														newsDomainLabels.push(host);
+													};
+													if (typeof meta.sourceUrl === 'string') pushDomain(meta.sourceUrl);
+													if (typeof meta.website === 'string') pushDomain(meta.website);
+													if (typeof meta.companyUrl === 'string') pushDomain(meta.companyUrl);
+													for (const idItem of detail.identifiers) {
+														if (String(idItem.scheme || '').toLowerCase() !== 'url') continue;
+														if (isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value)) continue;
+														pushDomain(idItem.value);
+													}
+												}
+												const preferredWebsiteRaw =
 													(typeof meta.website === 'string' && /^https?:\/\//i.test(meta.website) ? meta.website : null) ||
 													(typeof meta.companyUrl === 'string' && /^https?:\/\//i.test(meta.companyUrl) ? meta.companyUrl : null);
+												// News RSS citations are not org "Website ↗" links.
+												const preferredWebsite = isNewsRssHistoric ? null : preferredWebsiteRaw;
 												const hasRegistryLinks =
 													finraLinks.length > 0 || typeof meta.finraVisualizerUrl === 'string' || typeof meta.wikipediaUrl === 'string' || Boolean(preferredWebsite);
 												const showAliases = true;
@@ -5582,7 +6130,7 @@ export default function ProfilesClient({
 																		</button>
 																	</div>
 																:	null}
-																{sourceLabels.length > 0 || urlIds.length > 0 ?
+																{sourceLabels.length > 0 || urlIds.length > 0 || newsDomainLabels.length > 0 ?
 																	(() => {
 																		const coveredLabels = new Set<string>(urlIds.map((idItem) => sourceLabelFromUrl(String(idItem.value || ''))).filter(Boolean) as string[]);
 																		// Meta Wikipedia / FINRA chips already cover these labels.
@@ -5594,7 +6142,16 @@ export default function ProfilesClient({
 																			coveredLabels.add('finra');
 																			coveredLabels.add('sec');
 																		}
-																		const extraLabels = sourceLabels.filter((label) => !coveredLabels.has(label));
+																		// Full domains already listed for news RSS (bbc.co.uk) cover short labels (bbc).
+																		for (const domain of newsDomainLabels) {
+																			coveredLabels.add(domain);
+																			const short = sourceLabelFromUrl(`https://${domain}`);
+																			if (short) coveredLabels.add(short);
+																		}
+																		const extraLabels = [
+																			...newsDomainLabels,
+																			...sourceLabels.filter((label) => !coveredLabels.has(label) && !newsDomainLabels.includes(label)),
+																		];
 																		return (
 																			<div
 																				className={`text-[11px] leading-relaxed ${
@@ -6317,6 +6874,32 @@ export default function ProfilesClient({
 														<p className='text-xs opacity-70'>No timeline entries yet. Add one below or link dated historic events to this profile.</p>
 													:	(() => {
 															const sourceDate = detail?.profile?.startDate || null;
+															const profileName = String(detail?.profile?.name || '').trim();
+															const normTitle = (s: string) =>
+																s
+																	.toLowerCase()
+																	.replace(/[^a-z0-9]+/g, ' ')
+																	.trim();
+															const profileNorm = normTitle(profileName);
+															const titleMatchesProfile = (title: string) => {
+																if (!profileNorm) return false;
+																const t = normTitle(title);
+																if (!t) return false;
+																return (
+																	t === profileNorm ||
+																	t.startsWith(profileNorm) ||
+																	profileNorm.startsWith(t) ||
+																	t.includes(profileNorm)
+																);
+															};
+															// Highlight only when this card’s title appears among other, different rows.
+															const matchCount = profileNorm
+																? timeline.entries.filter((e) => titleMatchesProfile(e.title || '')).length
+																: 0;
+															const highlightCurrent =
+																timeline.entries.length > 1 && matchCount > 0 && matchCount < timeline.entries.length;
+															const isCurrentArticle = (title: string) =>
+																Boolean(highlightCurrent && titleMatchesProfile(title));
 															const byYear = new Map<string, typeof timeline.entries>();
 															for (const entry of timeline.entries) {
 																const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
@@ -6408,14 +6991,56 @@ export default function ProfilesClient({
 																									))}
 																							</div>
 																							<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
-																								{group.entries.map((entry) => (
-																									<div key={entry.id}>
-																										<div className='text-sm font-semibold leading-snug'>{entry.title}</div>
-																										{entry.summary && entry.summary !== entry.title ?
-																											<p className='m-0 mt-1 text-xs leading-relaxed opacity-80'>{entry.summary}</p>
-																										:	null}
-																									</div>
-																								))}
+																								{group.entries.map((entry) => {
+																									const current = isCurrentArticle(entry.title || '');
+																									const jumpKey =
+																										entry.linkedProfileSlug ||
+																										entry.linkedProfileId ||
+																										(entry.originProfileId &&
+																										entry.originProfileId !== detail?.profile?.id &&
+																										(entry.originProfileSlug || entry.originProfileId)
+																											? entry.originProfileSlug || entry.originProfileId
+																											: null);
+																									const canJump =
+																										Boolean(jumpKey) &&
+																										jumpKey !== detail?.profile?.id &&
+																										jumpKey !== detail?.profile?.slug;
+																									const titleClass =
+																										'text-sm font-semibold leading-snug text-left';
+																									return (
+																										<div
+																											key={entry.id}
+																											className={
+																												current ?
+																													'rounded-md border border-[#F97316]/60 bg-[#F97316]/10 px-2 py-1.5 ring-1 ring-[#F97316]/35'
+																												:	undefined
+																											}>
+																											<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5'>
+																												{canJump && jumpKey ?
+																													<button
+																														type='button'
+																														onClick={() => jumpToProfile(String(jumpKey))}
+																														title={
+																															entry.linkedProfileName
+																																? `Open profile: ${entry.linkedProfileName}`
+																																: 'Open related event profile'
+																														}
+																														className={`${titleClass} text-sky-700 underline decoration-sky-700/40 underline-offset-2 hover:text-sky-900 dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:text-sky-200`}>
+																														{entry.title}
+																													</button>
+																												:	<div className={titleClass}>{entry.title}</div>}
+																												{current ?
+																													<span className='rounded-full bg-[#F97316] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
+																														This event
+																													</span>
+																												:	null}
+																											</div>
+																											{entry.summary && entry.summary !== entry.title ?
+																												<p className='m-0 mt-1 text-xs leading-relaxed opacity-80'>{entry.summary}</p>
+																											:	null}
+																										</div>
+																									);
+																								})}
 																							</div>
 																						</article>
 																					))}

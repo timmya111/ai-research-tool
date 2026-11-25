@@ -19,6 +19,7 @@ export const EDGE_WEIGHT_PROFILE_TYPES: readonly ProfileType[] = [
 	'nonprofit',
 	'medical_hospital',
 	'government',
+	'region',
 	'historic_event',
 ] as const;
 

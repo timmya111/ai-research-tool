@@ -233,6 +233,225 @@ export type GetProfileTimelineOptions = {
 	limit?: number;
 };
 
+export type LinkedHistoricEventHit = { id: string; slug: string; name: string };
+
+export function normTimelineTitle(s: string): string {
+	return String(s || '')
+		.toLowerCase()
+		.replace(/^\[[^\]]+\]\s*/, '')
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim();
+}
+
+function normalizeSourceUrl(raw?: string | null): string | null {
+	const s = String(raw || '')
+		.trim()
+		.replace(/\/+$/, '');
+	if (!s) return null;
+	try {
+		const u = new URL(s);
+		u.hash = '';
+		return u.toString().replace(/\/+$/, '');
+	} catch {
+		return s;
+	}
+}
+
+/** Exact, prefix, long shared prefix, or shared EO / Operation label. */
+export function historicEventTitlesMatch(a: string, b: string): boolean {
+	const na = normTimelineTitle(a);
+	const nb = normTimelineTitle(b);
+	if (!na || !nb || na.length < 8 || nb.length < 8) return false;
+	if (na === nb) return true;
+	if (na.startsWith(nb) || nb.startsWith(na)) return true;
+	let i = 0;
+	const lim = Math.min(na.length, nb.length);
+	while (i < lim && na[i] === nb[i]) i += 1;
+	if (i >= 36) return true;
+	const eoA = na.match(/\beo\s*(\d{4,5})\b/);
+	const eoB = nb.match(/\beo\s*(\d{4,5})\b/);
+	if (eoA && eoB && eoA[1] === eoB[1]) return true;
+	const opA = na.match(/\boperation\s+([a-z0-9][a-z0-9 -]{2,40})/);
+	const opB = nb.match(/\boperation\s+([a-z0-9][a-z0-9 -]{2,40})/);
+	if (opA && opB && opA[1].trim() === opB[1].trim()) return true;
+	return false;
+}
+
+function lookupHistoricEventByTitle(
+	db: DatabaseSync,
+	title: string,
+	excludeProfileId?: string | null,
+): LinkedHistoricEventHit | null {
+	const stripped = String(title || '')
+		.replace(/^\[[^\]]+\]\s*/, '')
+		.trim();
+	if (stripped.length < 8) return null;
+	const like = `${stripped.slice(0, 72)}%`;
+	const eo = stripped.match(/\bEO\s*(\d{4,5})\b/i);
+	const op = stripped.match(/\bOperation\s+([A-Za-z0-9][A-Za-z0-9 -]{2,40})/i);
+	const rows = db
+		.prepare(
+			`SELECT id, slug, name FROM profiles
+       WHERE profile_type = 'historic_event'
+         AND status IN ('active', 'pinned')
+         AND (? IS NULL OR id != ?)
+         AND (
+           name = ? OR normalized_name = ? OR name LIKE ? OR name LIKE ?
+           OR (? IS NOT NULL AND name LIKE ?)
+           OR (? IS NOT NULL AND name LIKE ?)
+         )
+       LIMIT 12`,
+		)
+		.all(
+			excludeProfileId || null,
+			excludeProfileId || null,
+			stripped.slice(0, 160),
+			normTimelineTitle(stripped).slice(0, 160),
+			like,
+			`%${stripped.slice(0, 48)}%`,
+			eo ? 1 : null,
+			eo ? `%EO ${eo[1]}%` : null,
+			op ? 1 : null,
+			op ? `%Operation ${op[1].trim().slice(0, 40)}%` : null,
+		) as Array<Record<string, unknown>>;
+	for (const r of rows) {
+		const hit: LinkedHistoricEventHit = {
+			id: String(r.id),
+			slug: String(r.slug),
+			name: String(r.name),
+		};
+		if (excludeProfileId && hit.id === excludeProfileId) continue;
+		if (historicEventTitlesMatch(stripped, hit.name) || historicEventTitlesMatch(title, hit.name)) {
+			return hit;
+		}
+	}
+	return null;
+}
+
+function lookupHistoricEventByUrl(
+	db: DatabaseSync,
+	rawUrl: string,
+	excludeProfileId?: string | null,
+): LinkedHistoricEventHit | null {
+	const url = normalizeSourceUrl(rawUrl);
+	if (!url) return null;
+	const viaId = db
+		.prepare(
+			`SELECT p.id, p.slug, p.name
+       FROM profile_identifiers i
+       JOIN profiles p ON p.id = i.profile_id
+       WHERE p.profile_type = 'historic_event'
+         AND p.status IN ('active', 'pinned')
+         AND (? IS NULL OR p.id != ?)
+         AND i.scheme = 'url'
+         AND (i.value = ? OR rtrim(i.value, '/') = ?)
+       LIMIT 1`,
+		)
+		.get(excludeProfileId || null, excludeProfileId || null, url, url) as
+		| Record<string, unknown>
+		| undefined;
+	if (viaId?.id) {
+		return { id: String(viaId.id), slug: String(viaId.slug), name: String(viaId.name) };
+	}
+	const needle = url.replace(/^https?:\/\//, '');
+	const viaMeta = db
+		.prepare(
+			`SELECT id, slug, name FROM profiles
+       WHERE profile_type = 'historic_event'
+         AND status IN ('active', 'pinned')
+         AND (? IS NULL OR id != ?)
+         AND metadata_json LIKE ?
+       LIMIT 1`,
+		)
+		.get(excludeProfileId || null, excludeProfileId || null, `%${needle}%`) as
+		| Record<string, unknown>
+		| undefined;
+	if (viaMeta?.id) {
+		return { id: String(viaMeta.id), slug: String(viaMeta.slug), name: String(viaMeta.name) };
+	}
+	return null;
+}
+
+/**
+ * Resolve historic_event profiles for free-text titles / source URLs (Overview rail + tools).
+ * Never returns the excluded profile.
+ */
+export function resolveHistoricEventLinks(
+	titles: string[],
+	opts: { excludeProfileId?: string | null; urls?: string[] } = {},
+): Array<{ query: string; hit: LinkedHistoricEventHit | null }> {
+	const db = getProfilesDb();
+	const exclude = opts.excludeProfileId || null;
+	const out: Array<{ query: string; hit: LinkedHistoricEventHit | null }> = [];
+	const seen = new Set<string>();
+	for (const raw of titles) {
+		const q = String(raw || '').trim();
+		if (!q || seen.has(q)) continue;
+		seen.add(q);
+		out.push({ query: q, hit: lookupHistoricEventByTitle(db, q, exclude) });
+	}
+	for (const raw of opts.urls || []) {
+		const q = String(raw || '').trim();
+		if (!q || seen.has(`url:${q}`)) continue;
+		seen.add(`url:${q}`);
+		out.push({ query: q, hit: lookupHistoricEventByUrl(db, q, exclude) });
+	}
+	return out;
+}
+
+/**
+ * Attach linkedProfile* for in-app title navigation when an entry maps to another
+ * historic_event (origin owner, exact/near title, or source URL). Never links to self.
+ */
+function attachLinkedEventProfiles(
+	db: DatabaseSync,
+	entries: TimelineEntry[],
+	currentProfileId: string,
+): void {
+	if (!entries.length) return;
+
+	for (const entry of entries) {
+		let hit: LinkedHistoricEventHit | null = null;
+		if (
+			entry.originProfileId &&
+			entry.originProfileId !== currentProfileId &&
+			entry.originProfileSlug
+		) {
+			hit = {
+				id: entry.originProfileId,
+				slug: entry.originProfileSlug,
+				name: entry.originProfileName || entry.title,
+			};
+		}
+		if (!hit) {
+			const metaId =
+				entry.metadata && typeof entry.metadata.linkedProfileId === 'string'
+					? entry.metadata.linkedProfileId
+					: null;
+			if (metaId && metaId !== currentProfileId) {
+				const row = db
+					.prepare(
+						`SELECT id, slug, name FROM profiles WHERE id = ? AND profile_type = 'historic_event' LIMIT 1`,
+					)
+					.get(metaId) as Record<string, unknown> | undefined;
+				if (row?.id) {
+					hit = { id: String(row.id), slug: String(row.slug), name: String(row.name) };
+				}
+			}
+		}
+		if (!hit && entry.sourceUrl) {
+			hit = lookupHistoricEventByUrl(db, entry.sourceUrl, currentProfileId);
+		}
+		if (!hit) {
+			hit = lookupHistoricEventByTitle(db, entry.title, currentProfileId);
+		}
+		if (!hit || hit.id === currentProfileId) continue;
+		entry.linkedProfileId = hit.id;
+		entry.linkedProfileSlug = hit.slug;
+		entry.linkedProfileName = hit.name;
+	}
+}
+
 function openKnowledgeReadOnly(): DatabaseSync | null {
 	const p = getKnowledgeSqlitePath();
 	if (!fs.existsSync(p)) return null;
@@ -337,7 +556,12 @@ export function getProfileTimeline(
 	const profile = getProfile(idOrSlug, db);
 	if (!profile) return null;
 
-	const includeLinked = opts.includeLinkedEvents !== false;
+	// Historic event cards stay on their own timeline_entries. Linked merge (parent hubs /
+	// child events) is for actor profiles (person/firm/…) so a firm can show related events.
+	const includeLinked =
+		opts.includeLinkedEvents !== undefined
+			? Boolean(opts.includeLinkedEvents)
+			: profile.profileType !== 'historic_event';
 	const detectGaps = opts.detectGaps !== false;
 	const fillFromKnowledge = opts.fillFromKnowledge !== false;
 	const minGapDays = Math.max(7, Math.min(3650, Math.floor(Number(opts.minGapDays ?? 30))));
@@ -407,7 +631,8 @@ export function getProfileTimeline(
 	const rows = db
 		.prepare(
 			`SELECT te.*, sr.source_url, sr.source_ref,
-              op.id AS origin_profile_id, op.name AS origin_profile_name, op.profile_type AS origin_profile_type
+              op.id AS origin_profile_id, op.name AS origin_profile_name, op.profile_type AS origin_profile_type,
+              op.slug AS origin_profile_slug
        FROM timeline_entries te
        LEFT JOIN source_records sr ON sr.id = te.source_record_id
        JOIN profiles op ON op.id = te.profile_id
@@ -426,6 +651,8 @@ export function getProfileTimeline(
 		seen.add(key);
 		deduped.push(entry);
 	}
+
+	attachLinkedEventProfiles(db, deduped, profile.id);
 
 	const totalEntries = deduped.length;
 	const entries = deduped.slice(0, limit);
