@@ -1124,7 +1124,7 @@ export function upsertAlignmentCandidate(
 		status?: AlignmentStatus;
 	},
 	dbOverride?: DatabaseSync,
-): string {
+): string | null {
 	const db = dbOverride ?? getProfilesDb();
 	const now = new Date().toISOString();
 	const existing = db
@@ -1174,6 +1174,18 @@ export function upsertAlignmentCandidate(
 
 	const insertStatus: AlignmentStatus =
 		input.status === 'confirmed' || input.status === 'dismissed' ? input.status : 'proposed';
+	const rightId = input.rightProfileId || null;
+	// Align / enrich can snapshot profile IDs before a same-txn mergeProfiles DELETE.
+	// Skip rather than throw so BEGIN IMMEDIATE does not roll back the whole pass.
+	const leftExists = Boolean(
+		db.prepare('SELECT 1 AS ok FROM profiles WHERE id = ?').get(input.leftProfileId),
+	);
+	const rightExists = rightId
+		? Boolean(db.prepare('SELECT 1 AS ok FROM profiles WHERE id = ?').get(rightId))
+		: true;
+	if (!leftExists || !rightExists) {
+		return null;
+	}
 	const id = crypto.randomUUID();
 	db.prepare(
 		`INSERT INTO alignment_candidates(
@@ -1185,7 +1197,7 @@ export function upsertAlignmentCandidate(
 		input.dedupeKey,
 		input.alignmentKind,
 		input.leftProfileId,
-		input.rightProfileId || null,
+		rightId,
 		Math.max(0, Math.min(1, Number(input.score.toFixed(3)))),
 		input.cautionTier,
 		insertStatus,

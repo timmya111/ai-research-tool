@@ -116,7 +116,7 @@ export function ComposerAttach({ projectId, disabled, onAttached, onError }: Pro
 				title="Attach note / paste / files / screenshots"
 				aria-expanded={open != null}
 				onClick={() => setOpen((v) => (v ? null : 'menu'))}
-				className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-surface-hover)] text-sm font-bold leading-none text-[var(--app-fg)] disabled:cursor-wait disabled:opacity-60"
+				className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] text-sm font-bold leading-none text-[#e8eeff] hover:bg-[lab(5_4.06_-17.11_/0.75)] disabled:cursor-wait disabled:opacity-60"
 			>
 				{busy ? '…' : '+'}
 			</button>
@@ -124,7 +124,7 @@ export function ComposerAttach({ projectId, disabled, onAttached, onError }: Pro
 			{open === 'menu' ? (
 				<div
 					role="menu"
-					className="absolute bottom-[calc(100%+6px)] right-0 z-50 w-56 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] shadow-lg"
+					className="absolute bottom-[calc(100%+6px)] right-0 z-50 w-56 overflow-hidden rounded-lg border border-[#3b82f6]/40 bg-[#050a1c] text-[#e8eeff] shadow-lg"
 				>
 					<p className="border-b border-[var(--app-border)] px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide opacity-60">
 						Add to knowledge
@@ -132,7 +132,7 @@ export function ComposerAttach({ projectId, disabled, onAttached, onError }: Pro
 					<button
 						type="button"
 						role="menuitem"
-						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[var(--app-surface-hover)]"
+						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[lab(5_4.06_-17.11_/0.65)]"
 						onClick={() => setOpen('note')}
 					>
 						Note
@@ -140,7 +140,7 @@ export function ComposerAttach({ projectId, disabled, onAttached, onError }: Pro
 					<button
 						type="button"
 						role="menuitem"
-						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[var(--app-surface-hover)]"
+						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[lab(5_4.06_-17.11_/0.65)]"
 						onClick={() => setOpen('paste')}
 					>
 						Paste web content
@@ -148,7 +148,7 @@ export function ComposerAttach({ projectId, disabled, onAttached, onError }: Pro
 					<button
 						type="button"
 						role="menuitem"
-						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[var(--app-surface-hover)]"
+						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[lab(5_4.06_-17.11_/0.65)]"
 						onClick={() => fileRef.current?.click()}
 					>
 						Upload documents
@@ -156,7 +156,7 @@ export function ComposerAttach({ projectId, disabled, onAttached, onError }: Pro
 					<button
 						type="button"
 						role="menuitem"
-						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[var(--app-surface-hover)]"
+						className="block w-full cursor-pointer px-2.5 py-2 text-left text-xs hover:bg-[lab(5_4.06_-17.11_/0.65)]"
 						onClick={() => imageRef.current?.click()}
 					>
 						Screenshot / image
@@ -168,7 +168,7 @@ export function ComposerAttach({ projectId, disabled, onAttached, onError }: Pro
 			) : null}
 
 			{open === 'note' || open === 'paste' ? (
-				<div className="absolute bottom-[calc(100%+6px)] right-0 z-50 w-[min(92vw,22rem)] rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5 shadow-lg">
+				<div className="absolute bottom-[calc(100%+6px)] right-0 z-50 w-[min(92vw,22rem)] rounded-lg border border-[#3b82f6]/40 bg-[#050a1c] p-2.5 text-[#e8eeff] shadow-lg">
 					<p className="m-0 mb-2 text-xs font-semibold">
 						{open === 'paste' ? 'Paste saved web content' : 'Add note'}
 					</p>

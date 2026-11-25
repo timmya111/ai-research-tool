@@ -522,6 +522,16 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		.all() as Array<Record<string, unknown>>;
 
 	withProfilesTransaction((tx) => {
+		// Profiles deleted by auto-merge inside this txn; later steps still hold
+		// pre-txn snapshots (allProfiles, geo rows, etc.) and must not FK-insert them.
+		const mergedAwayIds = new Set<string>();
+		const recordMerge = (leftId: string, rightId: string) => {
+			const result = mergeProfiles(leftId, rightId, tx);
+			if (result) mergedAwayIds.add(result.mergedId);
+			return result;
+		};
+		const profileAlive = (id: string) => !mergedAwayIds.has(id);
+
 		// Commit (1) Shared Identifiers
 		for (const r of sharedIdentRows) {
 			const p1 = String(r.p1);
@@ -580,6 +590,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					const [left, right] = a.profileId < b.profileId ? [a, b] : [b, a];
 					const pairKey = `${left.profileId}|${right.profileId}`;
 					if (aliasPairSeen.has(pairKey)) continue;
+					if (!profileAlive(left.profileId) || !profileAlive(right.profileId)) continue;
 					const sameType = left.profileType === right.profileType;
 					const crossCorpus = left.corpus !== right.corpus;
 
@@ -736,14 +747,14 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 								!leftHas &&
 								!rightHas
 							) {
-								mergeProfiles(left.profileId, right.profileId, tx);
+								recordMerge(left.profileId, right.profileId);
 								counts.sameEntityAlias += 1;
 								aliasCount += 1;
 								continue;
 							} else if (
 								profilesShareMajorIdentity(left.profileId, right.profileId, tx)
 							) {
-								mergeProfiles(left.profileId, right.profileId, tx);
+								recordMerge(left.profileId, right.profileId);
 								counts.sameEntityAlias += 1;
 								aliasCount += 1;
 								continue;
@@ -751,7 +762,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 						} else if (
 							!profilesHaveConflictingMajorIds(left.profileId, right.profileId, tx)
 						) {
-							mergeProfiles(left.profileId, right.profileId, tx);
+							recordMerge(left.profileId, right.profileId);
 							counts.sameEntityAlias += 1;
 							aliasCount += 1;
 							continue;
@@ -791,6 +802,8 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 		// Commit (3) Cross-Source Mentions (same canonical profile enriched by >=2 corpora)
 		for (const p of allProfiles) {
+			const pid = String(p.id);
+			if (!profileAlive(pid)) continue;
 			let corpora: string[] = [];
 			try {
 				const meta = JSON.parse(String(p.metadata_json || '{}')) as Record<string, unknown>;
@@ -799,7 +812,6 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				/* ignore */
 			}
 			if (corpora.length < 2) continue;
-			const pid = String(p.id);
 			const profileType = String(p.profile_type || '');
 
 			// Person + FINRA corpus + non-FINRA corpus: require middle name/initial OR
@@ -886,6 +898,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		for (const r of sharedAffilRows) {
 			const p1 = String(r.p1);
 			const p2 = String(r.p2);
+			if (!profileAlive(p1) || !profileAlive(p2)) continue;
 			const hubName = String(r.hub_name);
 			const hubType = String(r.hub_type || '');
 			// Education hubs: skip Alumni/student ↔ Professor/Scholar (keep Trustee/Board pairs).
@@ -944,6 +957,9 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					if (diff > geoWindowDays) break;
 					if (String(a.source_corpus) === String(b.source_corpus)) continue;
 					if (String(a.profile_id) === String(b.profile_id)) continue;
+					if (!profileAlive(String(a.profile_id)) || !profileAlive(String(b.profile_id))) {
+						continue;
+					}
 					// Tornadoes/seismic must not pair with authority-timelines (ICE/HSI) on OK/TX dates.
 					if (isHazardAuthorityCoOccurrence(String(a.source_corpus), String(b.source_corpus))) {
 						continue;
@@ -1215,6 +1231,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			budget: { added: number; max: number },
 		): boolean {
 			if (budget.added >= budget.max) return false;
+			if (!profileAlive(a.profileId) || !profileAlive(b.profileId)) return false;
 			const pk = pairKey(a.profileId, b.profileId);
 			if (coveredPairs.has(pk)) return false;
 
@@ -1437,6 +1454,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		// Commit (6) Multi-Angle Comparisons
 		for (const r of multiAngleRows) {
 			const pid = String(r.id);
+			if (!profileAlive(pid)) continue;
 			const yr = String(r.yr);
 			const angles = String(r.angles || '').split(',').filter(Boolean);
 			const corpora = [...new Set(String(r.corpora || '').split(',').filter(Boolean))];

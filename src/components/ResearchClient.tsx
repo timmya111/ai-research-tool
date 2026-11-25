@@ -20,6 +20,18 @@ import {
 	PREFERRED_CHAT_MODELS,
 } from '@/lib/research/ollama';
 import { isResearchChatModel, RESEARCH_AUTO_MODEL } from '@/lib/research/orchestrator';
+import {
+	CHIP,
+	CHIP_ACCENT,
+	CONTROL_BTN,
+	CONTROL_INPUT,
+	INNER_SURFACE,
+	NOTICE_STRIP,
+	PANEL_BG,
+	PANEL_DIVIDER,
+	PANEL_OUTLINE,
+	PRIMARY_BTN,
+} from '@/lib/research/uiTheme';
 
 type ChatTurn = {
 	role: 'user' | 'assistant';
@@ -839,7 +851,7 @@ export default function ResearchClient() {
 				placeholder="Ask about Bryan County filings (grantor, grantee, instrument, legal…)…"
 				rows={2}
 				disabled={busy || !sessionReady}
-				className="max-h-40 min-h-[52px] flex-1 resize-y rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5 font-[inherit] text-[var(--app-fg)]"
+				className={`max-h-40 min-h-[52px] flex-1 resize-y p-2.5 font-[inherit] ${CONTROL_INPUT}`}
 				onKeyDown={(e) => {
 					if (e.key === 'Enter' && !e.shiftKey) {
 						e.preventDefault();
@@ -860,7 +872,7 @@ export default function ResearchClient() {
 				<button
 					type="submit"
 					disabled={busy || !sessionReady || !question.trim()}
-					className="min-h-[36px] min-w-[64px] cursor-pointer rounded-md border-none bg-[#F97316] px-2.5 py-1.5 text-sm font-semibold text-white disabled:cursor-wait"
+					className={`min-h-[36px] min-w-[64px] cursor-pointer px-2.5 py-1.5 text-sm disabled:cursor-wait ${PRIMARY_BTN}`}
 				>
 					{busy ? '…' : 'Ask'}
 				</button>
@@ -872,8 +884,8 @@ export default function ResearchClient() {
 		<section
 			className={
 				chatExpanded
-					? 'z-40 flex flex-col border-b border-[var(--app-border)]'
-					: 'relative mb-3 flex min-h-[280px] flex-col rounded-lg border border-[var(--app-border)]'
+					? `z-40 flex flex-col border-b ${PANEL_DIVIDER} ${PANEL_BG}`
+					: `relative mb-3 flex min-h-[280px] flex-col ${PANEL_OUTLINE}`
 			}
 			style={
 				chatExpanded
@@ -884,12 +896,11 @@ export default function ResearchClient() {
 							right: 0,
 							bottom: 'calc(5.75rem + env(safe-area-inset-bottom, 0px))',
 							zIndex: 40,
-							backgroundColor: 'var(--app-bg)',
 						}
-					: { backgroundColor: 'var(--app-surface)' }
+					: undefined
 			}
 		>
-			<div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2">
+			<div className={`flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2 ${PANEL_DIVIDER}`}>
 				<div className="min-w-0">
 					<p className="m-0 text-xs font-semibold opacity-80">Q&amp;A</p>
 					{sessionReady && history.length > 0 ? (
@@ -912,7 +923,7 @@ export default function ResearchClient() {
 						onClick={() => void startNewSession()}
 						disabled={busy || !sessionReady}
 						title="Clear the chat and start a fresh session (current history is archived on disk)"
-						className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+						className={`cursor-pointer px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${CONTROL_BTN}`}
 					>
 						New session
 					</button>
@@ -921,7 +932,7 @@ export default function ResearchClient() {
 						onClick={() => setChatExpanded((v) => !v)}
 						title={chatExpanded ? 'Exit full-height chat (Esc)' : 'Make chat sticky and full height'}
 						aria-pressed={chatExpanded}
-						className="cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-1 text-[11px] font-semibold"
+						className={`cursor-pointer px-2 py-1 text-[11px] font-semibold ${CONTROL_BTN}`}
 					>
 						{chatExpanded ? 'Exit full height' : 'Full height'}
 					</button>
@@ -946,10 +957,10 @@ export default function ResearchClient() {
 					history.map((turn, index) => (
 						<div
 							key={`${turn.role}-${index}`}
-							className={`rounded-[10px] px-3 py-2.5 leading-snug ${
+							className={`rounded-[10px] border px-3 py-2.5 leading-snug ${
 								turn.role === 'user'
-									? 'max-w-[92%] self-end whitespace-pre-wrap'
-									: 'max-w-full self-start sm:max-w-[96%]'
+									? 'max-w-[92%] self-end whitespace-pre-wrap border-[#F97316]/35'
+									: `max-w-full self-start border-[#3b82f6]/25 sm:max-w-[96%]`
 							}`}
 							style={{
 								background: turn.role === 'user' ? 'var(--app-chat-user)' : 'var(--app-chat-assistant)',
@@ -958,7 +969,7 @@ export default function ResearchClient() {
 							<div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] opacity-60">
 								<span>{turn.role === 'user' ? 'You' : 'Assistant'}</span>
 								{turn.role === 'assistant' && turn.saved ? (
-									<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200">
+									<span className="rounded border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] px-1.5 py-0.5 text-[10px] font-semibold text-[#c5d4ff]">
 										{persistChat ? 'Remembered' : 'Saved'}
 									</span>
 								) : null}
@@ -967,7 +978,7 @@ export default function ResearchClient() {
 										type="button"
 										disabled={!projectId || turn.saving || busy}
 										onClick={() => void saveTurn(index)}
-										className="cursor-pointer rounded border border-[var(--app-border)] bg-transparent px-1.5 py-0.5 text-[11px] font-semibold text-[var(--app-fg)] opacity-100 disabled:opacity-40"
+										className={`cursor-pointer px-1.5 py-0.5 text-[11px] font-semibold disabled:opacity-40 ${CONTROL_BTN}`}
 									>
 										{turn.saving ? 'Saving…' : 'Save to knowledge'}
 									</button>
@@ -986,7 +997,7 @@ export default function ResearchClient() {
 											href={url}
 											target="_blank"
 											rel="noreferrer"
-											className="block overflow-hidden rounded-md border border-[var(--app-border)] bg-white"
+											className="block overflow-hidden rounded-md border border-[#3b82f6]/35 bg-[#0a1228]"
 										>
 											{/* eslint-disable-next-line @next/next/no-img-element */}
 											<img
@@ -1006,14 +1017,15 @@ export default function ResearchClient() {
 	);
 
 	return (
-		<main className="mx-auto max-w-[920px] px-4 py-5 pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-[var(--app-fg)]">
+		<div className={`min-h-dvh ${PANEL_BG}`}>
+		<main className={`mx-auto max-w-[920px] px-4 py-5 pb-[calc(7.5rem+env(safe-area-inset-bottom))] ${PANEL_BG}`}>
 			<header className="mb-4">
 				<div className="flex flex-wrap items-center justify-between gap-3">
 					<p className="m-0 text-[13px] opacity-70">local only · Ollama</p>
 					<div className="flex items-center gap-2">
 						<Link
 							href="/profiles"
-							className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--app-fg)] no-underline hover:bg-[var(--app-surface-hover)]"
+							className={`px-2.5 py-1 text-xs font-semibold no-underline ${CONTROL_BTN}`}
 						>
 							Profiles &amp; Alignment
 							{status?.profiles?.totalProfiles != null
@@ -1024,8 +1036,8 @@ export default function ResearchClient() {
 						<ThemeToggle />
 					</div>
 				</div>
-				<h1 className="my-1.5 text-[28px] font-semibold tracking-tight">AI Research Tool</h1>
-				<p className="m-0 leading-snug opacity-80">
+				<h1 className="my-1.5 text-[24px] font-semibold tracking-tight">AI Research Tool</h1>
+				<p className="m-0 max-w-4xl text-xs leading-relaxed opacity-80">
 					Query local <strong>Bryan County</strong> OKCountyRecords filings (2016→current): grantor, grantee,
 					legal, book/pages, charts, and detail URLs. Connect the <strong>FINRA/SEC canvas</strong> and use{' '}
 					<strong>CRD ↔ deed / unclaimed names</strong> to hunt shared name patterns. Select the Bryan
@@ -1041,7 +1053,7 @@ export default function ResearchClient() {
 			/>
 
 			{fetchToast ? (
-				<section className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2.5 text-sm">
+				<section className={`mb-4 flex flex-wrap items-center gap-3 px-3 py-2.5 text-sm ${NOTICE_STRIP}`}>
 					<span className="font-semibold">
 						Save {fetchToast.count} successful fetch{fetchToast.count === 1 ? '' : 'es'} to this project?
 					</span>
@@ -1049,7 +1061,7 @@ export default function ResearchClient() {
 						type="button"
 						onClick={() => void savePendingFetches()}
 						disabled={savingFetches || !projectId}
-						className="cursor-pointer rounded-md border-none bg-[#F97316] px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+						className={`cursor-pointer px-2.5 py-1 text-xs ${PRIMARY_BTN}`}
 					>
 						{savingFetches ? 'Saving…' : 'Save fetches'}
 					</button>
@@ -1057,20 +1069,20 @@ export default function ResearchClient() {
 						type="button"
 						onClick={() => setFetchToast(null)}
 						disabled={savingFetches}
-						className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2.5 py-1 text-xs dark:border-zinc-600"
+						className={`cursor-pointer px-2.5 py-1 text-xs ${CONTROL_BTN}`}
 					>
 						Dismiss
 					</button>
 				</section>
 			) : null}
 
-			<section className="mb-4 overflow-hidden rounded-lg border border-zinc-300 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/60">
+			<section className={`mb-4 overflow-hidden ${PANEL_OUTLINE}`}>
 				<button
 					type="button"
 					onClick={toggleBelowKnowledge}
 					aria-expanded={belowKnowledgeOpen}
 					aria-controls="research-options-panel"
-					className="flex w-full cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-sm font-semibold"
+					className="flex w-full cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-sm font-semibold text-[#e8eeff]"
 				>
 					<span>Options &amp; suggested questions</span>
 					<span className="text-xs font-normal opacity-70">
@@ -1080,10 +1092,10 @@ export default function ResearchClient() {
 				{belowKnowledgeOpen ? (
 					<div
 						id="research-options-panel"
-						className="space-y-3 border-t border-zinc-300 px-3 py-3 dark:border-zinc-700"
+						className={`space-y-3 border-t px-3 py-3 ${PANEL_DIVIDER}`}
 					>
-						<section className="space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2.5">
-							<p className="m-0 text-xs font-semibold text-amber-950 dark:text-amber-100">
+						<section className={`space-y-2 px-3 py-2.5 ${NOTICE_STRIP}`}>
+							<p className="m-0 text-xs font-semibold text-[#e8eeff]">
 								Disk retention — toggles write research (including FINRA-related Q&amp;A) to local disk
 								under the active project
 								{status?.knowledge?.path ? (
@@ -1149,8 +1161,8 @@ export default function ResearchClient() {
 						</section>
 
 						<label
-							className={`flex cursor-pointer select-none items-center gap-2.5 rounded-lg border border-zinc-300 px-3 py-2.5 text-sm font-semibold dark:border-zinc-700 ${
-								aboutNodeGraph ? 'bg-orange-500/10' : 'bg-zinc-50 dark:bg-zinc-900/60'
+							className={`flex cursor-pointer select-none items-center gap-2.5 px-3 py-2.5 text-sm font-semibold ${
+								aboutNodeGraph ? 'border border-[#F97316]/45 bg-[#F97316]/15' : INNER_SURFACE
 							}`}
 						>
 							<input
@@ -1168,7 +1180,7 @@ export default function ResearchClient() {
 							</span>
 						</label>
 
-						<section className="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-300 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900/60">
+						<section className={`flex flex-wrap items-center gap-3 p-3 ${INNER_SURFACE}`}>
 							<label className="flex cursor-pointer select-none items-center gap-2 text-[13px] font-semibold">
 								<input
 									type="checkbox"
@@ -1196,7 +1208,7 @@ export default function ResearchClient() {
 											setAutoMode(false);
 										}}
 										disabled={busy}
-										className="min-w-[180px] rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-950"
+										className={`min-w-[180px] px-2 py-1.5 ${CONTROL_INPUT}`}
 									>
 										{preferredModels.map((m) => (
 											<option key={m} value={m}>
@@ -1213,7 +1225,7 @@ export default function ResearchClient() {
 										setAutoMode(false);
 									}}
 									disabled={busy}
-									className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+									className={`cursor-pointer px-2 py-1 text-xs ${CONTROL_BTN}`}
 								>
 									Advanced…
 								</button>
@@ -1241,7 +1253,7 @@ export default function ResearchClient() {
 								type="button"
 								onClick={connectLiveGraph}
 								disabled={busy}
-								className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+								className={`cursor-pointer px-2 py-1 text-xs ${CONTROL_BTN}`}
 							>
 								Connect live graph
 							</button>
@@ -1249,7 +1261,7 @@ export default function ResearchClient() {
 								type="button"
 								onClick={() => void refreshCanvasInfo()}
 								disabled={busy}
-								className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+								className={`cursor-pointer px-2 py-1 text-xs ${CONTROL_BTN}`}
 							>
 								Refresh canvas
 							</button>
@@ -1257,14 +1269,14 @@ export default function ResearchClient() {
 								type="button"
 								onClick={() => setShowPaste((v) => !v)}
 								disabled={busy}
-								className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+								className={`cursor-pointer px-2 py-1 text-xs ${CONTROL_BTN}`}
 							>
 								{showPaste ? 'Hide paste' : 'Paste snapshot'}
 							</button>
 						</section>
 
 						{showPaste ? (
-							<section className="rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+							<section className={`p-3 ${INNER_SURFACE}`}>
 								<p className="mb-2 text-xs opacity-70">
 									Paste canvas snapshot JSON from the live app (Copy canvas for research), then Apply.
 								</p>
@@ -1273,21 +1285,21 @@ export default function ResearchClient() {
 									onChange={(e) => setPastedJson(e.target.value)}
 									rows={5}
 									placeholder='{"nodeCount":…,"nodes":[…],…}'
-									className="mb-2 w-full resize-y rounded-md border border-zinc-300 bg-transparent p-2 font-mono text-xs dark:border-zinc-600"
+									className={`mb-2 w-full resize-y p-2 font-mono text-xs ${CONTROL_INPUT}`}
 								/>
 								<button
 									type="button"
 									onClick={applyPastedJson}
-									className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2.5 py-1.5 text-xs font-semibold dark:border-zinc-600"
+									className={`cursor-pointer px-2.5 py-1.5 text-xs font-semibold ${CONTROL_BTN}`}
 								>
 									Apply pasted snapshot
 								</button>
 							</section>
 						) : null}
 
-						<section className="rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3 py-3">
+						<section className={`px-3 py-3 ${INNER_SURFACE}`}>
 							<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-								<p className="m-0 text-sm font-semibold text-emerald-950 dark:text-emerald-100">
+								<p className="m-0 text-sm font-semibold text-[#e8eeff]">
 									Suggested research questions
 								</p>
 								<p className="m-0 text-[11px] opacity-70">
@@ -1302,19 +1314,17 @@ export default function ResearchClient() {
 										disabled={busy}
 										title={example.question}
 										onClick={() => void applyBryanExample(example)}
-										className={`max-w-full cursor-pointer rounded-full border px-2.5 py-1.5 text-left text-xs font-medium ${
-											example.useCanvas
-												? 'border-orange-700/40 bg-orange-500/15 text-orange-950 dark:border-orange-400/40 dark:bg-orange-500/10 dark:text-orange-50'
-												: 'border-emerald-700/30 bg-white/80 text-emerald-950 dark:border-emerald-400/30 dark:bg-zinc-950/60 dark:text-emerald-50'
+										className={`max-w-full cursor-pointer px-2.5 py-1.5 text-left text-xs font-medium disabled:opacity-50 ${
+											example.useCanvas ? CHIP_ACCENT : CHIP
 										}`}
 									>
 										{example.label}
 									</button>
 								))}
 							</div>
-							<div className="mt-3 border-t border-emerald-700/20 pt-3 dark:border-emerald-400/20">
+							<div className={`mt-3 border-t pt-3 ${PANEL_DIVIDER}`}>
 								<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-									<p className="m-0 text-sm font-semibold text-sky-950 dark:text-sky-100">
+									<p className="m-0 text-sm font-semibold text-[#e8eeff]">
 										Oklahoma / Texas seismic (USGS)
 									</p>
 									<p className="m-0 text-[11px] opacity-70">
@@ -1329,16 +1339,16 @@ export default function ResearchClient() {
 											disabled={busy}
 											title={example.question}
 											onClick={() => void applyBryanExample(example)}
-											className="max-w-full cursor-pointer rounded-full border border-sky-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-sky-950 dark:border-sky-400/30 dark:bg-zinc-950/60 dark:text-sky-50"
+											className={`max-w-full cursor-pointer px-2.5 py-1.5 text-left text-xs font-medium disabled:opacity-50 ${CHIP}`}
 										>
 											{example.label}
 										</button>
 									))}
 								</div>
 							</div>
-							<div className="mt-3 border-t border-emerald-700/20 pt-3 dark:border-emerald-400/20">
+							<div className={`mt-3 border-t pt-3 ${PANEL_DIVIDER}`}>
 								<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-									<p className="m-0 text-sm font-semibold text-amber-950 dark:text-amber-100">
+									<p className="m-0 text-sm font-semibold text-[#e8eeff]">
 										Oklahoma / Texas tornadoes (SPC + NCEI)
 									</p>
 									<p className="m-0 text-[11px] opacity-70">
@@ -1353,16 +1363,16 @@ export default function ResearchClient() {
 											disabled={busy}
 											title={example.question}
 											onClick={() => void applyBryanExample(example)}
-											className="max-w-full cursor-pointer rounded-full border border-amber-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-amber-950 dark:border-amber-400/30 dark:bg-zinc-950/60 dark:text-amber-50"
+											className={`max-w-full cursor-pointer px-2.5 py-1.5 text-left text-xs font-medium disabled:opacity-50 ${CHIP}`}
 										>
 											{example.label}
 										</button>
 									))}
 								</div>
 							</div>
-							<div className="mt-3 border-t border-emerald-700/20 pt-3 dark:border-emerald-400/20">
+							<div className={`mt-3 border-t pt-3 ${PANEL_DIVIDER}`}>
 								<div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-									<p className="m-0 text-sm font-semibold text-violet-950 dark:text-violet-100">
+									<p className="m-0 text-sm font-semibold text-[#e8eeff]">
 										Research Drive (OCR / family records)
 									</p>
 									<p className="m-0 text-[11px] opacity-70">
@@ -1378,7 +1388,7 @@ export default function ResearchClient() {
 											disabled={busy}
 											title={example.question}
 											onClick={() => void applyBryanExample(example)}
-											className="max-w-full cursor-pointer rounded-full border border-violet-700/30 bg-white/80 px-2.5 py-1.5 text-left text-xs font-medium text-violet-950 dark:border-violet-400/30 dark:bg-zinc-950/60 dark:text-violet-50"
+											className={`max-w-full cursor-pointer px-2.5 py-1.5 text-left text-xs font-medium disabled:opacity-50 ${CHIP}`}
 										>
 											{example.label}
 										</button>
@@ -1395,11 +1405,11 @@ export default function ResearchClient() {
 				<div
 					aria-hidden="true"
 					onClick={() => setChatExpanded(false)}
+					className={PANEL_BG}
 					style={{
 						position: 'fixed',
 						inset: 0,
 						zIndex: 35,
-						backgroundColor: 'var(--app-bg)',
 						opacity: 1,
 					}}
 				/>
@@ -1408,7 +1418,7 @@ export default function ResearchClient() {
 			{chatExpanded ? (
 				<div
 					aria-hidden="true"
-					className="mb-3 min-h-[280px] rounded-lg border border-dashed border-[var(--app-border)] px-3 py-6 text-center text-xs opacity-60"
+					className={`mb-3 min-h-[280px] border border-dashed px-3 py-6 text-center text-xs opacity-60 ${PANEL_OUTLINE}`}
 				>
 					Q&amp;A is in full-height mode. Use <strong>Exit full height</strong> or Esc to restore the inline
 					panel.
@@ -1419,7 +1429,7 @@ export default function ResearchClient() {
 			{workerTraces && workerTraces.length > 0 ? (
 				<details className="mt-4">
 					<summary className="cursor-pointer">Worker traces ({workerTraces.length})</summary>
-					<pre className="overflow-auto rounded-lg bg-black/5 p-3 text-xs leading-snug dark:bg-white/5">
+					<pre className={`overflow-auto p-3 text-xs leading-snug ${INNER_SURFACE}`}>
 						{JSON.stringify(
 							(workerTraces as Array<Record<string, unknown>>).map((w) => ({
 								id: w.id,
@@ -1438,14 +1448,14 @@ export default function ResearchClient() {
 			{toolTrace && toolTrace.length > 0 ? (
 				<details className="mt-4">
 					<summary className="cursor-pointer">Tool trace ({toolTrace.length})</summary>
-					<pre className="overflow-auto rounded-lg bg-black/5 p-3 text-xs leading-snug dark:bg-white/5">
+					<pre className={`overflow-auto p-3 text-xs leading-snug ${INNER_SURFACE}`}>
 						{JSON.stringify(toolTrace, null, 2)}
 					</pre>
 				</details>
 			) : null}
 
 			<div
-				className="fixed inset-x-0 bottom-0 z-50 border-t border-[var(--app-border)] px-4 pt-3 backdrop-blur"
+				className={`fixed inset-x-0 bottom-0 z-50 border-t px-4 pt-3 backdrop-blur ${PANEL_DIVIDER}`}
 				style={{
 					paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
 					background: 'var(--app-ask-bar-bg)',
@@ -1453,10 +1463,11 @@ export default function ResearchClient() {
 				}}
 			>
 				{error ? (
-					<p className="mx-auto mb-2 max-w-[920px] text-sm text-red-700 dark:text-red-400">{error}</p>
+					<p className="mx-auto mb-2 max-w-[920px] text-sm text-rose-300">{error}</p>
 				) : null}
 				{askForm}
 			</div>
 		</main>
+		</div>
 	);
 }

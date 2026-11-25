@@ -22,29 +22,29 @@ function systemTheme(): Theme {
 }
 
 const LIGHT_VARS: Record<string, string> = {
-	'--app-bg': '#eef1f5',
-	'--app-fg': '#2b313a',
-	'--app-surface': '#f7f8fa',
-	'--app-surface-hover': '#e8ecf1',
-	'--app-border': '#c9d0d9',
-	'--app-muted': '#5b6572',
-	'--app-chat-user': 'rgba(249, 115, 22, 0.14)',
-	'--app-chat-assistant': 'rgba(43, 49, 58, 0.06)',
-	'--app-ask-bar-bg': 'rgba(247, 248, 250, 0.94)',
-	'--app-ask-bar-shadow': '0 -8px 24px rgba(43, 49, 58, 0.08)',
+	'--app-bg': '#0a1430',
+	'--app-fg': '#e8eeff',
+	'--app-surface': '#0d1a3a',
+	'--app-surface-hover': '#132248',
+	'--app-border': 'rgba(59, 130, 246, 0.4)',
+	'--app-muted': '#a8b4cc',
+	'--app-chat-user': 'rgba(249, 115, 22, 0.22)',
+	'--app-chat-assistant': 'rgba(232, 238, 255, 0.08)',
+	'--app-ask-bar-bg': 'rgba(10, 20, 48, 0.96)',
+	'--app-ask-bar-shadow': '0 -8px 24px rgba(0, 0, 0, 0.35)',
 };
 
 const DARK_VARS: Record<string, string> = {
-	'--app-bg': '#1e2430',
-	'--app-fg': '#e4e8ef',
-	'--app-surface': '#2a3140',
-	'--app-surface-hover': '#343c4d',
-	'--app-border': '#4a5568',
-	'--app-muted': '#a8b2c1',
-	'--app-chat-user': 'rgba(249, 115, 22, 0.22)',
-	'--app-chat-assistant': 'rgba(228, 232, 239, 0.08)',
-	'--app-ask-bar-bg': 'rgba(42, 49, 64, 0.96)',
-	'--app-ask-bar-shadow': '0 -8px 24px rgba(0, 0, 0, 0.28)',
+	'--app-bg': '#050a1c',
+	'--app-fg': '#e8eeff',
+	'--app-surface': '#0a1228',
+	'--app-surface-hover': '#121c38',
+	'--app-border': 'rgba(59, 130, 246, 0.4)',
+	'--app-muted': '#a8b4cc',
+	'--app-chat-user': 'rgba(249, 115, 22, 0.26)',
+	'--app-chat-assistant': 'rgba(232, 238, 255, 0.08)',
+	'--app-ask-bar-bg': 'rgba(5, 10, 28, 0.96)',
+	'--app-ask-bar-shadow': '0 -8px 24px rgba(0, 0, 0, 0.4)',
 };
 
 function applyTheme(theme: Theme) {
@@ -127,7 +127,7 @@ export default function ThemeToggle() {
 			onClick={toggle}
 			aria-label={label}
 			title={label}
-			className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-fg)] shadow-sm transition hover:bg-[var(--app-surface-hover)]"
+			className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] text-[#e8eeff] shadow-sm transition hover:bg-[lab(5_4.06_-17.11_/0.75)]"
 		>
 			{!ready ? (
 				<span className="h-4 w-4" />

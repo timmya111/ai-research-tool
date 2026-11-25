@@ -1,6 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import {
+	CONTROL_BTN,
+	CONTROL_INPUT,
+	INNER_SURFACE,
+	NOTICE_STRIP,
+	PANEL_DIVIDER,
+	PANEL_OUTLINE,
+	PRIMARY_BTN,
+} from '@/lib/research/uiTheme';
 
 const LS_PROJECT_KEY = 'research.activeProjectId';
 const LS_PANEL_OPEN_KEY = 'research.knowledgePanelOpen.v2';
@@ -45,11 +54,11 @@ type Props = {
 };
 
 function badgeClass(sourceType: string): string {
-	if (sourceType === 'chat') return 'bg-sky-500/15 text-sky-800 dark:text-sky-200';
-	if (sourceType === 'fetch') return 'bg-violet-500/15 text-violet-800 dark:text-violet-200';
-	if (sourceType === 'file') return 'bg-amber-500/15 text-amber-900 dark:text-amber-200';
-	if (sourceType === 'image') return 'bg-fuchsia-500/15 text-fuchsia-900 dark:text-fuchsia-200';
-	return 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-200';
+	if (sourceType === 'chat') return 'border border-[#3b82f6]/40 bg-[lab(5_4.06_-17.11_/0.55)] text-[#c5d4ff]';
+	if (sourceType === 'fetch') return 'border border-[#F97316]/40 bg-[#F97316]/15 text-[#FFEDD5]';
+	if (sourceType === 'file') return 'border border-[#3b82f6]/35 bg-[lab(5_4.06_-17.11_/0.4)] text-[#e8eeff]';
+	if (sourceType === 'image') return 'border border-[#F97316]/30 bg-[#F97316]/10 text-[#FFEDD5]';
+	return 'border border-[#3b82f6]/30 bg-[lab(5_4.06_-17.11_/0.35)] text-[#e8eeff]';
 }
 
 export default function KnowledgePanel({
@@ -348,10 +357,10 @@ export default function KnowledgePanel({
 	const embedMissing = knowledgeStatus && knowledgeStatus.embedModelInstalled === false;
 
 	return (
-		<section className="mb-4 rounded-lg border border-zinc-300 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/60">
+		<section className={`mb-4 overflow-hidden ${PANEL_OUTLINE}`}>
 			<button
 				type="button"
-				className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-semibold"
+				className="flex w-full cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-3 py-2.5 text-left text-sm font-semibold text-[#e8eeff]"
 				onClick={toggleOpen}
 				aria-expanded={open}
 			>
@@ -360,14 +369,14 @@ export default function KnowledgePanel({
 			</button>
 
 			{open ? (
-				<div className="space-y-3 border-t border-zinc-300 px-3 py-3 dark:border-zinc-700">
+				<div className={`space-y-3 border-t px-3 py-3 ${PANEL_DIVIDER}`}>
 					<div className="flex flex-wrap items-center gap-2">
 						<label className="flex items-center gap-2 text-[13px]">
 							<span className="opacity-80">Project</span>
 							<select
 								value={projectId || ''}
 								onChange={(e) => selectProject(e.target.value)}
-								className="min-w-[160px] rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-950"
+								className={`min-w-[160px] px-2 py-1.5 ${CONTROL_INPUT}`}
 							>
 								{projects.length === 0 ? <option value="">No projects</option> : null}
 								{projects.map((p) => (
@@ -381,7 +390,7 @@ export default function KnowledgePanel({
 						<button
 							type="button"
 							onClick={() => void createProject()}
-							className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+							className={`cursor-pointer px-2 py-1 text-xs ${CONTROL_BTN}`}
 						>
 							New
 						</button>
@@ -389,7 +398,7 @@ export default function KnowledgePanel({
 							type="button"
 							onClick={() => void renameProject()}
 							disabled={!projectId}
-							className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs disabled:opacity-40 dark:border-zinc-600"
+							className={`cursor-pointer px-2 py-1 text-xs disabled:opacity-40 ${CONTROL_BTN}`}
 						>
 							Rename
 						</button>
@@ -397,7 +406,7 @@ export default function KnowledgePanel({
 							type="button"
 							onClick={() => void removeProject()}
 							disabled={!projectId || projects.length <= 1}
-							className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs disabled:opacity-40 dark:border-zinc-600"
+							className={`cursor-pointer px-2 py-1 text-xs disabled:opacity-40 ${CONTROL_BTN}`}
 						>
 							Delete project
 						</button>
@@ -405,7 +414,7 @@ export default function KnowledgePanel({
 							type="button"
 							onClick={() => void refresh()}
 							disabled={loading || reindexing}
-							className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-600"
+							className={`cursor-pointer px-2 py-1 text-xs ${CONTROL_BTN}`}
 						>
 							{loading ? 'Refreshing…' : 'Refresh'}
 						</button>
@@ -413,7 +422,7 @@ export default function KnowledgePanel({
 							type="button"
 							onClick={() => void runReindex('project')}
 							disabled={!projectId || reindexing}
-							className="cursor-pointer rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs disabled:opacity-40 dark:border-zinc-600"
+							className={`cursor-pointer px-2 py-1 text-xs disabled:opacity-40 ${CONTROL_BTN}`}
 							title="Re-embed chunks for the active project"
 						>
 							{reindexing ? 'Reindexing…' : 'Reindex project'}
@@ -432,7 +441,7 @@ export default function KnowledgePanel({
 					) : null}
 
 					{embedMissing ? (
-						<p className="m-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs">
+						<p className={`m-0 px-2 py-1.5 text-xs ${NOTICE_STRIP}`}>
 							Embed model missing. Run{' '}
 							<code>ollama pull {knowledgeStatus?.embedModel || 'nomic-embed-text'}</code> for
 							search and note saving.
@@ -440,7 +449,7 @@ export default function KnowledgePanel({
 					) : null}
 
 					{knowledgeStatus?.needsReindex ? (
-						<div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs">
+						<div className={`flex flex-wrap items-center gap-2 px-2 py-1.5 text-xs ${NOTICE_STRIP}`}>
 							<span>
 								Embed model/dims changed — reindex (or wipe the data dir) before searching.
 							</span>
@@ -448,14 +457,14 @@ export default function KnowledgePanel({
 								type="button"
 								onClick={() => void runReindex('all')}
 								disabled={reindexing}
-								className="cursor-pointer rounded border border-amber-700/40 bg-transparent px-2 py-0.5 text-[11px] font-semibold"
+								className={`cursor-pointer px-2 py-0.5 text-[11px] font-semibold ${CONTROL_BTN}`}
 							>
 								{reindexing ? 'Reindexing…' : 'Reindex all'}
 							</button>
 						</div>
 					) : null}
 
-					<div className="rounded-md border border-zinc-300 bg-white p-2 dark:border-zinc-600 dark:bg-zinc-950">
+					<div className={`p-2 ${INNER_SURFACE}`}>
 						<p className="mb-1.5 text-xs font-semibold">Add note</p>
 						<input
 							type="text"
@@ -463,7 +472,7 @@ export default function KnowledgePanel({
 							onChange={(e) => setNoteTitle(e.target.value)}
 							placeholder="Title (optional)"
 							disabled={!projectId || savingNote}
-							className="mb-1.5 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-600"
+							className={`mb-1.5 w-full px-2 py-1.5 text-sm ${CONTROL_INPUT}`}
 						/>
 						<textarea
 							value={noteText}
@@ -471,13 +480,13 @@ export default function KnowledgePanel({
 							placeholder="Note text (saved to local disk under this project)…"
 							rows={3}
 							disabled={!projectId || savingNote}
-							className="mb-1.5 w-full resize-y rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-600"
+							className={`mb-1.5 w-full resize-y px-2 py-1.5 text-sm ${CONTROL_INPUT}`}
 						/>
 						<button
 							type="button"
 							onClick={() => void addNote()}
 							disabled={!projectId || savingNote || !noteText.trim()}
-							className="cursor-pointer rounded-md border-none bg-[#F97316] px-2.5 py-1.5 text-xs font-semibold text-white disabled:cursor-wait disabled:opacity-50"
+							className={`cursor-pointer px-2.5 py-1.5 text-xs disabled:cursor-wait ${PRIMARY_BTN}`}
 						>
 							{savingNote ? 'Saving…' : 'Save note'}
 						</button>
@@ -486,7 +495,7 @@ export default function KnowledgePanel({
 						) : null}
 					</div>
 
-					{error ? <p className="m-0 text-sm text-red-700 dark:text-red-400">{error}</p> : null}
+					{error ? <p className="m-0 text-sm text-rose-300">{error}</p> : null}
 
 					<ul className="m-0 max-h-64 list-none space-y-2 overflow-auto p-0">
 						{docs.length === 0 ? (
@@ -495,7 +504,7 @@ export default function KnowledgePanel({
 							docs.map((doc) => (
 								<li
 									key={doc.id}
-									className="rounded-md border border-zinc-200 bg-white px-2.5 py-2 dark:border-zinc-700 dark:bg-zinc-950"
+									className={`px-2.5 py-2 ${INNER_SURFACE}`}
 								>
 									<div className="flex flex-wrap items-start justify-between gap-2">
 										<div className="min-w-0 flex-1">
@@ -516,21 +525,21 @@ export default function KnowledgePanel({
 											<button
 												type="button"
 												onClick={() => void previewDoc(doc.id)}
-												className="cursor-pointer rounded border border-zinc-300 bg-transparent px-1.5 py-0.5 text-[11px] dark:border-zinc-600"
+												className={`cursor-pointer px-1.5 py-0.5 text-[11px] ${CONTROL_BTN}`}
 											>
 												{previewId === doc.id ? 'Hide' : 'Preview'}
 											</button>
 											<button
 												type="button"
 												onClick={() => void deleteDoc(doc.id, doc.title)}
-												className="cursor-pointer rounded border border-zinc-300 bg-transparent px-1.5 py-0.5 text-[11px] dark:border-zinc-600"
+												className={`cursor-pointer px-1.5 py-0.5 text-[11px] ${CONTROL_BTN}`}
 											>
 												Delete
 											</button>
 										</div>
 									</div>
 									{previewId === doc.id && previewText != null ? (
-										<pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-black/5 p-2 text-[11px] leading-snug dark:bg-white/5">
+										<pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-[#3b82f6]/25 bg-black/25 p-2 text-[11px] leading-snug">
 											{previewText}
 										</pre>
 									) : null}
