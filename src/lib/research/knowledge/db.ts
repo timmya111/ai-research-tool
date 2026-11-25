@@ -7,6 +7,20 @@ type GlobalWithDb = typeof globalThis & {
 };
 
 /**
+ * Apply reader-friendly pragmas for the ~12GB knowledge store.
+ * cache_size is in KiB when negative (−262144 ≈ 256 MiB).
+ */
+export function applyKnowledgeDbPragmas(db: DatabaseSync): void {
+	db.exec('PRAGMA journal_mode = WAL;');
+	db.exec('PRAGMA foreign_keys = ON;');
+	db.exec('PRAGMA busy_timeout = 5000;');
+	db.exec('PRAGMA synchronous = NORMAL;');
+	db.exec('PRAGMA cache_size = -262144;');
+	db.exec('PRAGMA mmap_size = 2147483648;');
+	db.exec('PRAGMA temp_store = MEMORY;');
+}
+
+/**
  * Process-global DatabaseSync singleton (HMR-safe via globalThis).
  * Single-process writers only. Embeds must happen outside write transactions.
  */
@@ -17,9 +31,7 @@ export function getKnowledgeDb(): DatabaseSync {
 	ensureKnowledgeDir();
 	const file = getKnowledgeSqlitePath();
 	const db = new DatabaseSync(file);
-	db.exec('PRAGMA journal_mode = WAL;');
-	db.exec('PRAGMA foreign_keys = ON;');
-	db.exec('PRAGMA busy_timeout = 5000;');
+	applyKnowledgeDbPragmas(db);
 	migrate(db);
 	g.__researchKnowledgeDb = db;
 	return db;

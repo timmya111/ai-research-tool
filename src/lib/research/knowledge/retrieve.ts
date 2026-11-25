@@ -4,7 +4,7 @@ import {
 	ollamaEmbed,
 	unpackEmbedding,
 } from '@/lib/research/knowledge/embed';
-import { getProject } from '@/lib/research/knowledge/projects';
+import { getProjectChunkCount, projectExists } from '@/lib/research/knowledge/projects';
 import { needsReindex } from '@/lib/research/knowledge/schema';
 import type { KnowledgeSearchHit, KnowledgeSourceType } from '@/lib/research/knowledge/types';
 
@@ -13,6 +13,8 @@ const RRF_K = 60;
 const FULL_VECTOR_SCAN_MAX_CHUNKS = 15_000;
 const LARGE_PROJECT_FTS_CANDIDATES = 400;
 const LARGE_PROJECT_RECENT_FALLBACK = 150;
+/** How many latest docs to open when FTS is thin (then take their chunks). */
+const LARGE_PROJECT_RECENT_DOCS = 80;
 
 function clampLimit(n: unknown, fallback = 5): number {
 	const v = Number(n);
@@ -57,6 +59,73 @@ type ChunkRow = {
 	embedding: Buffer | null;
 };
 
+function runFtsChannel(
+	db: ReturnType<typeof getKnowledgeDb>,
+	projectId: string,
+	ftsQuery: string,
+	ftsLimit: number,
+	sourceType: string | null,
+): ChunkRow[] {
+	let ftsSql = `
+      SELECT c.id, c.document_id, c.text, c.chunk_index, c.embedding,
+             d.project_id, d.source_type, d.title, d.url
+      FROM chunks_fts
+      JOIN chunks c ON c.rowid = chunks_fts.rowid
+      JOIN documents d ON d.id = c.document_id
+      WHERE d.project_id = ?
+        AND chunks_fts MATCH ?`;
+	const ftsParams: unknown[] = [projectId, ftsQuery];
+	if (sourceType) {
+		ftsSql += ` AND d.source_type = ?`;
+		ftsParams.push(sourceType);
+	}
+	ftsSql += ` LIMIT ?`;
+	ftsParams.push(ftsLimit);
+	try {
+		return db.prepare(ftsSql).all(...ftsParams) as ChunkRow[];
+	} catch {
+		/* bad MATCH — skip FTS channel */
+		return [];
+	}
+}
+
+/**
+ * Recent-chunk fallback for large projects: pick latest docs first (uses
+ * documents_project_created), then their chunks — avoids sorting the full
+ * project chunk join.
+ */
+function loadRecentChunks(
+	db: ReturnType<typeof getKnowledgeDb>,
+	projectId: string,
+	sourceType: string | null,
+	chunkLimit: number,
+): ChunkRow[] {
+	let docSql = `SELECT id FROM documents WHERE project_id = ?`;
+	const docParams: unknown[] = [projectId];
+	if (sourceType) {
+		docSql += ` AND source_type = ?`;
+		docParams.push(sourceType);
+	}
+	docSql += ` ORDER BY created_at DESC LIMIT ?`;
+	docParams.push(LARGE_PROJECT_RECENT_DOCS);
+	const docIds = (db.prepare(docSql).all(...docParams) as Array<{ id: string }>).map((r) => r.id);
+	if (!docIds.length) return [];
+
+	const placeholders = docIds.map(() => '?').join(',');
+	const rows = db
+		.prepare(
+			`SELECT c.id, c.document_id, c.text, c.chunk_index, c.embedding,
+              d.project_id, d.source_type, d.title, d.url
+       FROM chunks c
+       JOIN documents d ON d.id = c.document_id
+       WHERE c.document_id IN (${placeholders})
+       ORDER BY d.created_at DESC, c.chunk_index ASC
+       LIMIT ?`,
+		)
+		.all(...docIds, chunkLimit) as ChunkRow[];
+	return rows;
+}
+
 export async function retrieve(
 	query: string,
 	options: {
@@ -67,7 +136,7 @@ export async function retrieve(
 ): Promise<KnowledgeSearchHit[]> {
 	const projectId = String(options.projectId || '').trim();
 	if (!projectId) throw new Error('projectId required');
-	if (!getProject(projectId)) throw new Error('project not found');
+	if (!projectExists(projectId)) throw new Error('project not found');
 
 	const db = getKnowledgeDb();
 	if (needsReindex(db)) {
@@ -79,71 +148,23 @@ export async function retrieve(
 	const candidateCap = Math.max(limit * 4, 20);
 	const ftsQuery = buildFtsQuery(query);
 
-	// Check project chunk count first so 100k+ chunk county projects don't load 400MB+ of BLOBs per query
-	let countSql = `
-    SELECT COUNT(*) AS c
-    FROM chunks c
-    JOIN documents d ON d.id = c.document_id
-    WHERE d.project_id = ?`;
-	const countParams: unknown[] = [projectId];
-	if (sourceType) {
-		countSql += ` AND d.source_type = ?`;
-		countParams.push(sourceType);
-	}
-	const projectChunkCount = Number(
-		(db.prepare(countSql).get(...countParams) as { c?: number } | undefined)?.c || 0,
-	);
+	// Overlap Ollama embed with SQLite work (count + FTS).
+	const embedPromise = ollamaEmbed(query);
+
+	const projectChunkCount = getProjectChunkCount(projectId, sourceType, db);
 	const useLargeProjectMode = projectChunkCount > FULL_VECTOR_SCAN_MAX_CHUNKS;
 
-	const qVec = await ollamaEmbed(query);
-
-	// Run FTS channel first (reused as candidate pool on large projects)
-	const ftsHits: ChunkRow[] = [];
 	const ftsLimit = useLargeProjectMode ? LARGE_PROJECT_FTS_CANDIDATES : candidateCap;
-	if (ftsQuery) {
-		let ftsSql = `
-      SELECT c.id, c.document_id, c.text, c.chunk_index, c.embedding,
-             d.project_id, d.source_type, d.title, d.url
-      FROM chunks_fts
-      JOIN chunks c ON c.rowid = chunks_fts.rowid
-      JOIN documents d ON d.id = c.document_id
-      WHERE d.project_id = ?
-        AND chunks_fts MATCH ?`;
-		const ftsParams: unknown[] = [projectId, ftsQuery];
-		if (sourceType) {
-			ftsSql += ` AND d.source_type = ?`;
-			ftsParams.push(sourceType);
-		}
-		ftsSql += ` LIMIT ?`;
-		ftsParams.push(ftsLimit);
-		try {
-			const ftsRows = db.prepare(ftsSql).all(...ftsParams) as ChunkRow[];
-			ftsHits.push(...ftsRows);
-		} catch {
-			/* bad MATCH — skip FTS channel */
-		}
-	}
+	const ftsHits: ChunkRow[] = ftsQuery
+		? runFtsChannel(db, projectId, ftsQuery, ftsLimit, sourceType)
+		: [];
 
 	let vectorCandidateRows: ChunkRow[];
 	if (useLargeProjectMode) {
 		const byChunkId = new Map<string, ChunkRow>();
 		for (const r of ftsHits) byChunkId.set(r.id, r);
-		// Supplement with recent chunks when FTS returned few/no hits (e.g. semantic or "latest filings" queries)
 		if (byChunkId.size < 60) {
-			let recentSql = `
-        SELECT c.id, c.document_id, c.text, c.chunk_index, c.embedding,
-               d.project_id, d.source_type, d.title, d.url
-        FROM chunks c
-        JOIN documents d ON d.id = c.document_id
-        WHERE d.project_id = ?`;
-			const recentParams: unknown[] = [projectId];
-			if (sourceType) {
-				recentSql += ` AND d.source_type = ?`;
-				recentParams.push(sourceType);
-			}
-			recentSql += ` ORDER BY d.created_at DESC LIMIT ?`;
-			recentParams.push(LARGE_PROJECT_RECENT_FALLBACK);
-			for (const r of db.prepare(recentSql).all(...recentParams) as ChunkRow[]) {
+			for (const r of loadRecentChunks(db, projectId, sourceType, LARGE_PROJECT_RECENT_FALLBACK)) {
 				if (!byChunkId.has(r.id)) byChunkId.set(r.id, r);
 			}
 		}
@@ -162,6 +183,8 @@ export async function retrieve(
 		}
 		vectorCandidateRows = db.prepare(sql).all(...params) as ChunkRow[];
 	}
+
+	const qVec = await embedPromise;
 
 	const vecHits: Array<{ row: ChunkRow; score: number }> = [];
 	for (const row of vectorCandidateRows) {

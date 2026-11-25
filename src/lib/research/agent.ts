@@ -51,7 +51,7 @@ function buildSystemPrompt(
 	const focusLine = workerFocus ? `\nWorker focus: ${workerFocus}\n` : '';
 	const knowledgeBlock =
 		knowledgeSnippets && knowledgeSnippets.trim()
-			? `\n${knowledgeSnippets.trim()}\n`
+			? `\n${knowledgeSnippets.trim()}\n- Local knowledge snippets are already attached above for this question. Prefer answering from them. Call search_knowledge only for a narrower/refined query, a different project, or when the snippets are clearly insufficient.\n`
 			: '';
 
 	return `You are a local AI research assistant running on the developer's machine via Ollama.

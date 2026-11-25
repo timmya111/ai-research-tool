@@ -7,7 +7,12 @@ export {
 	unpackEmbedding,
 } from '@/lib/research/knowledge/embed';
 export { planChunks, sha256Hex } from '@/lib/research/knowledge/chunk';
-export { closeKnowledgeDbForTests, getKnowledgeDb, withKnowledgeTransaction } from '@/lib/research/knowledge/db';
+export {
+	applyKnowledgeDbPragmas,
+	closeKnowledgeDbForTests,
+	getKnowledgeDb,
+	withKnowledgeTransaction,
+} from '@/lib/research/knowledge/db';
 export { deleteDocument, getDocument, knowledgeCounts, listDocuments } from '@/lib/research/knowledge/documents';
 export { canExposeKnowledgeStatusDetail, rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
 export { ingestPastedContent, ingestUploadedFile } from '@/lib/research/knowledge/attachments';
@@ -18,7 +23,11 @@ export {
 	deleteProject,
 	ensureDefaultProject,
 	getProject,
+	getProjectChunkCount,
+	invalidateProjectChunkCountCache,
 	listProjects,
+	listProjectsLite,
+	projectExists,
 	renameProject,
 } from '@/lib/research/knowledge/projects';
 export { reindexKnowledge } from '@/lib/research/knowledge/reindex';

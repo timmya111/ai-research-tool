@@ -1,4 +1,5 @@
 import { getKnowledgeDb, withKnowledgeTransaction } from '@/lib/research/knowledge/db';
+import { invalidateProjectChunkCountCache } from '@/lib/research/knowledge/projects';
 import type { KnowledgeDocument, KnowledgeSourceType } from '@/lib/research/knowledge/types';
 
 function parseMeta(raw: unknown): Record<string, unknown> {
@@ -92,8 +93,15 @@ export function getDocument(id: string): KnowledgeDocument | null {
 
 export function deleteDocument(id: string): boolean {
 	return withKnowledgeTransaction((db) => {
+		const row = db.prepare(`SELECT project_id FROM documents WHERE id = ?`).get(id) as
+			| { project_id?: string }
+			| undefined;
 		const info = db.prepare(`DELETE FROM documents WHERE id = ?`).run(id) as { changes?: number };
-		return Number(info?.changes || 0) > 0;
+		const changed = Number(info?.changes || 0) > 0;
+		if (changed && row?.project_id) {
+			invalidateProjectChunkCountCache(String(row.project_id));
+		}
+		return changed;
 	});
 }
 

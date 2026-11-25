@@ -15,7 +15,8 @@ import {
 export const RESEARCH_AUTO_MODEL = 'auto';
 
 /** Models that are free/local but not useful as the chat+tools worker. */
-const NON_CHAT_MODEL_RE = /(embed|nomic-embed|whisper|tts|clip|minicheck)/i;
+const NON_CHAT_MODEL_RE =
+	/(embed|nomic-embed|whisper|tts|clip|minicheck|vision|glm-ocr|ocr:|coder|heretic|qwen3-vl|vl:)/i;
 
 export type ResearchWorkerRole = 'tools' | 'reason' | 'fetch' | 'critique';
 

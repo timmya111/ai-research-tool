@@ -16,6 +16,7 @@ export const PREFERRED_CHAT_MODELS: readonly string[] = [
 	'qwen2.5:14b',
 	'llama3.1:8b',
 	'bonsai-2:latest',
+	'muse-glimmer:latest',
 	'qwen3.6:latest',
 	'llama3.2:latest',
 	'gemma4:26b',
@@ -39,10 +40,12 @@ export const PREFERRED_TOOLS_MODELS: readonly string[] = [
 /** Heavier reason / merge / critique workers. */
 export const PREFERRED_REASON_MODELS: readonly string[] = [
 	'nemotron-3.5-lightning:latest',
+	'phi4-reasoning:latest',
 	'qwen2.5:14b',
 	'qwen3.5:9b',
 	'ornith:latest',
 	'flint:latest',
+	'muse-glimmer:latest',
 	'gemma4:26b',
 	'qwen3.6:latest',
 	'qwen2.5:7b',
@@ -51,6 +54,7 @@ export const PREFERRED_REASON_MODELS: readonly string[] = [
 /** Cheap planner / router — prefer tiny/fast models; avoid loading a 9B+ just to pick a route. */
 export const PREFERRED_ROUTER_MODELS: readonly string[] = [
 	'lfm3:latest',
+	'bonsai-2:latest',
 	'llama3.2:latest',
 	'qwen2.5:7b',
 	'ornith:latest',
@@ -59,7 +63,7 @@ export const PREFERRED_ROUTER_MODELS: readonly string[] = [
 ];
 
 /** Optional post-answer fact-check specialist (not a general chat model). */
-export const PREFERRED_FACTCHECK_MODELS: readonly string[] = ['bespoke-minicheck:7b', 'bespoke-minicheck:latest'];
+export const PREFERRED_FACTCHECK_MODELS: readonly string[] = ['bespoke-minicheck:7b'];
 
 /**
  * Resolve a planner-emitted model name against installed tags.

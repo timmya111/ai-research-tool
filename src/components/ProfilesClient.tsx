@@ -3473,6 +3473,12 @@ export default function ProfilesClient({
 		let profileKey = selectedId;
 		try {
 			let latest = detail;
+			let timelineSync: {
+				parsed?: number;
+				upsertedOwn?: number;
+				mirroredRelated?: number;
+				reorder?: { changed?: boolean; method?: string; datedCount?: number };
+			} | null = null;
 
 			const nameChanged = nameDraft.trim() !== detail.profile.name;
 			const summaryChanged = summaryDraft !== (detail.profile.summary || '');
@@ -3490,6 +3496,17 @@ export default function ProfilesClient({
 					:	{}),
 				});
 				profileKey = latest.profile.slug || latest.profile.id;
+				const syncFromPatch = (
+					latest as ProfileDetail & {
+						timelineSync?: {
+							parsed?: number;
+							upsertedOwn?: number;
+							mirroredRelated?: number;
+							reorder?: { changed?: boolean; method?: string; datedCount?: number };
+						};
+					}
+				).timelineSync;
+				if (syncFromPatch) timelineSync = syncFromPatch;
 			}
 
 			const sep = /[·•|]/.test(altNamesDraft) ? /[·•|]+/ : /[,;]+/;
@@ -3591,11 +3608,35 @@ export default function ProfilesClient({
 			setProfileEditing(false);
 			setPendingDeleteIdentIds([]);
 			setPendingNewIdents([]);
+			if (summaryChanged) {
+				await loadTimeline(profileKey, {
+					includeLinkedEvents: latest.profile.profileType === 'historic_event' ? false : undefined,
+				});
+			}
 			const nextSlug = latest.profile.slug;
 			if (nextSlug && nextSlug !== prevSlug) {
 				setSelectedId(nextSlug);
 				syncUrl({ profile: nextSlug, view: 'profile' }, 'replace');
 				setBanner(`Applied changes — URL is now /profiles/${nextSlug.replace(':', '/')}.`);
+			} else if (summaryChanged && timelineSync && Number(timelineSync.parsed || 0) > 0) {
+				const mirrored = Number(timelineSync.mirroredRelated || 0);
+				const reordered =
+					timelineSync.reorder?.changed ?
+						timelineSync.reorder.method === 'ollama' ?
+							' · Overview Timeline reordered newest-first (Ollama)'
+						:	' · Overview Timeline reordered newest-first'
+					:	'';
+				setBanner(
+					`Applied profile edits. Timeline tab synced ${timelineSync.upsertedOwn || 0} overview milestones${
+						mirrored > 0 ? ` · mirrored ${mirrored} onto linked events` : ''
+					}${reordered}.`,
+				);
+			} else if (summaryChanged && timelineSync?.reorder?.changed) {
+				setBanner(
+					`Applied profile edits. Overview Timeline reordered newest-first${
+						timelineSync.reorder.method === 'ollama' ? ' (Ollama)' : ''
+					}.`,
+				);
 			} else {
 				setBanner('Applied profile edits.');
 			}

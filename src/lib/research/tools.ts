@@ -28,7 +28,7 @@ import {
 	searchProfilesTool,
 	upsertProfileTool,
 } from '@/lib/research/profileAlignmentTools';
-import { ensureDefaultProject, listProjects } from '@/lib/research/knowledge/projects';
+import { ensureDefaultProject, listProjectsLite } from '@/lib/research/knowledge/projects';
 import { retrieve } from '@/lib/research/knowledge/retrieve';
 import type { KnowledgeSourceType } from '@/lib/research/knowledge/types';
 
@@ -1342,7 +1342,7 @@ function resolveProjectId(args: Record<string, unknown>, context: ResearchToolCo
 		String(context.projectId || '').trim(),
 	].filter(Boolean);
 
-	const projects = listProjects();
+	const projects = listProjectsLite();
 	for (const raw of candidates) {
 		const byId = projects.find((p) => p.id === raw);
 		if (byId) return byId.id;

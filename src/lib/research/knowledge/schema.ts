@@ -47,6 +47,8 @@ CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS documents_project_id ON documents(project_id);
 CREATE INDEX IF NOT EXISTS documents_source_type ON documents(source_type);
 CREATE INDEX IF NOT EXISTS documents_created_at ON documents(created_at);
+CREATE INDEX IF NOT EXISTS documents_project_created ON documents(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS documents_project_source ON documents(project_id, source_type);
 `;
 
 const FTS_AND_TRIGGERS_SQL = `
@@ -111,6 +113,9 @@ export function migrate(db: DatabaseSync): void {
 	db.exec('PRAGMA foreign_keys = ON;');
 	db.exec(SCHEMA_SQL);
 	ensureUniqueUrlHashIndex(db);
+	// Composite indexes for large-project retrieve (recent fallback + sourceType filter).
+	db.exec(`CREATE INDEX IF NOT EXISTS documents_project_created ON documents(project_id, created_at DESC);`);
+	db.exec(`CREATE INDEX IF NOT EXISTS documents_project_source ON documents(project_id, source_type);`);
 
 	// FTS virtual table + triggers (IF NOT EXISTS for table; triggers may already exist)
 	try {

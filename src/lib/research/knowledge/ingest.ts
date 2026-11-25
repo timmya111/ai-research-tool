@@ -1,7 +1,10 @@
 import { planChunks, sha256Hex } from '@/lib/research/knowledge/chunk';
 import { getKnowledgeDb, withKnowledgeTransaction } from '@/lib/research/knowledge/db';
 import { embedMany, packEmbedding } from '@/lib/research/knowledge/embed';
-import { getProject } from '@/lib/research/knowledge/projects';
+import {
+	invalidateProjectChunkCountCache,
+	projectExists,
+} from '@/lib/research/knowledge/projects';
 import { formatToolTraceSummary } from '@/lib/research/knowledge/toolTraceSummary';
 import {
 	MAX_DOCUMENT_CHARS,
@@ -11,7 +14,7 @@ import {
 function requireProject(projectId: string): void {
 	const id = String(projectId || '').trim();
 	if (!id) throw new Error('projectId required');
-	if (!getProject(id)) throw new Error('project not found');
+	if (!projectExists(id)) throw new Error('project not found');
 }
 
 function titleFromQuestion(question: string): string {
@@ -110,6 +113,7 @@ async function commitDocument(options: {
 		}
 	});
 
+	invalidateProjectChunkCountCache(options.projectId);
 	return docId;
 }
 

@@ -11,5 +11,6 @@ export * from '@/lib/research/profiles/freeOrgShared';
 export * from '@/lib/research/profiles/freeOrgBulk';
 export * from '@/lib/research/profiles/freeOrgEnrich';
 export * from '@/lib/research/profiles/timeline';
+export * from '@/lib/research/profiles/syncSummaryTimeline';
 export * from '@/lib/research/profiles/align';
 export * from '@/lib/research/profiles/backfill';

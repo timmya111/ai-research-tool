@@ -16,6 +16,10 @@ import {
 	updateProfileFields,
 } from '@/lib/research/profiles/store';
 import {
+	ensureSummaryTimelineNewestFirst,
+	syncSummaryTimelineToEntries,
+} from '@/lib/research/profiles/syncSummaryTimeline';
+import {
 	LOCATION_ROLES,
 	PROFILE_TYPES,
 	type AliasKind,
@@ -62,7 +66,7 @@ export async function PATCH(request: Request, context: Ctx) {
 		}
 		const hasMetadataPatch = Object.keys(metadataPatch).length > 0;
 
-		const updated = updateProfileFields(key, {
+		let updated = updateProfileFields(key, {
 			name: body.name != null ? String(body.name) : undefined,
 			profileType: body.profileType != null ? (String(body.profileType) as ProfileType) : undefined,
 			status: body.status != null ? (String(body.status) as ProfileStatus) : undefined,
@@ -272,8 +276,78 @@ export async function PATCH(request: Request, context: Ctx) {
 			touchProfilesForUserAction([updated.id]);
 		}
 
+		/** Sync Overview ## Timeline dated bullets → Timeline tab (+ linked historic_event mirrors). */
+		const syncFlag = body.syncTimelineFromSummary;
+		const syncDisabled =
+			syncFlag === false || syncFlag === 0 || syncFlag === '0' || syncFlag === 'false';
+		const syncForced =
+			syncFlag === true || syncFlag === 1 || syncFlag === '1' || syncFlag === 'true';
+		const ollamaReorderFlag = body.ollamaReorderTimeline;
+		const ollamaReorderDisabled =
+			ollamaReorderFlag === false ||
+			ollamaReorderFlag === 0 ||
+			ollamaReorderFlag === '0' ||
+			ollamaReorderFlag === 'false';
+		let timelineSync: (ReturnType<typeof syncSummaryTimelineToEntries> & {
+			reorder?: {
+				changed: boolean;
+				method: 'deterministic' | 'ollama' | 'none';
+				datedCount: number;
+				error?: string;
+			};
+		}) | null = null;
+		if (!syncDisabled && (body.summary != null || syncForced)) {
+			let summaryForSync = updated.summary || '';
+			const reorder = await ensureSummaryTimelineNewestFirst(summaryForSync, {
+				useOllama: !ollamaReorderDisabled,
+			});
+			if (reorder.changed && reorder.summary !== summaryForSync) {
+				const rewritten = updateProfileFields(updated.id, { summary: reorder.summary });
+				if (rewritten) {
+					updated = rewritten;
+					summaryForSync = rewritten.summary || reorder.summary;
+				} else {
+					summaryForSync = reorder.summary;
+				}
+			}
+			timelineSync = {
+				...syncSummaryTimelineToEntries(updated.id, {
+					summary: summaryForSync,
+					mirrorToRelated: body.mirrorTimelineToRelated !== false,
+				}),
+				reorder: {
+					changed: reorder.changed,
+					method: reorder.method,
+					datedCount: reorder.datedCount,
+					...(reorder.error ? { error: reorder.error } : {}),
+				},
+			};
+			if (timelineSync.parsed > 0 || reorder.changed) {
+				const meta = {
+					...(updated.metadata || {}),
+					overviewStyle: 'lead_plus_timeline_rail',
+					formatMode:
+						typeof (updated.metadata || {}).formatMode === 'string' ?
+							(updated.metadata as { formatMode?: string }).formatMode
+						:	'dated_expressive',
+					timelineSyncedAt: new Date().toISOString(),
+					timelineSyncedCount: timelineSync.upsertedOwn,
+					...(reorder.changed ?
+						{
+							timelineReorderedAt: new Date().toISOString(),
+							timelineReorderMethod: reorder.method,
+						}
+					:	{}),
+				};
+				updateProfileFields(updated.id, { metadata: meta });
+			}
+		}
+
 		const detail = getProfileDetail(updated.id);
-		return NextResponse.json({ ok: true, ...detail }, { headers: { 'Cache-Control': 'no-store' } });
+		return NextResponse.json(
+			{ ok: true, ...detail, ...(timelineSync ? { timelineSync } : {}) },
+			{ headers: { 'Cache-Control': 'no-store' } },
+		);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		return NextResponse.json({ ok: false, error: message }, { status: 500 });
