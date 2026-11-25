@@ -298,7 +298,11 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 	const id = crypto.randomUUID();
 	let meta: Record<string, unknown> = { ...(input.metadata || {}) };
 	if (input.sourceCorpus) {
-		meta.corpora = [input.sourceCorpus];
+		// Keep richer corpora from the caller (e.g. news_rss bucket/feed ids); append sourceCorpus.
+		const prevCorpora = Array.isArray(meta.corpora) ? (meta.corpora as unknown[]).map(String) : [];
+		meta.corpora = prevCorpora.includes(input.sourceCorpus)
+			? prevCorpora
+			: [...prevCorpora, input.sourceCorpus];
 	}
 	const startDate = inputStart ?? null;
 	const endDate = inputEnd ?? null;
@@ -1494,11 +1498,21 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		filter.profileType === 'narratives'
 	) {
 		// Historic Events tab: most recent event date first; undated last.
+		// Same calendar day (common for news_rss pubDate=today): newest ingest / update
+		// first so fresh RSS cards float instead of sinking alphabetically by title.
 		orderSql = `CASE
              WHEN COALESCE(p.start_date, p.end_date) IS NULL THEN 1
              ELSE 0
            END ASC,
            COALESCE(p.start_date, p.end_date, '') DESC,
+           COALESCE(
+             json_extract(p.metadata_json, '$.userTouchedAt'),
+             json_extract(p.metadata_json, '$.ingestedAt'),
+             json_extract(p.metadata_json, '$.timelineSyncedAt'),
+             p.created_at,
+             ''
+           ) DESC,
+           datetime(p.updated_at) DESC,
            p.name ASC`;
 	} else {
 		orderSql = updatedThenName;

@@ -48,6 +48,29 @@ function lineForEntry(entry: TraceEntry): string {
 		return `- fetch_url ok=${ok}${status} ${url} :: ${digest}`;
 	}
 
+	if (tool === 'web_search') {
+		const hits =
+			typeof (result as { returned?: unknown }).returned === 'number'
+				? ` hits=${(result as { returned: number }).returned}`
+				: Array.isArray((result as { hits?: unknown[] }).hits)
+					? ` hits=${((result as { hits: unknown[] }).hits).length}`
+					: '';
+		const q = entry.args?.query != null ? ` q=${collapse(String(entry.args.query), 60)}` : '';
+		const top =
+			Array.isArray((result as { hits?: Array<{ title?: string; url?: string }> }).hits) &&
+			(result as { hits: Array<{ title?: string; url?: string }> }).hits[0]
+				? ` top=${collapse(
+						String(
+							(result as { hits: Array<{ title?: string; url?: string }> }).hits[0].title ||
+								(result as { hits: Array<{ title?: string; url?: string }> }).hits[0].url ||
+								'',
+						),
+						80,
+					)}`
+				: '';
+		return `- web_search ok=${ok}${hits}${q}${top} :: ${digestBody(result.error || result.hint || result, 200)}`;
+	}
+
 	if (tool === 'inspect_canvas_graph') {
 		const action = entry.args?.action != null ? ` action=${entry.args.action}` : '';
 		const keys = Object.keys(result).slice(0, 8);

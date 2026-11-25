@@ -9,6 +9,12 @@ export type WikipediaSearchArgs = {
 	query?: string;
 	limit?: number;
 	start?: number;
+	/** Fetch readable extracts for top title matches (default true). */
+	includeExtracts?: boolean;
+	/** Max articles to fetch extracts for (default 2, max 5). */
+	extractLimit?: number;
+	/** Max chars per extract (default 6000, max 20000). */
+	extractChars?: number;
 };
 
 function zimDir(): string {
@@ -63,13 +69,14 @@ function parseXmlHits(xml: string, limit: number): Array<{ title: string; url: s
 				(block.match(/<description[^>]*>([\s\S]*?)<\/description>/i) || [])[1] ||
 				'',
 		);
-		if (title || link) {
-			hits.push({
-				title: title || link,
-				url: link,
-				snippet: snippet.slice(0, 400),
-			});
-		}
+		// Skip channel/namespace noise titles that appear as bare "Wikipedia"
+		if (!title && !link) continue;
+		if (/^wikipedia$/i.test(title.trim())) continue;
+		hits.push({
+			title: title || link,
+			url: link,
+			snippet: snippet.slice(0, 400),
+		});
 	}
 	if (hits.length) return hits;
 
@@ -138,7 +145,8 @@ export async function searchWikipedia(args: WikipediaSearchArgs): Promise<{
 	url.searchParams.set('pattern', query);
 	url.searchParams.set('format', 'xml');
 	url.searchParams.set('pageLength', String(limit));
-	url.searchParams.set('start', String(start + 1)); // kiwix is 1-based
+	// kiwix-serve OpenSearch uses 0-based `start` (start=0 is the first/best hit).
+	url.searchParams.set('start', String(start));
 
 	let res: Response;
 	try {
@@ -182,16 +190,118 @@ export async function searchWikipedia(args: WikipediaSearchArgs): Promise<{
 		url: h.url.startsWith('http') ? h.url : `${origin}${h.url.startsWith('/') ? '' : '/'}${h.url}`,
 	}));
 
+	const wantExtracts = args.includeExtracts !== false;
+	const extractLimit = Math.max(
+		0,
+		Math.min(5, Math.floor(Number(args.extractLimit ?? 2) || 2)),
+	);
+	const extractChars = Math.max(
+		500,
+		Math.min(20_000, Math.floor(Number(args.extractChars ?? 6000) || 6000)),
+	);
+
+	type HitWithExtract = {
+		title: string;
+		url: string;
+		snippet: string;
+		extract?: string;
+		extractChars?: number;
+	};
+
+	const enriched: HitWithExtract[] = hits.map((h) => ({ ...h }));
+	if (wantExtracts && extractLimit > 0 && enriched.length) {
+		const qNorm = normalizeTitle(query);
+		const ranked = [...enriched].sort((a, b) => {
+			const as = titleMatchScore(normalizeTitle(a.title), qNorm);
+			const bs = titleMatchScore(normalizeTitle(b.title), qNorm);
+			return bs - as;
+		});
+		const toFetch = ranked.slice(0, extractLimit);
+		await Promise.all(
+			toFetch.map(async (hit) => {
+				const extract = await fetchKiwixExtract(hit.url, extractChars);
+				if (!extract) return;
+				const target = enriched.find((h) => h.url === hit.url);
+				if (!target) return;
+				target.extract = extract;
+				target.extractChars = extract.length;
+			}),
+		);
+	}
+
+	const exact =
+		enriched.find((h) => normalizeTitle(h.title) === normalizeTitle(query)) ||
+		enriched.find((h) => titleMatchScore(normalizeTitle(h.title), normalizeTitle(query)) >= 8) ||
+		null;
+
 	return {
 		ok: true,
 		result: {
 			ok: true,
 			query,
 			origin,
-			returned: hits.length,
-			hits,
+			returned: enriched.length,
+			hits: enriched,
+			bestTitleMatch: exact
+				? { title: exact.title, url: exact.url, hasExtract: Boolean(exact.extract) }
+				: null,
 			download: zim,
-			note: 'Offline Wikipedia via local kiwix-serve. Cite titles/snippets only; do not invent article text beyond hits.',
+			note:
+				'Offline Wikipedia via local kiwix-serve. Prefer hits[].extract (full article text) when present. Do not invent facts beyond extracts/snippets. If no on-topic extract, call web_search then fetch_url.',
 		},
 	};
+}
+
+function normalizeTitle(s: string): string {
+	return String(s || '')
+		.toLowerCase()
+		.replace(/[_/]+/g, ' ')
+		.replace(/[^\p{L}\p{N}\s,.-]+/gu, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+/** Higher is better; exact place titles should outrank loose token overlap. */
+function titleMatchScore(titleNorm: string, queryNorm: string): number {
+	if (!titleNorm || !queryNorm) return 0;
+	if (titleNorm === queryNorm) return 100;
+	if (titleNorm.startsWith(queryNorm) || queryNorm.startsWith(titleNorm)) return 40;
+	const tParts = new Set(titleNorm.split(/[\s,]+/).filter(Boolean));
+	const qParts = queryNorm.split(/[\s,]+/).filter(Boolean);
+	if (!qParts.length) return 0;
+	let hit = 0;
+	for (const p of qParts) if (tParts.has(p)) hit += 1;
+	const ratio = hit / qParts.length;
+	return Math.round(ratio * 20) + (hit >= 2 ? 5 : 0);
+}
+
+async function fetchKiwixExtract(articleUrl: string, maxChars: number): Promise<string | null> {
+	try {
+		const res = await fetch(articleUrl, {
+			headers: { accept: 'text/html,*/*' },
+			signal: AbortSignal.timeout(20_000),
+		});
+		if (!res.ok) return null;
+		const html = await res.text();
+		const text = htmlToPlainText(html);
+		if (text.length < 80) return null;
+		return text.slice(0, maxChars);
+	} catch {
+		return null;
+	}
+}
+
+function htmlToPlainText(html: string): string {
+	let s = String(html || '');
+	// Drop chrome early
+	s = s.replace(/<script[\s\S]*?<\/script>/gi, ' ');
+	s = s.replace(/<style[\s\S]*?<\/style>/gi, ' ');
+	s = s.replace(/<nav[\s\S]*?<\/nav>/gi, ' ');
+	s = s.replace(/<(header|footer)[\s\S]*?<\/\1>/gi, ' ');
+	// Prefer mw-content / mw-parser-output when present
+	const main =
+		(s.match(/<div[^>]+id="mw-content-text"[^>]*>([\s\S]*?)<\/div>\s*<div[^>]+id="mw-/i) || [])[1] ||
+		(s.match(/<div[^>]+class="[^"]*mw-parser-output[^"]*"[^>]*>([\s\S]*?)$/i) || [])[1] ||
+		s;
+	return stripTags(main).replace(/\s+/g, ' ').trim();
 }

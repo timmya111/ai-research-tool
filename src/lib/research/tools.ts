@@ -21,6 +21,7 @@ import { searchPhysicsCongress } from '@/lib/research/physicsCongressSearch';
 import { searchPqwItmo } from '@/lib/research/pqwItmoSearch';
 import { searchTwdbTrinity } from '@/lib/research/twdbTrinitySearch';
 import { searchWikipedia } from '@/lib/research/wikipediaSearch';
+import { searchWeb } from '@/lib/research/webSearch';
 import {
 	enrichProfileTool,
 	findProfileAlignmentsTool,
@@ -58,6 +59,7 @@ export type ResearchToolName =
 	| 'search_meta25'
 	| 'search_physics_congress'
 	| 'search_wikipedia'
+	| 'web_search'
 	| 'search_knowledge'
 	| 'chart_filings'
 	| 'make_logo';
@@ -681,13 +683,44 @@ export const RESEARCH_TOOL_DEFINITIONS = [
 		function: {
 			name: 'search_wikipedia',
 			description:
-				'Search the local offline English Wikipedia ZIM via kiwix-serve (default http://127.0.0.1:8765). Use for encyclopedia background when the ZIM is downloaded and the server is running. Returns titles + snippets only.',
+				'Search the local offline English Wikipedia ZIM via kiwix-serve (default http://127.0.0.1:8765). Returns titles, snippets, and article extracts for the best title matches. Use for encyclopedia / place history when the ZIM is available.',
 			parameters: {
 				type: 'object',
 				properties: {
-					query: { type: 'string', description: 'Search pattern' },
+					query: { type: 'string', description: 'Search pattern (prefer exact titles like "Albany, Oklahoma")' },
 					limit: { type: 'number', description: 'Max hits (default 8, max 25)' },
 					start: { type: 'number', description: 'Pagination offset (0-based, default 0)' },
+					includeExtracts: {
+						type: 'boolean',
+						description: 'Fetch readable article text for top matches (default true)',
+					},
+					extractLimit: { type: 'number', description: 'How many top hits to extract (default 2, max 5)' },
+				},
+				required: ['query'],
+			},
+		},
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'web_search',
+			description:
+				'Live web search via local SearXNG (default http://127.0.0.1:8888). Use when local knowledge is empty or off-topic, or when the user asks for current/online sources. Wikipedia hits are orientation only. fetch_url at least one non-Wikipedia page (.gov, .edu, official org, news, or primary document), then search again with the returned edgeCaseQuery for exceptions, disputes, and boundary conditions. Cite both kinds of source.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Search query (include place/state for local history)' },
+					limit: { type: 'number', description: 'Max hits (default 8, max 20)' },
+					categories: {
+						type: 'string',
+						description: 'Optional SearXNG categories (default general; e.g. news, science)',
+					},
+					preferHosts: {
+						type: 'array',
+						items: { type: 'string' },
+						description:
+							'Optional host preference boosts (e.g. ["census.gov","okhistory.org","state.gov"]). Do not set this to wikipedia.org.',
+					},
 				},
 				required: ['query'],
 			},
@@ -1518,6 +1551,7 @@ const CORE_TOOLS = new Set<ResearchToolName>([
 	'upsert_profile',
 	'fetch_url',
 	'search_wikipedia',
+	'web_search',
 	'current_time',
 ]);
 
@@ -1589,8 +1623,18 @@ export function selectResearchToolsForQuestion(
 		selected.add('search_gemini_qa');
 	}
 
+	// Place / town / local-history questions: stick to CORE (wikipedia + web_search + knowledge).
+	// Do not flood the prompt with unrelated corpora (regional NY/Boston, IWM, FINRA, etc.).
+	const placeHistoryQuestion =
+		/\bhistory of\b/.test(q) ||
+		/\b(tell me about|what is|where's|where is)\b.{0,40}\b(ok(?:lahoma)?|tx|texas|county|town|city|cdp)\b/.test(
+			q,
+		) ||
+		/\b[a-z][a-z.'-]{2,},\s*(ok(?:lahoma)?|tx|texas)\b/.test(q) ||
+		/\b(albany|bokchito|caddo|durant|bennington|achille|colbert|calera)\b/.test(q);
+
 	// If no domain keyword matched, include the most commonly used broad research tools as fallback
-	if (selected.size === CORE_TOOLS.size) {
+	if (selected.size === CORE_TOOLS.size && !placeHistoryQuestion) {
 		selected.add('search_entity_dossiers');
 		selected.add('search_regional_history');
 		selected.add('search_iwm_conflict_timeline');
@@ -1864,7 +1908,25 @@ export async function runResearchTool(
 			query: args.query != null ? String(args.query) : undefined,
 			limit: args.limit as number | undefined,
 			start: args.start as number | undefined,
+			includeExtracts: args.includeExtracts === undefined ? undefined : Boolean(args.includeExtracts),
+			extractLimit: args.extractLimit as number | undefined,
+			extractChars: args.extractChars as number | undefined,
 		});
+	}
+
+	if (tool === 'web_search') {
+		const preferHosts = Array.isArray(args.preferHosts)
+			? args.preferHosts.map(String)
+			: args.preferHosts != null
+				? [String(args.preferHosts)]
+				: undefined;
+		const result = await searchWeb({
+			query: args.query != null ? String(args.query) : undefined,
+			limit: args.limit as number | undefined,
+			categories: args.categories != null ? String(args.categories) : undefined,
+			preferHosts,
+		});
+		return { ok: result.ok, result };
 	}
 
 	if (tool === 'search_concealment_scrubs') {

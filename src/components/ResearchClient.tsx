@@ -345,6 +345,9 @@ export default function ResearchClient() {
 	const [showAdvancedModel, setShowAdvancedModel] = useState(false);
 	const [question, setQuestion] = useState('');
 	const [history, setHistory] = useState<ChatTurn[]>([]);
+	/** Always-current history for Ask (avoids stale closure when posting to /api/chat). */
+	const historyRef = useRef<ChatTurn[]>([]);
+	historyRef.current = history;
 	/** False until `/api/chat/session` has hydrated (avoids wiping disk with []). */
 	const [sessionReady, setSessionReady] = useState(false);
 	const [sessionMeta, setSessionMeta] = useState<{ id: string; createdAt: string } | null>(null);
@@ -635,7 +638,8 @@ export default function ResearchClient() {
 				body: JSON.stringify({
 					question: q,
 					model: requestedModel,
-					history: history.slice(-8).map((t) => ({ role: t.role, content: t.content })),
+					// Full session until New session; server compactSessionHistory keeps it in budget.
+					history: historyRef.current.map((t) => ({ role: t.role, content: t.content })),
 					availableModels: status?.models || preferredModels,
 					aboutNodeGraph: useGraph,
 					canvasSnapshot: snap,
@@ -698,7 +702,6 @@ export default function ResearchClient() {
 		autoMode,
 		bumpKnowledge,
 		busy,
-		history,
 		model,
 		persistChat,
 		persistFetches,
@@ -913,14 +916,16 @@ export default function ResearchClient() {
 					<p className="m-0 text-xs font-semibold opacity-80">Q&amp;A</p>
 					{sessionReady && history.length > 0 ? (
 						<p className="m-0 truncate text-[10px] opacity-55">
-							{history.length} message{history.length === 1 ? '' : 's'} · saved on disk until New
-							session
+							{history.length} message{history.length === 1 ? '' : 's'} · model keeps this thread’s
+							context · saved until New session
 							{sessionMeta?.createdAt
 								? ` · started ${new Date(sessionMeta.createdAt).toLocaleString()}`
 								: ''}
 						</p>
 					) : sessionReady ? (
-						<p className="m-0 text-[10px] opacity-55">Session persists on disk until New session</p>
+						<p className="m-0 text-[10px] opacity-55">
+							Follow-ups stay on subject until New session (full thread remembered)
+						</p>
 					) : (
 						<p className="m-0 text-[10px] opacity-55">Loading session…</p>
 					)}
@@ -958,7 +963,7 @@ export default function ResearchClient() {
 				{history.length === 0 ? (
 					<p className="m-0 opacity-60">
 						{sessionReady
-							? 'No messages yet. Chat history is kept on disk until you click New session. Pick a suggested question above (with Auto-retrieve on) to see full filing details from the local knowledge store.'
+							? 'No messages yet. The model remembers this whole thread (for follow-ups like “tell me more”) until you click New session. Pick a suggested question above (with Auto-retrieve on) to see full filing details from the local knowledge store.'
 							: 'Loading saved chat session…'}
 					</p>
 				) : (
@@ -1203,7 +1208,7 @@ export default function ResearchClient() {
 								/>
 								<span>Auto model</span>
 								<span className="font-normal opacity-70">
-									{autoMode ? 'plans single or tools+reason→merge' : 'manual override'}
+									{autoMode ? 'one GPU-resident model, no planner swap' : 'manual override'}
 								</span>
 							</label>
 							{!autoMode || showAdvancedModel ? (

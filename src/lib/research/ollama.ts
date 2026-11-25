@@ -177,6 +177,7 @@ export async function ollamaChat(options: {
 		options.numCtx != null && Number.isFinite(Number(options.numCtx))
 			? Math.max(2048, Math.min(131_072, Math.floor(Number(options.numCtx))))
 			: getOllamaNumCtx();
+	const keepAlive = String(process.env.RESEARCH_OLLAMA_KEEP_ALIVE || '30m').trim() || '30m';
 	const res = await fetch(`${baseUrl}/api/chat`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
@@ -185,6 +186,7 @@ export async function ollamaChat(options: {
 			messages: options.messages,
 			tools: options.tools,
 			stream: false,
+			keep_alive: keepAlive,
 			options: { num_ctx: numCtx },
 		}),
 		cache: 'no-store',

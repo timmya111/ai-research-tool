@@ -486,6 +486,19 @@ async function createEvent({ feed, item, article }) {
 	const summary = buildSummary({ feed, item, article });
 	const corpora = ['news_rss', feed.bucket, feed.id].filter(Boolean);
 	if (feed.region) corpora.push(`region:${feed.region}`);
+	const ingestedAt = new Date().toISOString();
+	/** Map news buckets → profile category chips (non-person ProfileTypes). */
+	const bucketTags = {
+		military_public: ['government'],
+		geology_geotech: ['region'],
+		ok_tx_geology: ['region'],
+		ok_tx_projects: ['firm'],
+		projects_deals: ['firm'],
+		global_affairs: ['government'],
+		science_tech: ['education'],
+		tx_ok_crime: ['government'],
+	};
+	const categoryTags = [...new Set([...(bucketTags[feed.bucket] || [])].filter(Boolean))];
 	const body = {
 		profileType: 'historic_event',
 		name: item.title,
@@ -504,14 +517,18 @@ async function createEvent({ feed, item, article }) {
 			sourceUrl: item.link,
 			articleMethod: article.method || null,
 			articleChars: summary.length,
-			articleFullTextAt: new Date().toISOString(),
+			articleFullTextAt: ingestedAt,
 			articleByline: article.byline || null,
-			ingestedAt: new Date().toISOString(),
+			ingestedAt,
+			// Float on left list (All + Historic Events same-day tie-break).
+			userTouchedAt: ingestedAt,
+			// Also stamp in metadata so list/detail chips resolve even if top-level is dropped.
+			categoryTags,
 			overviewStyle: 'lead_plus_timeline_rail',
 			formatMode: 'dated_expressive',
 		},
 		identifiers: [{ scheme: 'url', value: normalizeUrl(item.link) }],
-		categoryTags: [],
+		categoryTags,
 	};
 	if (DRY_RUN) return { dryRun: true, slug: body.slug, articleChars: summary.length };
 

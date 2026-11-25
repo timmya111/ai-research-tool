@@ -19,6 +19,7 @@ import {
 	type ResearchRouteDecision,
 	type ResearchWorkerPlan,
 } from '@/lib/research/orchestrator';
+import { isWikipediaFamilyHost } from '@/lib/research/webSearch';
 
 /** Cap tool JSON fed back into the model so 4k–32k contexts survive large knowledge/fetch dumps. */
 const TOOL_RESULT_MAX_CHARS = (() => {
@@ -27,12 +28,120 @@ const TOOL_RESULT_MAX_CHARS = (() => {
 	return Math.max(1500, Math.min(48_000, Math.floor(n)));
 })();
 
+/** Whole-session history budget (chars). Older assistant replies are truncated first. */
+const SESSION_HISTORY_MAX_CHARS = (() => {
+	const n = Number(process.env.RESEARCH_CHAT_HISTORY_MAX_CHARS || 28_000);
+	if (!Number.isFinite(n)) return 28_000;
+	return Math.max(4_000, Math.min(120_000, Math.floor(n)));
+})();
+
+/** Keep the last N turns nearly full; older assistant turns get compressed. */
+const SESSION_HISTORY_RECENT_FULL_TURNS = (() => {
+	const n = Number(process.env.RESEARCH_CHAT_HISTORY_RECENT_TURNS || 10);
+	if (!Number.isFinite(n)) return 10;
+	return Math.max(4, Math.min(40, Math.floor(n)));
+})();
+
+function webSourceGap(
+	toolTrace: Array<{ tool: string; args: Record<string, unknown>; result: unknown }>,
+): 'ok' | 'need-nonwiki' | 'need-edge' {
+	const consultedWeb = toolTrace.some((t) => t.tool === 'web_search' || t.tool === 'search_wikipedia');
+	if (!consultedWeb) return 'ok';
+	const nonWikiFetch = toolTrace.some((t) => {
+		if (t.tool !== 'fetch_url') return false;
+		const url = String(t.args?.url || '');
+		return Boolean(url) && !isWikipediaFamilyHost(url);
+	});
+	if (!nonWikiFetch) return 'need-nonwiki';
+	const edgeSearch = toolTrace.some((t) => {
+		if (t.tool !== 'web_search') return false;
+		return /exception|dispute|official|primary source|-wikipedia|boundary|edge case/i.test(
+			String(t.args?.query || ''),
+		);
+	});
+	return edgeSearch ? 'ok' : 'need-edge';
+}
+
 function stringifyToolResultForModel(result: unknown): string {
 	const full = JSON.stringify(result);
 	if (full.length <= TOOL_RESULT_MAX_CHARS) return full;
 	const marker = `\n…[truncated ${full.length - TOOL_RESULT_MAX_CHARS} chars for model context; ask a narrower query or URL]`;
 	const budget = Math.max(200, TOOL_RESULT_MAX_CHARS - marker.length);
 	return `${full.slice(0, budget)}${marker}`;
+}
+
+function truncateForHistory(text: string, maxChars: number): string {
+	const s = String(text || '').trim();
+	if (s.length <= maxChars) return s;
+	const marker = `\n…[truncated ${s.length - maxChars} chars]`;
+	const budget = Math.max(80, maxChars - marker.length);
+	return `${s.slice(0, budget)}${marker}`;
+}
+
+/**
+ * Keep the full session (until New session) in the prompt, but compress older
+ * assistant replies so tools + system prompt still fit. User questions stay intact.
+ */
+export function compactSessionHistory(
+	history: OllamaChatMessage[],
+	options?: { maxChars?: number; recentFullTurns?: number },
+): OllamaChatMessage[] {
+	const maxChars = options?.maxChars ?? SESSION_HISTORY_MAX_CHARS;
+	const recentFull = options?.recentFullTurns ?? SESSION_HISTORY_RECENT_FULL_TURNS;
+	const cleaned = (Array.isArray(history) ? history : [])
+		.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim())
+		.map((m) => ({
+			role: m.role as 'user' | 'assistant',
+			content: String(m.content || '').trim(),
+		}));
+	if (!cleaned.length) return [];
+
+	const out: OllamaChatMessage[] = cleaned.map((m, i) => {
+		const fromEnd = cleaned.length - 1 - i;
+		if (m.role === 'user') {
+			// Keep questions; only clip extreme pastes.
+			return { role: 'user', content: truncateForHistory(m.content, fromEnd < recentFull ? 6_000 : 2_000) };
+		}
+		const cap = fromEnd < recentFull ? 3_500 : fromEnd < recentFull * 2 ? 1_200 : 500;
+		return { role: 'assistant', content: truncateForHistory(m.content, cap) };
+	});
+
+	let total = out.reduce((n, m) => n + m.content.length, 0);
+	// Drop oldest turns (prefer dropping compressed assistant replies) until under budget.
+	while (total > maxChars && out.length > 2) {
+		const removed = out.shift();
+		if (!removed) break;
+		total -= removed.content.length;
+		// If we dropped a user turn, also drop the following assistant if orphaned pairing looks odd — keep simple FIFO.
+	}
+	return out;
+}
+
+/**
+ * Expand short / referential follow-ups with recent user questions so RAG and
+ * tool selection stay on the same subject ("tell me more", "what about him", …).
+ */
+export function buildFollowUpAwareQuery(question: string, history: OllamaChatMessage[]): string {
+	const q = String(question || '').trim();
+	if (!q) return q;
+	const recentUsers = (Array.isArray(history) ? history : [])
+		.filter((m) => m?.role === 'user' && String(m.content || '').trim())
+		.map((m) => String(m.content).trim())
+		.slice(-5);
+	if (!recentUsers.length) return q;
+
+	const short = q.split(/\s+/).filter(Boolean).length <= 14;
+	const referential =
+		/\b(he|she|they|him|her|them|his|hers|their|it|its|this|that|these|those|same|above|previous|earlier|again|more|continue|also|too)\b/i.test(
+			q,
+		) ||
+		/^(what about|how about|and\b|also\b|tell me more|go on|continue|why\??$|how so|expand|details|same for|compare)\b/i.test(
+			q,
+		);
+	if (!short && !referential) return q;
+
+	const prior = recentUsers.slice(-3).join('\n• ');
+	return `${q}\n\n[Conversation subject — recent user questions]\n• ${prior}`;
 }
 
 function buildSystemPrompt(
@@ -58,6 +167,7 @@ function buildSystemPrompt(
 You help with research questions: summarizing sources, cross-checking URLs, comparing claims, drafting concise findings, searching a local knowledge store, charting Bryan County filing volume over time, hunting for fraud / possible-fraud *patterns* in filings and name graphs, answering Oklahoma/Texas seismic questions from the USGS ComCat digests in the OK TX Seismic project, answering Oklahoma/Texas tornado questions from NOAA SPC + NCEI digests in the OK TX Tornadoes project, searching local authority initiative timelines (ICE/DHS/DEA/WH EOs), searching entity dossiers (people/orgs/places cross-linked to those events), searching the local YouTube concealment-scrub archive (captions/cards/OCR for channels the user added), searching offline Wikipedia via kiwix-serve when available, and (when enabled) inspecting a FINRA canvas graph snapshot from the live visualizer.
 ${focusLine}
 Rules:
+- Conversation continuity (critical): Prior user/assistant turns in this chat are the active thread until the user starts a New session. Stay on that subject. Resolve pronouns and vague references (he/she/they/it/this/that/those/the same/more/continue) using the most recent questions and answers. Prefer follow-up tools and entities from that thread over switching topics. Only change subject when the user clearly starts a new one.
 - Use tools for facts when the user pastes a URL or asks you to look something up. Do not invent page contents, quotes, or citations.
 - When the user pastes any http(s) URL (page, API, or PDF), call fetch_url with that URL. Open fetch is on by default for public hosts (private/local still blocked). For HTML pages, linked PDFs are downloaded under .data/fetched/pdfs/ and text-extracted (default maxPdfs=20 — enough for USGS pubs with report+plates). If discoveredPdfCount > pdfDownloads length, call fetch_url again with a higher maxPdfs. Prefer extracted PDF text for citations; scanned plates may have empty text but files are still saved.
 - Prefer search_knowledge before inventing prior facts from earlier sessions. Empty hits mean no local memory for that query.
@@ -72,7 +182,8 @@ Rules:
 - For people/org/place dossiers (Karp, Thiel, Vance, Palantir, Halliburton, Rockefeller hub, Campion Trail, alias buckets, etc.) and entity↔authority edges: call search_entity_dossiers. Do not invent conspiracy links; cite dossier evidence URLs/notes only. Alias buckets stay candidate until pinned.
 - For cross-source entity alignment across ALL local corpora (people, firms, education, non-profits, medical hospitals, government, and historic events): call search_profiles to find unified profiles and their links; call enrich_profile to research and fill missing details from local offline Wikipedia, FINRA BrokerCheck (by CRD), county deeds/Research Drive, and Bryan County UCC filings (strictly validated: NEVER merges name-only matches — holds uncorroborated matches as possible_match_name_only notes until validated by address, firm, military base, institution, or identifier); call get_profile_timeline on a historic_event or actor to compare multiple source angles and surface chronological timeline gaps with cross-source gap-fill leads; call find_profile_alignments to inspect candidate cross-corpus matches. Always respect caution tiers (observation / closer_look / stronger_indicator) and treat proposed alignments & possible_match_name_only notes as leads to verify, not proven conclusions.
 - When the user pastes founding/start dates, end/status, merger/predecessor history, address/HQ, EIN/URL, or asks to add/save/update firms (or other entities) into the app Profiles data: call upsert_profile for each entity (search_profiles first to reuse existing slugs). On the FIRST call include everything available from the paste in one shot: startDate/endDate, summary, aliases, locations (raw street + role hq|associated), identifiers (irs_ein, url, …), and links (owned_by subsidiary→parent; business_tie for predecessor/successor/merger with a clear roleLabel). Use endDate="" to clear a wrong end on still-active firms. For follow-up detail fills, pass slug=firm:… and omit name when the display name contains & or other XML-special characters (Ollama tool XML breaks on unescaped &). Phone / registered agent go in summary or metadata (no phone identifier scheme). Then briefly confirm created/updated slugs and UI paths. Use enrich_profile afterward only when they want Wikipedia/BrokerCheck research on an existing card.
-- For encyclopedia background from the local offline English Wikipedia ZIM: call search_wikipedia (kiwix-serve on :8765). If the tool says the ZIM is still downloading or the server is down, say so — do not invent article text.
+- For encyclopedia / place history (e.g. "history of Albany, OK", town/CDP/county background): call search_wikipedia with the exact titled form when possible ("Albany, Oklahoma") for orientation only. Never invent colleges, sports teams, employers, or people that are not in a fetched source. Do NOT use search_regional_history, FINRA, IWM, or authority tools for ordinary Oklahoma/Texas town history. If the ZIM is still downloading or the server is down, say so — do not invent article text. Wikipedia is not a sufficient sole source: also web_search and fetch_url at least one non-Wikipedia page.
+- Live web sources (critical): Wikipedia (offline ZIM or en.wikipedia.org) may orient an answer and must not be the only source. After web_search, fetch_url at least one non-Wikipedia URL (.gov, .edu, official organization, news, or a primary document). Then call web_search again with the tool's edgeCaseQuery (exceptions, disputes, name or date changes, boundary conditions, official wording that the encyclopedia lead skips). In the answer, give the mainstream fact, then a short Edge cases section citing the non-Wikipedia page, and say where sources disagree. If search_knowledge and search_wikipedia are empty or off-topic, do NOT stop with "not in local store" and do NOT invent biographies — go to web_search. If SearXNG or fetch_url fails, say so. Local filing, chart, seismic, and tornado questions stay on their knowledge-store tools; do not add Wikipedia just to satisfy this rule.
 - For YouTube videos the user added to this app (ControlAltHistory, MindUnveiled, eyes_wideopen, dig.archaeology, FRESHboosters, PhilipThompson, HiddenAmuraKa, UTDGeoscienceStudio, TheMysteryAbyss, Fall of Civilizations, Timeline World History, EpicHistoryTV, History Matters, Global History Scope, Dr. Joanne Freeman, Ancient Lives, Silk Road Asian History, Spark, Ottoman History, History’s Mysteries WWI doc, The Great War, Old Britannia, History Mapped Out, Interesting Books Reviewed, questions playlist, Athens Unveiled, deep SCRUB-01…05): call search_concealment_scrubs. For timeline / chronology / “years mentioned” questions, pass timelinesOnly=true (and limit≥2). Prefer deep SCRUB cards when present. Quote timeline tables from the tool excerpts; label them as narration/OCR leads, not verified facts. Never claim you lack YouTube access when this local archive exists — do not fall back to Bryan County filings for video questions.
 - For Texas Trinity Aquifer / TWDB groundwater PDFs (GAMs, advisories, GMPs, water levels): call search_twdb_trinity (and/or search_knowledge on project “TWDB Trinity Aquifer”). Do not stall asking A/B/C/D download options when the user already wants the full corpus organized for retrieval — assume local corpus build is the path; report progress from tool errors if not ready yet.
 - For International Society for Digital Earth / digitalearth-isde.org / Big Earth Data / ISDE lectures: call search_digital_earth (pages, PDFs, data-layer refs, videos with English transcripts). Prefer transcript.en excerpts for speech content.
@@ -89,7 +200,7 @@ Rules:
 - Only use inspect_canvas_graph when a canvas snapshot is attached for a node-graph question.
 - Prefer short, structured answers. Lead with observations, then brief notes.
 - If a tool fails or a host is blocked, say so clearly. Private hosts need RESEARCH_FETCH_HOSTS; open fetch can be disabled with RESEARCH_OPEN_FETCH=0.
-- Do not claim you browsed the live web unless fetch_url succeeded.
+- Do not claim you browsed the live web unless web_search and/or fetch_url succeeded.
 - When listing people from the canvas, use: Name :: CRD# 1234567
 - Keep answers concise.
 
@@ -145,6 +256,8 @@ async function runToolAgentLoop(options: {
 	toolTrace: ResearchAgentResult['toolTrace'];
 	error?: string;
 }> {
+	const sessionHistory = compactSessionHistory(options.history);
+	const followUpQuery = buildFollowUpAwareQuery(options.question, sessionHistory);
 	const userContent =
 		options.priorContext
 			? `${options.question}\n\n---\nPrior worker findings (use as evidence; do not invent beyond this + tools):\n${options.priorContext}`
@@ -160,7 +273,7 @@ async function runToolAgentLoop(options: {
 				options.knowledgeSnippets,
 			),
 		},
-		...options.history.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content),
+		...sessionHistory,
 		{ role: 'user', content: userContent },
 	];
 	const toolTrace: ResearchAgentResult['toolTrace'] = [];
@@ -170,14 +283,19 @@ async function runToolAgentLoop(options: {
 	};
 
 	const activeTools = options.useTools
-		? selectResearchToolsForQuestion(options.question, options.aboutNodeGraph)
+		? selectResearchToolsForQuestion(followUpQuery, options.aboutNodeGraph)
 		: undefined;
 
 	const xmlToolHint =
 		'Your previous tool call failed Ollama XML parsing (often an unescaped & in a parameter). Retry the tool call: prefer slug=firm:… and omit name when it contains &; put street addresses in locations[].raw and EIN/URL in identifiers[]; put phone in summary/metadata.';
+	const sourceDiversityHint = (gap: 'need-nonwiki' | 'need-edge') =>
+		gap === 'need-edge'
+			? 'Do not answer yet. You still need an edge-case pass. Call web_search once with the edgeCaseQuery from the last web_search (exceptions, disputes, official primary source, boundary conditions; include -wikipedia). fetch_url exactly one new non-Wikipedia page from that search, not every hit. Then answer with the mainstream fact and a short Edge cases section, and say where sources disagree.'
+			: 'Do not answer yet. Wikipedia (or a mirror) is not a sufficient sole source. Call web_search once with the edgeCaseQuery from the last web_search (exceptions, disputes, official wording, boundary conditions; add -wikipedia). Then fetch_url exactly one non-Wikipedia URL (.gov, .edu, official organization, news, or a primary document) — not every hit, and not a Wikipedia URL. In the final answer, state the mainstream fact and a short Edge cases section. If that one fetch fails, say so.';
 
 	try {
 		let xmlRetries = 0;
+		let diversityNudged = false;
 		for (let round = 0; round < options.maxRounds; round++) {
 			let message: OllamaChatMessage;
 			try {
@@ -203,6 +321,17 @@ async function runToolAgentLoop(options: {
 
 			const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 			if (!toolCalls.length || !options.useTools) {
+				const sourceGap = webSourceGap(toolTrace);
+				if (
+					options.useTools &&
+					!diversityNudged &&
+					round < options.maxRounds - 1 &&
+					sourceGap !== 'ok'
+				) {
+					diversityNudged = true;
+					messages.push({ role: 'user', content: sourceDiversityHint(sourceGap) });
+					continue;
+				}
 				return {
 					ok: true,
 					answer: assistantMessageText(message) || '(empty model response)',
@@ -382,8 +511,11 @@ export async function runResearchAgent(options: {
 	knowledgeSnippets?: string;
 }): Promise<ResearchAgentResult> {
 	const requested = String(options.model || RESEARCH_AUTO_MODEL).trim() || RESEARCH_AUTO_MODEL;
+	const history = compactSessionHistory(Array.isArray(options.history) ? options.history : []);
+	const followUpQuery = buildFollowUpAwareQuery(options.question, history);
 	const route = await routeResearchModel({
-		question: options.question,
+		// Route on follow-up-aware text so "tell me more" keeps the prior topic's tools/model.
+		question: followUpQuery,
 		availableModels: options.availableModels,
 		forceModel: requested === RESEARCH_AUTO_MODEL ? null : requested,
 	});
@@ -392,7 +524,6 @@ export async function runResearchAgent(options: {
 		Number.isFinite(envDefault) && envDefault > 0 ? Math.floor(envDefault) : 8;
 	// Soft default 8; hard cap 12 (was 5 / 8). Env RESEARCH_AGENT_MAX_ROUNDS overrides default.
 	const maxRounds = Math.max(1, Math.min(12, options.maxRounds ?? defaultRounds));
-	const history = Array.isArray(options.history) ? options.history : [];
 	const aboutNodeGraph = Boolean(options.aboutNodeGraph);
 	const canvasSnapshot =
 		aboutNodeGraph && options.canvasSnapshot && typeof options.canvasSnapshot === 'object'
@@ -424,7 +555,8 @@ export async function runResearchAgent(options: {
 	if (!knowledgeSnippets && ragAuto && projectId) {
 		try {
 			const topK = Math.max(1, Math.min(12, Number(process.env.RESEARCH_RAG_TOP_K) || 8));
-			const hits = await retrieve(options.question, { projectId, limit: topK });
+			// Follow-ups like "tell me more" need recent-question context for retrieval.
+			const hits = await retrieve(followUpQuery, { projectId, limit: topK });
 			retrievedCount = hits.length;
 			// Larger budget so Bryan filing notes can include full field lists in answers.
 			knowledgeSnippets = formatSnippetsForPrompt(hits, { maxChars: 8000 }) || undefined;
@@ -474,7 +606,9 @@ export async function runResearchAgent(options: {
 		const shouldCheck =
 			ran.ok &&
 			Boolean(route.factCheckModel) &&
-			(route.pipeline === 'multi' || shouldHeuristicMulti(options.question) || /compar|analy|explain why|versus|pros and cons/i.test(options.question));
+			(route.pipeline === 'multi' ||
+				shouldHeuristicMulti(options.question) ||
+				/\b(fact[- ]?check|shell|nominee|fraud|fraudulent|straw[- ]?party)\b/i.test(options.question));
 		const answer = shouldCheck
 			? await maybeFactCheckAnswer({
 					question: options.question,

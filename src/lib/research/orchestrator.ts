@@ -45,7 +45,29 @@ export type ResearchRouteDecision = {
 const TOOLISH_RE =
 	/\b(fetch|url|http|https|lookup|look up|search|scrape|read (the )?page|open (the )?link|source|cite|citation|document|pdf|api|crd|brokercheck|adviserinfo|finra|sidecar|employment history|registration history|firm connections|roster|connections for)\b/i;
 const HARD_RE =
-	/\b(compar|analy[sz]e|explain why|synthesize|multi[- ]step|strategy|cross[- ]ref|reconcile|debate|summarize (all|everything)|complex|versus|vs\.?|pros and cons|trade-?offs?)\b/i;
+	/\b(compare|comparing|comparison|analy[sz]e|explain why|synthesize|multi[- ]step|strategy|cross[- ]ref|reconcile|debate|summarize (all|everything)|complex|versus|vs\.?|pros and cons|trade-?offs?)\b/i;
+
+function envOn(name: string, fallback: string): boolean {
+	const v = String(process.env[name] ?? fallback).trim().toLowerCase();
+	return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Second-model planner. Default off: on an 8GB GPU the tiny router evicts the
+ * warm tools model, and its plan was collapsed back to that same model.
+ */
+export function plannerEnabled(): boolean {
+	return envOn('RESEARCH_PLANNER', '0');
+}
+
+/**
+ * Tools worker plus a larger reason/merge model. Default off: the stronger
+ * installed reasoners (nemotron 25GB, phi4 11GB, qwen2.5:14b, flint, gemma4,
+ * qwen3.6) spill off this GPU and are slower than one resident tools pass.
+ */
+export function heavyReasonEnabled(): boolean {
+	return envOn('RESEARCH_HEAVY_REASON', '0');
+}
 const URL_RE = /https?:\/\/[^\s]+/i;
 /** Local Bryan / knowledge / chart questions need tools even when phrased analytically. */
 const LOCAL_DATA_RE =
@@ -78,6 +100,7 @@ function toolsModelOf(candidates: string[]): string {
 }
 
 function reasonModelOf(candidates: string[]): string {
+	if (!heavyReasonEnabled()) return toolsModelOf(candidates);
 	return pickAvailable(candidates, PREFERRED_REASON_MODELS, toolsModelOf(candidates));
 }
 
@@ -93,6 +116,7 @@ function factCheckModelOf(installed: string[]): string | null {
 }
 
 export function shouldHeuristicMulti(question: string): boolean {
+	if (!heavyReasonEnabled()) return false;
 	const q = String(question || '');
 	if (URL_RE.test(q) && TOOLISH_RE.test(q)) return true;
 	if (HARD_RE.test(q) && TOOLISH_RE.test(q)) return true;
@@ -166,11 +190,14 @@ export function heuristicRouteModel(
 		return buildMultiPlan(q, candidates, 'heuristic: adaptive multi — tools/fetch + reason + merge', undefined, fc);
 	}
 	if (HARD_RE.test(q) && !LOCAL_DATA_RE.test(q)) {
+		const sameResident = reasonModel === toolsModel;
 		return {
 			mode: 'auto',
 			pipeline: 'single',
 			model: reasonModel,
-			reason: 'heuristic: open-ended / analytical question → stronger single model',
+			reason: sameResident
+				? 'heuristic: analytical question → GPU-resident tools model'
+				: 'heuristic: open-ended / analytical question → stronger single model',
 			candidates,
 			factCheckModel: fc,
 		};
@@ -351,6 +378,12 @@ export async function routeResearchModel(options: {
 	const candidates = listAutoChatCandidates(installed || []);
 	const factCheckModel = factCheckModelOf(installed || []);
 	const fallback = heuristicRouteModel(options.question, candidates, factCheckModel);
+	if (!plannerEnabled()) {
+		return {
+			...fallback,
+			reason: `${fallback.reason} (planner skipped: one GPU-resident tools model)`,
+		};
+	}
 	const routerModel = pickAvailable(candidates, PREFERRED_ROUTER_MODELS, DEFAULT_RESEARCH_MODEL);
 
 	try {
@@ -383,6 +416,21 @@ Reply JSON only, one of:
 		if (parsed) {
 			const plan = sanitizePlannerPlan(parsed, options.question, candidates, routerModel, factCheckModel);
 			if (plan) {
+				const toolsModel = toolsModelOf(candidates);
+				const multiWouldSwap =
+					plan.pipeline === 'multi' &&
+					(plan.workers || []).some((w) => w.model && w.model !== toolsModel);
+				if (!heavyReasonEnabled() && (plan.pipeline === 'multi' || plan.model !== toolsModel || multiWouldSwap)) {
+					return {
+						mode: 'auto',
+						pipeline: 'single',
+						model: toolsModel,
+						reason: `${plan.reason} (pinned to ${toolsModel}: heavier free models spill this GPU)`,
+						routerModel,
+						candidates,
+						factCheckModel,
+					};
+				}
 				if (
 					plan.pipeline === 'multi' &&
 					!shouldHeuristicMulti(options.question) &&
@@ -391,7 +439,7 @@ Reply JSON only, one of:
 					return {
 						mode: 'auto',
 						pipeline: 'single',
-						model: toolsModelOf(candidates),
+						model: toolsModel,
 						reason: `${plan.reason} (adaptive: collapsed multi → single tools)`,
 						routerModel,
 						candidates,
