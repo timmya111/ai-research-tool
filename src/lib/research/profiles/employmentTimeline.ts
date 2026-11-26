@@ -62,13 +62,20 @@ function firmCrdFromNote(note: string): string | null {
 	return m ? m[1]!.trim() : null;
 }
 
-function spanTitle(orgName: string, isCurrent: boolean, relationType: string): string {
+function spanTitle(
+	orgName: string,
+	isCurrent: boolean,
+	relationType: string,
+	roleLabel?: string | null,
+): string {
+	const role = String(roleLabel || '').trim();
+	const suffix = isCurrent ? ' (current)' : '';
+	if (role) return `${role} at ${orgName}${suffix}`;
 	const verb =
 		relationType === 'registered_at' ? 'Registered at'
 		: relationType === 'alumni_or_faculty' ? 'At'
 		: relationType === 'affiliated_with' ? 'Affiliated with'
 		: 'Employed at';
-	const suffix = isCurrent ? ' (current)' : '';
 	return `${verb} ${orgName}${suffix}`;
 }
 
@@ -203,7 +210,12 @@ export function syncEmploymentSpansToTimeline(profileId: string): {
 		for (const span of spans) {
 			const location = branchFromNote(span.row.evidenceNote);
 			const firmCrd = firmCrdFromNote(span.row.evidenceNote);
-			const title = spanTitle(span.row.orgName, span.isCurrent, span.row.relationType);
+			const title = spanTitle(
+				span.row.orgName,
+				span.isCurrent,
+				span.row.relationType,
+				span.row.roleLabel,
+			);
 			const summary = spanSummary({
 				start: span.start,
 				end: span.end,

@@ -473,11 +473,83 @@ export type UpsertProfileToolArgs = {
 	locations?: UpsertProfileToolLocation[];
 	identifiers?: UpsertProfileToolIdentifier[];
 	links?: UpsertProfileToolLink[];
-	metadata?: Record<string, unknown>;
+	/** Object preferred; JSON strings from models are coerced. */
+	metadata?: Record<string, unknown> | string | null;
 	sourceCorpus?: string;
 	createPeerIfMissing?: boolean;
 	dryRun?: boolean;
 };
+
+const TIMELINE_SECTION_HEADING_RE =
+	/^#{1,6}\s*(?:timeline|chronology|milestones?|key dates)\b/i;
+
+function summaryHasTimelineSection(summary: string): boolean {
+	return summary.split(/\r?\n/).some((line) => TIMELINE_SECTION_HEADING_RE.test(line.trim()));
+}
+
+/** Extract `## Timeline` / `### Timeline` (etc.) blocks from a summary. */
+function extractTimelineSections(summary: string): string {
+	const lines = String(summary || '').split(/\r?\n/);
+	const out: string[] = [];
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i] || '';
+		const heading = line.trim().match(/^(#{1,6})\s+(.*)$/);
+		if (heading && TIMELINE_SECTION_HEADING_RE.test(line.trim())) {
+			const level = heading[1]!.length;
+			const block = [line];
+			i += 1;
+			while (i < lines.length) {
+				const next = lines[i] || '';
+				const nextHeading = next.trim().match(/^(#{1,6})\s+/);
+				if (nextHeading && nextHeading[1]!.length <= level) break;
+				block.push(next);
+				i += 1;
+			}
+			while (block.length && !block[block.length - 1]!.trim()) block.pop();
+			if (block.length) out.push(block.join('\n'));
+			continue;
+		}
+		i += 1;
+	}
+	return out.join('\n\n').trim();
+}
+
+/**
+ * Chat upserts often send a short lead-only summary and wipe Overview timeline rails.
+ * When the incoming summary has no Timeline section, keep the existing one(s).
+ */
+function preserveTimelineSectionsInSummary(
+	existingSummary: string | null | undefined,
+	incomingSummary: string,
+): string {
+	const next = String(incomingSummary || '').trim();
+	const prev = String(existingSummary || '');
+	if (!next || !prev.trim()) return next;
+	if (summaryHasTimelineSection(next) || !summaryHasTimelineSection(prev)) return next;
+	const kept = extractTimelineSections(prev);
+	if (!kept) return next;
+	return `${next.replace(/\s+$/, '')}\n\n${kept}\n`;
+}
+
+function coerceUpsertMetadata(raw: unknown): Record<string, unknown> {
+	if (!raw) return {};
+	if (typeof raw === 'object' && !Array.isArray(raw)) {
+		return { ...(raw as Record<string, unknown>) };
+	}
+	if (typeof raw === 'string') {
+		const trimmed = raw.trim().replace(/\]+\s*$/, '');
+		try {
+			const parsed = JSON.parse(trimmed) as unknown;
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				return { ...(parsed as Record<string, unknown>) };
+			}
+		} catch {
+			/* ignore malformed metadata strings from models */
+		}
+	}
+	return {};
+}
 
 /**
  * Create or update a canonical profile from chat (founding dates, status, aliases,
@@ -549,11 +621,12 @@ export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
 					? null
 					: String(args.endDate).trim();
 
-		const summary = args.summary != null ? String(args.summary).trim() : undefined;
-		const metaIn =
-			args.metadata && typeof args.metadata === 'object' && !Array.isArray(args.metadata)
-				? { ...args.metadata }
-				: {};
+		const summaryRaw = args.summary != null ? String(args.summary).trim() : undefined;
+		const summary =
+			summaryRaw != null
+				? preserveTimelineSectionsInSummary(existing?.summary, summaryRaw)
+				: undefined;
+		const metaIn = coerceUpsertMetadata(args.metadata);
 
 		if (dryRun) {
 			return {

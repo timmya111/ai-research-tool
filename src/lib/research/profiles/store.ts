@@ -2597,29 +2597,14 @@ export function addPersonEmployment(input: {
 			angle: orgType === 'education' ? 'academic_research' : orgType === 'government' ? 'policy' : 'corporate',
 			sourceCorpus: corpus,
 			evidenceNote: evidenceParts.join('; ') || `Employment at ${orgName}`,
+			// Keep distinct dated stints at the same org (e.g. three gubernatorial terms).
+			dedupeHint: `emp-stint:${startDate || ''}:${endDate || ''}:${roleLabel || ''}`,
 		},
 		db,
 	);
 
-	// Also record on the person's timeline so employment history participates in timeline alignment
-	if (startDate || endDate) {
-		upsertTimelineEntry(
-			{
-				profileId: person.id,
-				eventDate: startDate || endDate,
-				endDate,
-				title: `${roleLabel ? `${roleLabel} at ` : 'Employed at '}${orgName}`,
-				summary: evidenceParts.join(' · ') || `${orgName} (${orgType})`,
-				angle: orgType === 'education' ? 'academic_research' : orgType === 'government' ? 'policy' : 'corporate',
-				entryKind: 'employment',
-				geoKey,
-				geoLabel: locClean || null,
-				sourceCorpus: corpus,
-				dedupeHint: `emp:${orgProfile.slug}:${roleLabel || ''}:${startDate || ''}`,
-			},
-			db,
-		);
-	}
+	// Timeline employment spans are synced from links on person timeline GET
+	// (syncEmploymentSpansToTimeline) — avoid a second parallel write here.
 
 	return { linkId, orgProfile };
 }

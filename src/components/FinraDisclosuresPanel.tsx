@@ -93,6 +93,7 @@ export function FinraDisclosuresPanel({
 	loading?: boolean;
 	error?: string | null;
 }) {
+	const [expanded, setExpanded] = useState(false);
 	const [showAll, setShowAll] = useState(false);
 
 	const visibleEvents = useMemo(() => {
@@ -123,14 +124,28 @@ export function FinraDisclosuresPanel({
 	const hiddenCount = Math.max(0, eventCount - visibleEvents.length);
 	const truncatedMore =
 		data.eventsTotal && data.eventsTotal > eventCount ? data.eventsTotal - eventCount : 0;
+	const hasEventList = eventCount > 0;
+	const hasTypeCounts = data.typeCounts.length > 0;
 
 	return (
 		<section className='mt-3 rounded-lg border border-amber-500/35 bg-amber-500/8 px-3 py-2.5'>
 			<div className='flex flex-wrap items-center gap-x-2 gap-y-1'>
-				<h3 className='m-0 text-xs font-semibold tracking-wide text-amber-950 uppercase dark:text-amber-100'>
-					Disclosures
-					{headlineCount > 0 ? ` (${headlineCount})` : ''}
-				</h3>
+				{hasEventList ?
+					<button
+						type='button'
+						onClick={() => setExpanded((v) => !v)}
+						aria-expanded={expanded}
+						className='m-0 cursor-pointer border-0 bg-transparent p-0 text-left text-xs font-semibold tracking-wide text-amber-950 uppercase dark:text-amber-100'>
+						<span aria-hidden className='mr-1 inline-block w-3 font-mono opacity-70'>
+							{expanded ? '▾' : '▸'}
+						</span>
+						Disclosures
+						{headlineCount > 0 ? ` (${headlineCount})` : ''}
+					</button>
+				:	<h3 className='m-0 text-xs font-semibold tracking-wide text-amber-950 uppercase dark:text-amber-100'>
+						Disclosures
+						{headlineCount > 0 ? ` (${headlineCount})` : ''}
+					</h3>}
 				{data.finraDisclosureFlag === true ?
 					<SourcePill kind='finra' />
 				:	null}
@@ -142,7 +157,9 @@ export function FinraDisclosuresPanel({
 						from BrokerCheck PDF
 					</span>
 				:	null}
-				{data.finraDisclosureFlag === true && data.secDisclosureFlag !== true && !data.events.some((e) => e.sources.includes('sec')) ?
+				{data.finraDisclosureFlag === true &&
+				data.secDisclosureFlag !== true &&
+				!data.events.some((e) => e.sources.includes('sec')) ?
 					<span className='text-[10px] opacity-60'>BrokerCheck</span>
 				:	null}
 				{data.secDisclosureFlag === true ?
@@ -188,7 +205,8 @@ export function FinraDisclosuresPanel({
 				</span>
 			</div>
 
-			{data.typeCounts.length > 0 && data.events.length > 0 ?
+			{/* Type counts stay visible when collapsed (Regulatory Event 80, etc.). */}
+			{hasTypeCounts ?
 				<ul className='mt-2 mb-0 flex list-none flex-wrap gap-1.5 p-0'>
 					{data.typeCounts.map((t) => (
 						<li
@@ -201,7 +219,17 @@ export function FinraDisclosuresPanel({
 				</ul>
 			:	null}
 
-			{data.events.length > 0 ?
+			{hasEventList && !expanded ?
+				<button
+					type='button'
+					onClick={() => setExpanded(true)}
+					className='mt-2 cursor-pointer border-0 bg-transparent p-0 text-[11px] font-semibold text-amber-950 underline opacity-80 hover:opacity-100 dark:text-amber-100'>
+					Show {eventCount} event{eventCount === 1 ? '' : 's'}
+					{truncatedMore > 0 ? ` (${data.eventsTotal} in PDF)` : ''}
+				</button>
+			:	null}
+
+			{hasEventList && expanded ?
 				<>
 					<ul className='mt-2 m-0 list-none space-y-2 p-0'>
 						{visibleEvents.map((ev, idx) => (
@@ -211,14 +239,25 @@ export function FinraDisclosuresPanel({
 							/>
 						))}
 					</ul>
-					{hiddenCount > 0 ?
+					<div className='mt-2 flex flex-wrap items-center gap-x-3 gap-y-1'>
+						{hiddenCount > 0 ?
+							<button
+								type='button'
+								onClick={() => setShowAll(true)}
+								className='cursor-pointer border-0 bg-transparent p-0 text-[11px] font-semibold text-amber-950 underline opacity-80 hover:opacity-100 dark:text-amber-100'>
+								Show {hiddenCount} more on this page
+							</button>
+						:	null}
 						<button
 							type='button'
-							onClick={() => setShowAll(true)}
-							className='mt-2 cursor-pointer border-0 bg-transparent text-[11px] font-semibold text-amber-950 underline opacity-80 hover:opacity-100 dark:text-amber-100'>
-							Show {hiddenCount} more on this page
+							onClick={() => {
+								setExpanded(false);
+								setShowAll(false);
+							}}
+							className='cursor-pointer border-0 bg-transparent p-0 text-[11px] font-semibold text-amber-950 underline opacity-80 hover:opacity-100 dark:text-amber-100'>
+							Collapse events
 						</button>
-					:	null}
+					</div>
 					{truncatedMore > 0 ?
 						<p className='mt-1.5 mb-0 text-[10px] leading-snug opacity-70'>
 							Showing {eventCount} of {data.eventsTotal} parsed events. Open the PDF report for the
@@ -226,24 +265,15 @@ export function FinraDisclosuresPanel({
 						</p>
 					:	null}
 				</>
-			: data.typeCounts.length > 0 ?
-				<ul className='mt-2 m-0 list-none space-y-1 p-0'>
-					{data.typeCounts.map((t) => (
-						<li
-							key={t.disclosureType}
-							className='flex items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[11px]'>
-							<span className='font-medium'>{t.disclosureType}</span>
-							<span className='font-mono tabular-nums opacity-80'>{t.count}</span>
-						</li>
-					))}
-				</ul>
-			:	<p className='mt-2 mb-0 text-[11px] leading-snug opacity-80'>
+			: !hasEventList && !hasTypeCounts ?
+				<p className='mt-2 mb-0 text-[11px] leading-snug opacity-80'>
 					Disclosure flag is set on{' '}
 					{data.finraDisclosureFlag ? 'FINRA BrokerCheck' : null}
 					{data.finraDisclosureFlag && data.secDisclosureFlag ? ' and ' : null}
 					{data.secDisclosureFlag ? 'SEC IAPD' : null}
 					, but detailed records were not returned. Open BrokerCheck / AdviserInfo for the full report.
-				</p>}
+				</p>
+			:	null}
 		</section>
 	);
 }

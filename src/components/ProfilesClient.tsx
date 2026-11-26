@@ -2596,6 +2596,49 @@ function summaryTimelineDateLabel(date: string | null | undefined): string {
 	return formatSummaryDateLabel(raw) || formatDisplayDate(raw) || raw;
 }
 
+/**
+ * Date chip under a year section header: omit year-only labels (redundant with the
+ * sticky year), and strip the trailing year from specific dates ("NOVEMBER 13, 2009"
+ * → "NOVEMBER 13"). Ranges that span years keep their years.
+ */
+function summaryTimelineDateLabelInYear(
+	date: string | null | undefined,
+	yearBucket: string,
+): string | null {
+	const full = summaryTimelineDateLabel(date);
+	if (!full || full === 'Undated') return full === 'Undated' ? 'Undated' : null;
+	const year = String(yearBucket || '').trim();
+	if (!year || year === 'Undated') return full;
+
+	const fullNorm = full.replace(/\s+/g, ' ').trim();
+	const yearUpper = year.toUpperCase();
+	if (fullNorm === year || fullNorm === yearUpper) return null;
+	if (/^\d{3,4}(?:\s*BCE)?$/i.test(fullNorm) && fullNorm.toUpperCase() === yearUpper) return null;
+
+	// Keep multi-year ranges intact ("1995 – 1999", "OCTOBER 2008 – PRESENT").
+	if (/[–—]/.test(fullNorm) || /\s–\s/.test(fullNorm)) return full;
+
+	const yearNum = year.match(/^(\d{3,4})(?:\s*BCE)?$/i)?.[1];
+	if (!yearNum) return full;
+
+	// "NOVEMBER 13, 2009" / "NOVEMBER 13, 2009" (already uppercased)
+	let stripped = fullNorm.replace(new RegExp(`,\\s*${yearNum}\\b`, 'i'), '').trim();
+	// "NOVEMBER 2009" → "NOVEMBER"
+	if (stripped === fullNorm) {
+		stripped = fullNorm.replace(new RegExp(`\\s+${yearNum}\\s*$`, 'i'), '').trim();
+	}
+	// Compact "11-13-2009" / "11-2009" fallbacks
+	if (stripped === fullNorm) {
+		stripped = fullNorm
+			.replace(new RegExp(`-${yearNum}$`), '')
+			.replace(new RegExp(`/${yearNum}$`), '')
+			.trim();
+	}
+
+	if (!stripped || /^\d{3,4}$/.test(stripped)) return null;
+	return stripped;
+}
+
 function summaryTimelineYearBucket(date: string | null | undefined): string {
 	const raw = String(date || '').trim();
 	if (!raw || raw === 'Undated') return 'Undated';
@@ -2678,7 +2721,7 @@ function SummaryTimelineRail({
 			{years.map((year) => {
 				const yearEntries = byYear.get(year) || [];
 				// Collapse same-date bullets: one date header, then stacked claims.
-				const dateGroups: Array<{ key: string; label: string; entries: SummaryTimelineEntry[] }> = [];
+				const dateGroups: Array<{ key: string; label: string | null; entries: SummaryTimelineEntry[] }> = [];
 				const dateIndex = new Map<string, number>();
 				for (const entry of yearEntries) {
 					const key = summaryTimelineDateKey(entry.date);
@@ -2690,7 +2733,7 @@ function SummaryTimelineRail({
 					dateIndex.set(key, dateGroups.length);
 					dateGroups.push({
 						key,
-						label: summaryTimelineDateLabel(entry.date),
+						label: summaryTimelineDateLabelInYear(entry.date, year),
 						entries: [entry],
 					});
 				}
@@ -2719,16 +2762,20 @@ function SummaryTimelineRail({
 											aria-hidden
 											className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
 										/>
-										<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
-											<span className='font-mono font-semibold opacity-90'>{group.label}</span>
-											{sourceTags.map((tag) => (
-												<span
-													key={tag}
-													className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>
-													{tag}
-												</span>
-											))}
-										</div>
+										{group.label || sourceTags.length > 0 ?
+											<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+												{group.label ?
+													<span className='font-mono font-semibold opacity-90'>{group.label}</span>
+												:	null}
+												{sourceTags.map((tag) => (
+													<span
+														key={tag}
+														className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>
+														{tag}
+													</span>
+												))}
+											</div>
+										:	null}
 										<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2' : 'mt-1'}>
 											{group.entries.map((entry, ei) => {
 												const link = onOpenProfile
@@ -7758,7 +7805,7 @@ export default function ProfilesClient({
 															const yearEntries = byYear.get(year) || [];
 															const dateGroups: Array<{
 															key: string;
-															label: string;
+															label: string | null;
 															entries: typeof yearEntries;
 															}> = [];
 															const dateIndex = new Map<string, number>();
@@ -7773,7 +7820,7 @@ export default function ProfilesClient({
 															dateIndex.set(key, dateGroups.length);
 															dateGroups.push({
 															key,
-															label: summaryTimelineDateLabel(resolved),
+															label: summaryTimelineDateLabelInYear(resolved, year),
 															entries: [entry],
 															});
 															}
@@ -7789,7 +7836,17 @@ export default function ProfilesClient({
 															</span>
 															</div>
 															<div className='relative ml-1.5 space-y-0 border-l-2 border-[var(--app-border)] pl-3.5'>
-															{dateGroups.map((group) => (
+															{dateGroups.map((group) => {
+															const geos = group.entries
+															.map((e) => e.geoLabel)
+															.filter(Boolean)
+															.filter((g, i, arr) => arr.indexOf(g) === i);
+															const urls = group.entries
+															.map((e) => e.sourceUrl)
+															.filter(Boolean)
+															.filter((u, i, arr) => arr.indexOf(u) === i);
+															const showMeta = Boolean(group.label) || geos.length > 0 || urls.length > 0;
+															return (
 															<article
 															key={`${year}-${group.key}`}
 															className='relative pb-3.5 last:pb-1'>
@@ -7797,24 +7854,19 @@ export default function ProfilesClient({
 															aria-hidden
 															className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[var(--app-surface)]'
 															/>
+															{showMeta ?
 															<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+															{group.label ?
 															<span className='font-mono font-semibold opacity-90'>{group.label}</span>
-															{group.entries
-															.map((e) => e.geoLabel)
-															.filter(Boolean)
-															.filter((g, i, arr) => arr.indexOf(g) === i)
-															.map((geo) => (
+															:	null}
+															{geos.map((geo) => (
 															<span
 															key={String(geo)}
 															className='opacity-65'>
 															📍 {geo}
 															</span>
 															))}
-															{group.entries
-															.map((e) => e.sourceUrl)
-															.filter(Boolean)
-															.filter((u, i, arr) => arr.indexOf(u) === i)
-															.map((url) => (
+															{urls.map((url) => (
 															<a
 															key={String(url)}
 															href={String(url)}
@@ -7825,11 +7877,13 @@ export default function ProfilesClient({
 															</a>
 															))}
 															</div>
+															:	null}
 															<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
 															{group.entries.map((entry) => renderPointCard(entry))}
 															</div>
 															</article>
-															))}
+															);
+															})}
 															</div>
 															</section>
 															);
