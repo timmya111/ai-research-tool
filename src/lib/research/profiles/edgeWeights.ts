@@ -554,11 +554,18 @@ export function composeEdgeWeight(parts: {
 	return { wDirect, wBoard, wEvent, wCity, wTotal };
 }
 
-/** Caution tier for geo co-location; building matches can reach stronger_indicator. */
+/**
+ * Caution tier for geo co-location.
+ * closer_look / stronger_indicator require matching same-kind FINRA CRD
+ * (firmCRD↔firmCRD or personCRD↔personCRD). Shared "FINRA API" ingest tags
+ * and bare block/building co-location alone stay observation.
+ */
 export function cautionForCityWeight(
 	wCity: number,
 	proximity: GeoProximity = 'city',
+	opts?: { matchingSameKindCrd?: boolean },
 ): 'observation' | 'closer_look' | 'stronger_indicator' {
+	if (!opts?.matchingSameKindCrd) return 'observation';
 	if (proximity === 'building' && wCity >= 0.32) return 'stronger_indicator';
 	if (proximity === 'building' || proximity === 'block' || wCity >= 0.12) return 'closer_look';
 	return 'observation';

@@ -10,10 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getProfilesDb } from '@/lib/research/profiles/db';
 import { normalizeText } from '@/lib/research/profiles/normalize';
 import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
-import {
-	addIdentifier,
-	upsertTimelineEntry,
-} from '@/lib/research/profiles/store';
+import { upsertTimelineEntry } from '@/lib/research/profiles/store';
 
 const PARTY_LINE_RE =
 	/^-\s*(Grantor|Grantee|Grantors|Grantees|Buyer|Seller|Borrower|Lender)\s*:\s*(.+)$/gim;
@@ -33,6 +30,7 @@ export type AssociateDeedsReport = {
 	partiesParsed: number;
 	matches: number;
 	timelineWrites: number;
+	/** Always 0 — okcr_instrument URL identifiers are no longer written. */
 	identifierWrites: number;
 	unmatchedParties: number;
 };
@@ -179,22 +177,9 @@ export function associateDeedsToProfiles(
 			);
 			report.timelineWrites += 1;
 
-			const detailUrl =
-				doc.raw_text.match(/Detail URL:\s*(\S+)/i)?.[1] ||
-				doc.url ||
-				null;
-			if (detailUrl || instrument) {
-				addIdentifier(
-					{
-						profileId,
-						scheme: 'okcr_instrument',
-						value: String(detailUrl || instrument),
-						sourceCorpus: 'knowledge-sqlite',
-					},
-					pdb,
-				);
-				report.identifierWrites += 1;
-			}
+			// Property content lives on Timeline (land_records) and overview ## Land Deeds.
+			// Do not attach okcr_instrument URL identifiers — they clutter Sources & Identifiers.
+
 		}
 	}
 

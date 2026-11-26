@@ -445,7 +445,8 @@ function isHiddenEpsteinSourceIdentifier(scheme: string, value: string): boolean
 }
 
 /** Public registry / market identifiers shown in External Identifiers. */
-const PUBLIC_IDENTIFIER_SCHEMES = new Set(['finra_crd', 'sec_cik', 'parent_sec_cik', 'ticker', 'irs_ein', 'cusip', 'ror', 'orcid', 'usgs_event', 'spc_om', 'okcr_instrument']);
+// okcr_instrument URLs are property filings — shown as ## Land Deeds content, never as ID chips.
+const PUBLIC_IDENTIFIER_SCHEMES = new Set(['finra_crd', 'sec_cik', 'parent_sec_cik', 'ticker', 'irs_ein', 'cusip', 'ror', 'orcid', 'usgs_event', 'spc_om']);
 
 const IDENTIFIER_SCHEME_LABELS: Record<string, string> = {
 	finra_crd: 'CRD',

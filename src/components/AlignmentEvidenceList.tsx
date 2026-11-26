@@ -25,11 +25,30 @@ function formatSourceCorpusLabel(corpus: string | null | undefined): string {
 	return c;
 }
 
-/** Normalize corpus for match-weight chips (maps finra-* → FINRA API). Empty → "". */
+/** True for local FINRA ingest tags — display label only, never a peer match chip. */
+function isFinraIngestCorpus(corpus: string | null | undefined): boolean {
+	const c = String(corpus || '').trim().toLowerCase();
+	return (
+		c === 'finra-visualizer' ||
+		c === 'finra-api' ||
+		c === 'finra-brokercheck' ||
+		c === 'finra-rosters' ||
+		c === 'finra api'
+	);
+}
+
+/**
+ * Normalize corpus for match-weight chips.
+ * FINRA ingest tags ("FINRA API") never count as a shared corpus match —
+ * identity is firmCRD / personCRD, not the ingest tag. Empty → "".
+ */
 function corpusMatchKey(corpus: string | null | undefined): string {
 	const raw = String(corpus || '').trim();
 	if (!raw) return '';
-	return normKey(formatSourceCorpusLabel(raw));
+	if (isFinraIngestCorpus(raw)) return '';
+	const label = formatSourceCorpusLabel(raw);
+	if (isFinraIngestCorpus(label)) return '';
+	return normKey(label);
 }
 
 function finraDashboardUrl(crd: string, kind: 'firm' | 'individual' = 'firm'): string {
@@ -136,7 +155,8 @@ function mergeInsightForKind(
 				ctx.hasRight
 					? `${left} and ${right} share a ${k.replace(/_/g, ' ')} signal in “${corpus}”.`
 					: `Co-location signal in “${corpus}”.`,
-				'Co-location supports a link or closer look, not automatic merge. Confirm addresses and dates; large buildings and cities create many false positives.',
+				'closer_look requires matching same-kind firmCRD or personCRD. FINRA API is an ingest tag only — not a match chip. Exact same building address + matching strong CRD can auto-accept; otherwise observation.',
+				'Large buildings and city blocks create many false positives (multi-tenant HQ ≠ same registrant).',
 				ev.geoKey ? `Geo key: ${ev.geoKey}.` : `Chip: ${scrubLabels(ev.label) || 'location overlap'}.`,
 			],
 		};
@@ -181,6 +201,14 @@ type LoadedDoc = {
 	sourcePath: string | null;
 };
 
+type LandDeedsPeek = {
+	/** County heading lines like "Hughes County (6)" */
+	counties: string[];
+	/** First dated bullets for compare (Cargill-style content, no URLs) */
+	bullets: string[];
+	total: number;
+};
+
 type ProfilePeek = {
 	id: string;
 	name: string;
@@ -189,7 +217,28 @@ type ProfilePeek = {
 	identifiers: Array<{ scheme: string; value: string }>;
 	locations: string[];
 	corpora: string[];
+	landDeeds: LandDeedsPeek | null;
 };
+
+/** Pull ## Land Deeds county heads + dated bullets from overview summary (Cargill style). */
+function extractLandDeedsFromSummary(summary: string | null | undefined): LandDeedsPeek | null {
+	const text = String(summary || '');
+	const m = text.match(/##\s+Land Deeds\b([\s\S]*?)(?=\n##\s+|$)/i);
+	if (!m) return null;
+	const body = m[1] || '';
+	const counties: string[] = [];
+	for (const line of body.split('\n')) {
+		const h = line.match(/^###\s+(.+?)\s*$/);
+		if (h) counties.push(h[1].trim());
+	}
+	const bullets: string[] = [];
+	for (const line of body.split('\n')) {
+		const b = line.match(/^-\s+\*\*(\d{4}-\d{2}-\d{2}|undated|[^*]+)\*\*\s+[—\-]\s+(.+)$/);
+		if (b) bullets.push(`${b[1]} — ${b[2].trim()}`);
+	}
+	if (counties.length === 0 && bullets.length === 0) return null;
+	return { counties, bullets: bullets.slice(0, 8), total: bullets.length };
+}
 
 type MatchSets = {
 	idKeys: Set<string>;
@@ -437,7 +486,13 @@ export default function AlignmentEvidenceList({
 								scheme: String(i.scheme || ''),
 								value: String(i.value || ''),
 							}))
-							.filter((i: { scheme: string; value: string }) => i.scheme && i.value)
+							.filter(
+								(i: { scheme: string; value: string }) =>
+									i.scheme &&
+									i.value &&
+									// Property filings → Land Deeds section (Cargill style), never ID chips/URLs.
+									i.scheme.toLowerCase() !== 'okcr_instrument',
+							)
 							.slice(0, 8)
 					: [];
 				const locations = Array.isArray(data.locations)
@@ -446,6 +501,9 @@ export default function AlignmentEvidenceList({
 							.filter(Boolean)
 							.slice(0, 4)
 					: [];
+				const landDeeds = extractLandDeedsFromSummary(
+					typeof data.profile.summary === 'string' ? data.profile.summary : '',
+				);
 				setPeekById((prev) => ({
 					...prev,
 					[id]: {
@@ -456,6 +514,7 @@ export default function AlignmentEvidenceList({
 						identifiers,
 						locations,
 						corpora,
+						landDeeds,
 					},
 				}));
 			} catch {
@@ -676,6 +735,41 @@ export default function AlignmentEvidenceList({
 						})()}
 					</div>
 				) : null}
+				{peek.landDeeds && peek.landDeeds.total > 0 ? (
+					<div className="mt-1.5 rounded border border-amber-500/35 bg-amber-500/5 px-1.5 py-1 text-[10px]">
+						<div className="mb-0.5 font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+							Land Deeds ({peek.landDeeds.total}
+							{peek.landDeeds.counties.length
+								? ` · ${peek.landDeeds.counties.length} count${peek.landDeeds.counties.length === 1 ? 'y' : 'ies'}`
+								: ''}
+							)
+						</div>
+						{peek.landDeeds.counties.length > 0 ? (
+							<div className="mb-1 flex flex-wrap gap-1 opacity-80">
+								{peek.landDeeds.counties.slice(0, 8).map((c) => (
+									<span
+										key={c}
+										className="rounded border border-amber-500/30 px-1 py-0.5"
+									>
+										{c}
+									</span>
+								))}
+							</div>
+						) : null}
+						<ul className="m-0 list-none space-y-0.5 p-0 opacity-90">
+							{peek.landDeeds.bullets.slice(0, 5).map((b, i) => (
+								<li key={`ld-${i}`} className="leading-snug">
+									{b}
+								</li>
+							))}
+						</ul>
+						{peek.landDeeds.total > 5 ? (
+							<div className="mt-0.5 opacity-60">
+								…and {peek.landDeeds.total - 5} more on profile overview
+							</div>
+						) : null}
+					</div>
+				) : null}
 				{peek.corpora.length > 0 ? (
 					<div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px]">
 						<span className="opacity-60">Corpora:</span>
@@ -683,17 +777,24 @@ export default function AlignmentEvidenceList({
 							const seen = new Set<string>();
 							const unique: string[] = [];
 							for (const c of peek.corpora.slice(0, 12)) {
-								const k = corpusMatchKey(c) || normKey(c);
+								// Dedupe FINRA ingest variants under one display label; never a match key.
+								const k = isFinraIngestCorpus(c)
+									? 'finra-api'
+									: corpusMatchKey(c) || normKey(c);
 								if (!k || seen.has(k)) continue;
 								seen.add(k);
 								unique.push(c);
 							}
 							return unique.map((c, idx) => {
 								const label = formatSourceCorpusLabel(c);
-								const k = corpusMatchKey(c);
-								const peerHit = Boolean(k && matches?.corpusKeys.has(k));
+								const finraTag = isFinraIngestCorpus(c) || label === 'FINRA API';
+								const k = corpusMatchKey(c) || (finraTag ? normKey(label) : '');
+								const peerHit = Boolean(
+									!finraTag && k && matches?.corpusKeys.has(k),
+								);
 								const evidenceHit = Boolean(
-									k &&
+									!finraTag &&
+										k &&
 										(evidenceCorpusNorm
 											? k === evidenceCorpusNorm
 											: evidenceCorpusKeys.has(k)),
@@ -708,11 +809,13 @@ export default function AlignmentEvidenceList({
 										key={`corpus-${k || label}-${idx}`}
 										className={className}
 										title={
-											peerHit
-												? 'Shared corpus on both profiles (FINRA identity via API/dashboard)'
-												: evidenceHit
-													? 'Evidence corpus on this profile (cross-source presence)'
-													: undefined
+											finraTag
+												? 'FINRA ingest tag only — match on firmCRD/personCRD, not this label'
+												: peerHit
+													? 'Shared corpus on both profiles'
+													: evidenceHit
+														? 'Evidence corpus on this profile (cross-source presence)'
+														: undefined
 										}
 									>
 										{label}

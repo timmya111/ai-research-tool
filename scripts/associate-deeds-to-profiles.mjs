@@ -131,12 +131,6 @@ const insertTimeline = pdb.prepare(
    ) VALUES (?, ?, ?, 'day', NULL, ?, ?, 'land_records', 'observation', NULL, NULL, 0.85, 'knowledge-sqlite', NULL, ?, ?, ?)`,
 );
 const selectTimeline = pdb.prepare('SELECT id FROM timeline_entries WHERE dedupe_key = ?');
-const insertIdent = pdb.prepare(
-	`INSERT OR IGNORE INTO profile_identifiers(
-     id, profile_id, scheme, value, normalized_value, source_corpus
-   ) VALUES (?, ?, 'okcr_instrument', ?, ?, 'knowledge-sqlite')`,
-);
-
 const now = new Date().toISOString();
 
 for (const doc of docs) {
@@ -186,16 +180,8 @@ for (const doc of docs) {
 			report.timelineWrites += 1;
 		}
 
-		const detailUrl =
-			doc.raw_text.match(/Detail URL:\s*(\S+)/i)?.[1] || doc.url || null;
-		const identVal = String(detailUrl || instrument);
-		insertIdent.run(
-			randomUUID(),
-			profileId,
-			identVal,
-			identVal.toLowerCase().replace(/\s+/g, ''),
-		);
-		report.identifierWrites += 1;
+		// Property content stays on Timeline (land_records) + overview ## Land Deeds.
+		// Do not write okcr_instrument URL identifiers into Sources & Identifiers.
 	}
 }
 

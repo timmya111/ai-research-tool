@@ -77,6 +77,8 @@ export type AlignmentPassReport = {
 	buildingColocation: number;
 	/** Proposed geo colo auto-dismissed: both sides have FINRA CRDs with no overlap. */
 	disjointCrdColocationDismissed: number;
+	/** Proposed geo colo demoted closer_look→observation: no matching same-kind CRD. */
+	geoColoDemotedNoCrd: number;
 	angleComparison: number;
 	countyFilingMatch: number;
 	knowledgeStoreMatch: number;
@@ -330,6 +332,7 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		blockColocation: 0,
 		buildingColocation: 0,
 		disjointCrdColocationDismissed: 0,
+		geoColoDemotedNoCrd: 0,
 		angleComparison: 0,
 		countyFilingMatch: 0,
 		knowledgeStoreMatch: 0,
@@ -1465,9 +1468,10 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			// Distinct FINRA CRDs (firm or person) ⇒ distinct registrants. Shared
 			// suite/building is multi-tenant noise, not same-entity evidence — skip
 			// (existing proposed rows are swept to dismissed after the geo pass).
+			const crdsA = crdsForMember(a);
+			const crdsB = crdsForMember(b);
+			let matchingSameKindCrd = false;
 			{
-				const crdsA = crdsForMember(a);
-				const crdsB = crdsForMember(b);
 				if (crdsA.size > 0 && crdsB.size > 0) {
 					let sharedCrd = false;
 					for (const c of crdsA) {
@@ -1477,6 +1481,19 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 						}
 					}
 					if (!sharedCrd) {
+						coveredPairs.add(pk);
+						return false;
+					}
+					// Same numeric CRD is identity only within the same CRD kind
+					// (firm↔firm or person↔person). Firm/individual share a namespace.
+					const typeA = String(a.profileType || '');
+					const typeB = String(b.profileType || '');
+					const bothFirm =
+						(typeA === 'firm' || typeA === 'education' || typeA === 'government') &&
+						(typeB === 'firm' || typeB === 'education' || typeB === 'government');
+					const bothPerson = typeA === 'person' && typeB === 'person';
+					matchingSameKindCrd = sharedCrd && (bothFirm || bothPerson);
+					if (sharedCrd && !matchingSameKindCrd) {
 						coveredPairs.add(pk);
 						return false;
 					}
@@ -1583,6 +1600,16 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 			coveredPairs.add(pk);
 			const kind = alignmentKindForProximity(proximity);
+			// closer_look only when same-kind firmCRD/personCRD matches. Exact same
+			// building address + matching strong CRD → auto-accept (confirmed).
+			const cautionTier = cautionForCityWeight(wGeo, proximity, {
+				matchingSameKindCrd,
+			});
+			const exactAddress = proximity === 'building';
+			const autoAccept = matchingSameKindCrd && exactAddress;
+			const crdNote = matchingSameKindCrd
+				? ' Matching same-kind FINRA CRD.'
+				: ' No matching firmCRD/personCRD — observation only (FINRA API tag is not identity).';
 			upsertAlignmentCandidate(
 				{
 					dedupeKey: sha256Key([kind, left.profileId, right.profileId, clusterKey]),
@@ -1590,9 +1617,10 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					leftProfileId: left.profileId,
 					rightProfileId: right.profileId,
 					score: wGeo,
-					cautionTier: cautionForCityWeight(wGeo, proximity),
-					rationale: `Same-${proximity} co-location (${clusterKey}) for "${left.name}" (${left.profileType}/${sectorA}) and "${right.name}" (${right.profileType}/${sectorB}); w_geo=${wGeo} (N=${nCluster}).${secondaryNote}`,
+					cautionTier,
+					rationale: `Same-${proximity} co-location (${clusterKey}) for "${left.name}" (${left.profileType}/${sectorA}) and "${right.name}" (${right.profileType}/${sectorB}); w_geo=${wGeo} (N=${nCluster}).${secondaryNote}${crdNote}`,
 					evidence,
+					status: autoAccept ? 'confirmed' : undefined,
 				},
 				tx,
 			);
@@ -2028,6 +2056,48 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 			)
 			.run(now);
 		counts.disjointCrdColocationDismissed += Number(sweep.changes || 0);
+	}
+
+	// Sweep: demote proposed geo colo closer_look/stronger → observation when there
+	// is no matching same-kind firmCRD/personCRD. FINRA API ingest tag alone is not
+	// identity; bare block/building co-location stays observation.
+	{
+		const now = new Date().toISOString();
+		const demote = db
+			.prepare(
+				`UPDATE alignment_candidates
+         SET caution_tier = 'observation',
+             rationale = CASE
+               WHEN rationale LIKE '%No matching firmCRD/personCRD%' THEN rationale
+               ELSE substr(rationale || ' Demoted: no matching firmCRD/personCRD (FINRA API tag is not identity).', 1, 1000)
+             END,
+             updated_at = ?
+         WHERE status = 'proposed'
+           AND caution_tier IN ('closer_look', 'stronger_indicator')
+           AND alignment_kind IN ('building_colocation', 'block_colocation', 'city_colocation')
+           AND right_profile_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1
+             FROM profile_identifiers l
+             JOIN profile_identifiers r
+               ON r.scheme = 'finra_crd'
+              AND r.profile_id = alignment_candidates.right_profile_id
+              AND r.value = l.value
+             JOIN profiles lp ON lp.id = alignment_candidates.left_profile_id
+             JOIN profiles rp ON rp.id = alignment_candidates.right_profile_id
+             WHERE l.profile_id = alignment_candidates.left_profile_id
+               AND l.scheme = 'finra_crd'
+               AND (
+                 (lp.profile_type = 'person' AND rp.profile_type = 'person')
+                 OR (
+                   lp.profile_type IN ('firm', 'education', 'government')
+                   AND rp.profile_type IN ('firm', 'education', 'government')
+                 )
+               )
+           )`,
+			)
+			.run(now);
+		counts.geoColoDemotedNoCrd = Number(demote.changes || 0);
 	}
 
 	counts.totalUpserted =
