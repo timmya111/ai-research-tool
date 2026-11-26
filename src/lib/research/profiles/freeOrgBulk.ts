@@ -256,7 +256,9 @@ export async function lookupIrsEoBmf(input: {
 
 	const digits = String(input.ein || '').replace(/\D/g, '');
 	if (digits.length === 9 && bmfByEin.has(digits)) {
-		return bmfRowToHit(bmfByEin.get(digits)!);
+		const byEin = bmfByEin.get(digits)!;
+		// Stale/copied EINs must not import that filer's street and ruling date.
+		if (nameLooksLikeHit(input.name, byEin.name)) return bmfRowToHit(byEin);
 	}
 
 	const n = normName(input.name);

@@ -10,7 +10,7 @@ const HEADING_RE = /^#{1,3}\s+(.+)$/;
 const BULLET_RE = /^[-*•]\s+(.+)$/;
 /** Same family of date labels as ProfilesClient SUMMARY_DATED_BULLET_RE (server-side). */
 const DATED_BULLET_RE =
-	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|present|Present)|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|present|Present)|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|(?:18|19|20)\d{2}\+|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
 
 const MONTH_INDEX: Record<string, string> = {
 	jan: '01',
@@ -66,6 +66,11 @@ function stripMd(s: string): string {
 function titleFromBody(body: string): string {
 	const clean = stripMd(body).replace(/\s+/g, ' ').trim();
 	if (!clean) return 'Untitled milestone';
+	// Prefer a leading short label before an em/en dash when present.
+	const dashed = clean.match(/^(.{3,80}?)\s*[—–:]\s+\S/);
+	if (dashed) {
+		return dashed[1]!.replace(/[.\s]+$/g, '').trim().slice(0, 160);
+	}
 	// First sentence; keep common abbreviations intact.
 	const protected_ = clean
 		.replace(/\be\.g\./gi, 'eg')
@@ -73,8 +78,8 @@ function titleFromBody(body: string): string {
 		.replace(/\bU\.S\./g, 'US')
 		.replace(/\betc\./gi, 'etc');
 	const cut = protected_.search(/\.\s+/);
-	const first = cut >= 0 ? clean.slice(0, Math.min(clean.length, cut + 1)) : clean;
-	return first.slice(0, 160);
+	const first = cut >= 0 ? clean.slice(0, cut) : clean;
+	return first.replace(/[.\s]+$/g, '').trim().slice(0, 160) || 'Untitled milestone';
 }
 
 /** Parse a display/ISO date label into eventDate + optional endDate. */

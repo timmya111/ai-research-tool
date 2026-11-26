@@ -6,7 +6,9 @@ import AlignmentEvidenceList from '@/components/AlignmentEvidenceList';
 import ThemeToggle from '@/components/ThemeToggle';
 import { detectFirmActiveFinraScope, detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
 import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
+import { formatTickerListing } from '@/lib/research/profiles/tickerListing';
 import { summaryMarkdownToHtml } from '@/lib/research/profiles/summaryMarkdown';
+import { formatResearchDriveTimelineEntry } from '@/lib/research/profiles/researchDriveDisplay';
 import type {
 	AliasKind,
 	AlignmentCandidate,
@@ -1585,11 +1587,11 @@ const SUMMARY_YEAR_TOKEN =
 const SUMMARY_YEAR_RE = new RegExp(`\\b(?:${SUMMARY_YEAR_TOKEN})\\b`, 'g');
 const SUMMARY_YEAR_CONNECTOR_RE = /(?:In|From|During|By|Until|Since|After|Before)\s+$/i;
 const SUMMARY_HEADING_RE = /^#{1,3}\s+(.+)$/;
-const SUMMARY_BULLET_RE = /^[-*•]\s+(.+)$/;
+const SUMMARY_BULLET_RE = /^(?:[-*•]|\d+[.)])\s+(.+)$/;
 // Prefer full dates (YYYY-MM-DD / MM-DD-YYYY) before bare years so
 // "2025-06-09 — …" does not split into date=2025 + text="06-09 — …".
 const SUMMARY_DATED_BULLET_RE =
-	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|present|Present)|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|(?:18|19|20)\d{2}\+|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
 const SUMMARY_TITLED_BULLET_RE = /^\*\*([^*]+)\*\*\s*[—–:\-]\s*(.+)$/;
 const SUMMARY_URL_RE = /^(https?:\/\/\S+)$/i;
 
@@ -1676,12 +1678,63 @@ type SummaryBulletEntry = { title?: string | null; text: string; href?: string |
 type SummaryBlock =
 	| { kind: 'grid'; rows: Array<{ label: string; value: string }> }
 	| { kind: 'year'; year: string; text: string }
-	| { kind: 'heading'; text: string }
+	| { kind: 'heading'; text: string; level?: number }
 	| { kind: 'timeline'; entries: SummaryTimelineEntry[] }
 	| { kind: 'bullets'; entries: SummaryBulletEntry[] }
 	| { kind: 'prose'; text: string }
 	| { kind: 'pre'; text: string }
 	| { kind: 'disclaimer'; text: string };
+
+const OVERVIEW_PRIORITY_SECTION_RE =
+	/^(timeline|chronolog|milestones?|key dates|history|linked region|dual-node|see also|related)\b/i;
+
+function isOverviewTimelineHeading(text: string | null | undefined): boolean {
+	return /^(timeline|chronolog|milestones?|key dates)\b/i.test(String(text || '').trim());
+}
+
+/** Pull ## Timeline (+ following body until next ##) up under the lead prose so dense dossiers stay scannable. */
+function promoteOverviewTimeline(items: SummaryBlock[]): SummaryBlock[] {
+	let start = -1;
+	for (let i = 0; i < items.length; i++) {
+		const b = items[i];
+		if ((b.kind === 'heading' && isOverviewTimelineHeading(b.text)) || b.kind === 'timeline') {
+			start = i;
+			break;
+		}
+	}
+	if (start <= 0) return items;
+
+	let end = start + 1;
+	while (end < items.length) {
+		const b = items[end];
+		if (b.kind === 'heading' && (b.level ?? 2) <= 2) break;
+		if (
+			b.kind === 'timeline' ||
+			b.kind === 'prose' ||
+			b.kind === 'bullets' ||
+			b.kind === 'disclaimer' ||
+			b.kind === 'grid' ||
+			(b.kind === 'heading' && (b.level ?? 2) >= 3)
+		) {
+			end += 1;
+			continue;
+		}
+		break;
+	}
+
+	let insertAt = 0;
+	while (
+		insertAt < items.length &&
+		(items[insertAt].kind === 'prose' || items[insertAt].kind === 'disclaimer')
+	) {
+		insertAt += 1;
+	}
+	if (insertAt >= start) return items;
+
+	const chunk = items.slice(start, end);
+	const without = [...items.slice(0, start), ...items.slice(end)];
+	return [...without.slice(0, insertAt), ...chunk, ...without.slice(insertAt)];
+}
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1840,6 +1893,16 @@ function looksLikeSummaryDateLabel(raw: string | null | undefined): boolean {
 		.trim();
 	if (!s || /^undated$/i.test(s)) return false;
 	if (/^(?:18|19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?$/.test(s)) return true;
+	// Decade / open-ended labels used on region synthesis rails (2020s, 2011+, 1980s–2000s).
+	if (/^(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s$/i.test(s)) return true;
+	if (/^(?:18|19|20)\d{2}\+$/.test(s)) return true;
+	if (
+		/^(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|present|Present)$/i.test(
+			s,
+		)
+	) {
+		return true;
+	}
 	if (/^\d{2}-\d{2}-(?:18|19|20)\d{2}$/.test(s)) return true;
 	if (/^(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present)$/i.test(s)) return true;
 	// Historical / BCE years used on region corridors (122 BCE, 1669, 1693).
@@ -1959,8 +2022,10 @@ function parseSummaryBlocks(text: string, opts?: { sourceDate?: string | null })
 		const heading = line.match(SUMMARY_HEADING_RE);
 		if (heading) {
 			flushCollections();
+			const hashes = (line.match(/^#+/) || ['#'])[0];
+			const level = Math.min(3, Math.max(1, hashes.length));
 			const title = heading[1].replace(/^\*\*|\*\*$/g, '').trim();
-			blocks.push({ kind: 'heading', text: title });
+			blocks.push({ kind: 'heading', text: title, level });
 			const lower = title.toLowerCase();
 			if (/timeline|chronolog|milestones?|key dates|history/.test(lower)) sectionKind = 'timeline';
 			else if (/wikipedia|sources?|references?|further reading|cross-?check/.test(lower)) sectionKind = 'bullets';
@@ -2133,6 +2198,9 @@ function summaryTimelineYearBucket(date: string | null | undefined): string {
 	if (!raw || raw === 'Undated') return 'Undated';
 	const bce = raw.match(/^(\d{3,4})\s*(?:BCE|BC)\b/i);
 	if (bce) return `${bce[1]} BCE`;
+	// 2020s / 1980s–2000s / 2011+ — word-boundary after YYYY fails before trailing "s"/"+".
+	const decadeOrPlus = raw.match(/^((?:18|19|20)\d{2})(?:s|\+)?/i);
+	if (decadeOrPlus) return decadeOrPlus[1];
 	const leading = raw.match(/^(\d{3,4})\b/);
 	if (leading) return leading[1];
 	const modern = raw.match(/\b((?:18|19|20)\d{2})\b/);
@@ -2300,6 +2368,51 @@ function SummaryTimelineRail({
 	);
 }
 
+/** Timeline-style left rail for undated outline / index / catalog bullets. */
+function SummaryOutlineRail({ entries }: { entries: SummaryBulletEntry[] }) {
+	return (
+		<div className='relative ml-1.5 space-y-0 border-l-2 border-white/20 pl-3.5'>
+			{entries.map((entry, ei) => {
+				const href = entry.href || null;
+				const textIsUrl = Boolean(href && entry.text && /^https?:\/\//i.test(entry.text.trim()));
+				const showUrlLink = Boolean(href && (!entry.title || textIsUrl || !entry.text.trim()));
+				const label = entry.title || (textIsUrl ? null : null);
+				return (
+					<article
+						key={`outline-${ei}`}
+						className='relative pb-3 last:pb-1'>
+						<span
+							aria-hidden
+							className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
+						/>
+						{label ?
+							<div className='text-[11px] font-semibold leading-snug text-[#FDBA74]'>{label}</div>
+						:	null}
+						{showUrlLink && href ?
+							<a
+								href={href}
+								target='_blank'
+								rel='noreferrer'
+								title={href}
+								className='mt-0.5 block break-all text-[11px] text-sky-300 underline'>
+								{truncateDisplayUrl(textIsUrl ? entry.text : href)}
+							</a>
+						: entry.text ?
+							<div className={label ? 'mt-0.5' : undefined}>
+								<SummaryMarkdown
+									text={entry.text}
+									inline
+									className='block text-[12px] leading-relaxed text-white/90'
+								/>
+							</div>
+						:	null}
+					</article>
+				);
+			})}
+		</div>
+	);
+}
+
 /** Empty Local Wikipedia cross-check placeholder from news-rss-format-card / topic consolidate. */
 function isEmptyLocalWikiPlaceholder(text: string | null | undefined): boolean {
 	const t = String(text || '')
@@ -2461,16 +2574,36 @@ function ProfileSummaryText({
 		renderItems.push(b);
 		i += 1;
 	}
+	const promoted = promoteOverviewTimeline(renderItems);
 
-	return (
-		<div className='mt-2 max-w-3xl rounded-lg border border-white/15 bg-[#0b1220] p-3 text-xs leading-relaxed text-white shadow-sm'>
-			<div className='space-y-3'>
-				{renderItems.map((block, idx) => {
+	// Split into lead + ## sections so dense dossiers can collapse catalog chapters.
+	type OverviewSection = { heading: SummaryBlock & { kind: 'heading' }; body: SummaryBlock[] };
+	const leadBlocks: SummaryBlock[] = [];
+	const sections: OverviewSection[] = [];
+	let current: OverviewSection | null = null;
+	for (const block of promoted) {
+		if (block.kind === 'heading' && (block.level ?? 2) <= 2) {
+			current = { heading: block, body: [] };
+			sections.push(current);
+			continue;
+		}
+		if (current) current.body.push(block);
+		else leadBlocks.push(block);
+	}
+	const h2Count = sections.length;
+	const collapseCatalogs = h2Count >= 5;
+
+	const renderBlock = (block: SummaryBlock, idx: string): ReactNode => {
 					if (block.kind === 'heading') {
+						const isSub = (block.level ?? 2) >= 3;
 						return (
 							<h3
 								key={`h-${idx}`}
-								className='m-0 border-b border-white/10 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[#FDBA74]'>
+								className={
+									isSub ?
+										'm-0 pt-1 text-[10px] font-semibold uppercase tracking-wide text-[#FDBA74]/80'
+									:	'm-0 border-b border-white/10 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[#FDBA74]'
+								}>
 								{block.text}
 							</h3>
 						);
@@ -2487,51 +2620,9 @@ function ProfileSummaryText({
 					}
 					if (block.kind === 'bullets') {
 						return (
-							<ul
-								key={`b-${idx}`}
-								className='m-0 list-none space-y-2 p-0'>
-								{block.entries.map((entry, bi) => {
-									const href = entry.href || null;
-									const textIsUrl = Boolean(href && entry.text && /^https?:\/\//i.test(entry.text.trim()));
-									const showUrlLink = Boolean(href && (!entry.title || textIsUrl || !entry.text.trim()));
-									return (
-										<li
-											key={`b-${idx}-${bi}`}
-											className='rounded border border-white/10 bg-white/5 px-2.5 py-1.5'>
-											{entry.title ?
-												<div className='text-[11px] font-semibold text-[#FDBA74]'>{entry.title}</div>
-											:	null}
-											{showUrlLink && href ?
-												<a
-													href={href}
-													target='_blank'
-													rel='noreferrer'
-													title={href}
-													className='break-all text-[11px] text-sky-300 underline'>
-													{truncateDisplayUrl(textIsUrl ? entry.text : href)}
-												</a>
-											:	<p className='m-0 mt-0.5 text-[12px] leading-snug text-white/90'>
-													<SummaryMarkdown
-														text={entry.text}
-														inline
-													/>
-													{href ?
-														<>
-															{' '}
-															<a
-																href={href}
-																target='_blank'
-																rel='noreferrer'
-																className='text-sky-300 underline'>
-																Source ↗
-															</a>
-														</>
-													:	null}
-												</p>}
-										</li>
-									);
-								})}
-							</ul>
+							<div key={`b-${idx}`}>
+								<SummaryOutlineRail entries={block.entries} />
+							</div>
 						);
 					}
 					if (block.kind === 'year') {
@@ -2588,6 +2679,45 @@ function ProfileSummaryText({
 							text={block.text}
 							className='summary-md-prose'
 						/>
+					);
+	};
+
+	return (
+		<div className='mt-2 max-w-3xl rounded-lg border border-white/15 bg-[#0b1220] p-3 text-xs leading-relaxed text-white shadow-sm'>
+			<div className='space-y-3'>
+				{leadBlocks.map((block, idx) => renderBlock(block, `lead-${idx}`))}
+				{sections.map((section, sIdx) => {
+					const title = section.heading.text;
+					const keepOpen =
+						!collapseCatalogs ||
+						OVERVIEW_PRIORITY_SECTION_RE.test(title) ||
+						section.body.some((b) => b.kind === 'timeline');
+					const bodyNodes = section.body.map((block, bIdx) => renderBlock(block, `s${sIdx}-${bIdx}`));
+					if (keepOpen) {
+						return (
+							<div
+								key={`sec-${sIdx}`}
+								className='space-y-3'>
+								{renderBlock(section.heading, `sh-${sIdx}`)}
+								{bodyNodes}
+							</div>
+						);
+					}
+					return (
+						<details
+							key={`sec-${sIdx}`}
+							className='rounded border border-white/10 bg-white/[0.03] px-2.5 py-1.5'>
+							<summary className='cursor-pointer list-none text-[11px] font-semibold uppercase tracking-wide text-[#FDBA74] marker:content-none [&::-webkit-details-marker]:hidden'>
+								<span className='inline-flex items-center gap-1.5'>
+									<span className='opacity-70'>▸</span>
+									{title}
+									<span className='font-normal normal-case tracking-normal opacity-50'>
+										· expand
+									</span>
+								</span>
+							</summary>
+							<div className='mt-2 space-y-3 border-t border-white/10 pt-2'>{bodyNodes}</div>
+						</details>
 					);
 				})}
 			</div>
@@ -2704,6 +2834,8 @@ export default function ProfilesClient({
 	const skipNextPushRef = useRef(Boolean(initialProfileSlug));
 	const urlInitializedRef = useRef(false);
 	const selectedRowRef = useRef<HTMLButtonElement | null>(null);
+	const detailTopRef = useRef<HTMLDivElement | null>(null);
+	const [timelineFocusTitle, setTimelineFocusTitle] = useState<string | null>(null);
 
 	// Timeline state
 	const [timeline, setTimeline] = useState<ProfileTimelineResult | null>(null);
@@ -4375,19 +4507,55 @@ export default function ProfilesClient({
 		return () => clearTimeout(timer);
 	}, [detail?.profile?.id, profiles, mainView]);
 
-	const jumpToProfile = useCallback((id: string) => {
-		setPendingCategorySync(true);
-		setQuery('');
-		setQueryDraft('');
-		setCountryCode('');
-		setCountryQuery('');
-		setCountryMenuOpen(false);
-		setOffset(0);
-		setSelectedId(id);
-		setLastEnrichReport(null);
-		setMainView('profile');
-		setProfileTab('overview');
-	}, []);
+	const jumpToProfile = useCallback(
+		(
+			id: string,
+			opts?: {
+				tab?: 'overview' | 'timeline' | 'alignments';
+				focusTimelineTitle?: string | null;
+				label?: string | null;
+			},
+		) => {
+			setPendingCategorySync(true);
+			setQuery('');
+			setQueryDraft('');
+			setCountryCode('');
+			setCountryQuery('');
+			setCountryMenuOpen(false);
+			setOffset(0);
+			setSelectedId(id);
+			setLastEnrichReport(null);
+			setMainView('profile');
+			setProfileTab(opts?.tab || 'overview');
+			setTimelineFocusTitle(opts?.focusTimelineTitle?.trim() || null);
+			const destLabel = String(opts?.label || '').trim();
+			const fromTitle = String(opts?.focusTimelineTitle || '').trim();
+			if (destLabel || fromTitle) {
+				setBanner(
+					fromTitle ?
+						`Opened ${destLabel || id} · jumped from “${fromTitle}”.`
+					:	`Opened ${destLabel || id}.`,
+				);
+			}
+			requestAnimationFrame(() => {
+				window.scrollTo({ top: 0, behavior: 'smooth' });
+				detailTopRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+			});
+		},
+		[],
+	);
+
+	// After a timeline-entry jump, scroll the matching destination entry into view.
+	useEffect(() => {
+		if (!timelineFocusTitle || profileTab !== 'timeline' || loadingTimeline || !timeline) return;
+		const timer = window.setTimeout(() => {
+			const el = document.querySelector('[data-timeline-focus="1"]');
+			if (el instanceof HTMLElement) {
+				el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+			}
+		}, 120);
+		return () => window.clearTimeout(timer);
+	}, [timelineFocusTitle, profileTab, loadingTimeline, timeline]);
 
 	return (
 		<div className={`min-h-dvh ${CURRENT_ACTOR_PANEL_BG}`}>
@@ -5127,6 +5295,7 @@ export default function ProfilesClient({
 												onClick={() => {
 													setSelectedId(p.slug || p.id);
 													setLastEnrichReport(null);
+													setTimelineFocusTitle(null);
 												}}
 												className={`w-full cursor-pointer border-0 border-b border-b-[#1e3a8a]/30 px-3 py-2.5 text-left transition last:border-b-0 dark:border-b-[#3b82f6]/15 ${rowTone}`}>
 												{typeFilter === 'all' || typeFilter === 'actors' || typeFilter === HISTORY_FILTER ?
@@ -5220,7 +5389,7 @@ export default function ProfilesClient({
 								<p className='text-xs opacity-70'>Loading profile…</p>
 							: !detail ?
 								<p className='text-xs opacity-70'>Select a profile on the left to inspect its dossier, timeline gaps, and alignments.</p>
-							:	<div>
+							:	<div ref={detailTopRef}>
 									{/* Profile Header */}
 									<div className='flex flex-wrap items-start justify-between gap-2 border-b border-[var(--app-border)] pb-3'>
 										<div>
@@ -6097,8 +6266,11 @@ export default function ProfilesClient({
 																				const scheme = String(idItem.scheme || '').toLowerCase();
 																				const label = IDENTIFIER_SCHEME_LABELS[scheme] || scheme.replace(/_/g, ' ');
 																				let display = scrubEpsteinSourceLabels(idItem.value);
-																				if (scheme === 'ticker' && typeof meta.exchange === 'string' && meta.exchange.trim()) {
-																					display = `${display} (${meta.exchange.trim()})`;
+																				if (scheme === 'ticker') {
+																					display = formatTickerListing(
+																						display,
+																						typeof meta.exchange === 'string' ? meta.exchange : null,
+																					);
 																				}
 																				return (
 																					<li
@@ -7048,7 +7220,14 @@ export default function ProfilesClient({
 																							</div>
 																							<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
 																								{group.entries.map((entry) => {
-																									const current = isCurrentArticle(entry.title || '');
+																									const display = formatResearchDriveTimelineEntry({
+																										title: entry.title,
+																										summary: entry.summary,
+																										sourceCorpus: entry.sourceCorpus,
+																									});
+																									const displayTitle = display.title || entry.title || '';
+																									const displaySummary = display.summary || '';
+																									const current = isCurrentArticle(displayTitle) || isCurrentArticle(entry.title || '');
 																									const jumpKey =
 																										entry.linkedProfileSlug ||
 																										entry.linkedProfileId ||
@@ -7061,13 +7240,20 @@ export default function ProfilesClient({
 																										Boolean(jumpKey) &&
 																										jumpKey !== detail?.profile?.id &&
 																										jumpKey !== detail?.profile?.slug;
+																									const focusMatch =
+																										Boolean(timelineFocusTitle) &&
+																										(normTitle(displayTitle) === normTitle(timelineFocusTitle || '') ||
+																											normTitle(entry.title || '') === normTitle(timelineFocusTitle || ''));
 																									const titleClass =
 																										'text-sm font-semibold leading-snug text-left';
 																									return (
 																										<div
 																											key={entry.id}
+																											data-timeline-focus={focusMatch ? '1' : undefined}
 																											className={
-																												current ?
+																												focusMatch ?
+																													'rounded-md border border-sky-500/70 bg-sky-500/15 px-2 py-1.5 ring-1 ring-sky-400/40'
+																												: current ?
 																													'rounded-md border border-[#F97316]/60 bg-[#F97316]/10 px-2 py-1.5 ring-1 ring-[#F97316]/35'
 																												:	undefined
 																											}>
@@ -7075,24 +7261,46 @@ export default function ProfilesClient({
 																												{canJump && jumpKey ?
 																													<button
 																														type='button'
-																														onClick={() => jumpToProfile(String(jumpKey))}
+																														onClick={() =>
+																															jumpToProfile(String(jumpKey), {
+																																tab: 'timeline',
+																																focusTimelineTitle: displayTitle,
+																																label:
+																																	entry.linkedProfileName ||
+																																	entry.originProfileSlug ||
+																																	null,
+																															})
+																														}
 																														title={
 																															entry.linkedProfileName
 																																? `Open profile: ${entry.linkedProfileName}`
 																																: 'Open related event profile'
 																														}
 																														className={`${titleClass} text-sky-700 underline decoration-sky-700/40 underline-offset-2 hover:text-sky-900 dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:text-sky-200`}>
-																														{entry.title}
+																														{displayTitle}
 																													</button>
-																												:	<div className={titleClass}>{entry.title}</div>}
-																												{current ?
+																												:	<div className={titleClass}>{displayTitle}</div>}
+																												{display.isResearchDrive ?
+																													<span className='rounded border border-white/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70'>
+																														Research Drive
+																													</span>
+																												:	null}
+																												{focusMatch ?
+																													<span className='rounded-full bg-sky-600 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
+																														Jumped here
+																													</span>
+																												: current ?
 																													<span className='rounded-full bg-[#F97316] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
 																														This event
 																													</span>
 																												:	null}
 																											</div>
-																											{entry.summary && entry.summary !== entry.title ?
-																												<p className='m-0 mt-1 text-xs leading-relaxed opacity-80'>{entry.summary}</p>
+																											{displaySummary && displaySummary !== displayTitle ?
+																												<p className='m-0 mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80'>
+																													{displaySummary.length > 900 ?
+																														`${displaySummary.slice(0, 900).trim()}…`
+																													:	displaySummary}
+																												</p>
 																											:	null}
 																										</div>
 																									);

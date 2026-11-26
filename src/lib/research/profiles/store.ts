@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { resolveTickerListing, tickerListingKey } from '@/lib/research/profiles/tickerListing';
 import {
 	countryToIsoAbbrev,
 	detectProfileCountryCodes,
@@ -2506,16 +2507,24 @@ export function getMajorIdentityMap(
 	const out = new Map<string, Set<string>>();
 	const rows = db
 		.prepare(
-			`SELECT lower(scheme) AS scheme, value
-       FROM profile_identifiers
-       WHERE profile_id = ?
-         AND lower(scheme) IN ('finra_crd','sec_cik','ticker','irs_ein','cusip')`,
+			`SELECT lower(i.scheme) AS scheme, i.value AS value,
+              json_extract(p.metadata_json, '$.exchange') AS exchange
+       FROM profile_identifiers i
+       JOIN profiles p ON p.id = i.profile_id
+       WHERE i.profile_id = ?
+         AND lower(i.scheme) IN ('finra_crd','sec_cik','ticker','irs_ein','cusip')`,
 		)
-		.all(profileId) as Array<{ scheme?: string; value?: string }>;
+		.all(profileId) as Array<{ scheme?: string; value?: string; exchange?: string | null }>;
 	for (const r of rows) {
 		const scheme = String(r.scheme || '').trim();
-		const value = String(r.value || '').trim().toLowerCase();
-		if (!scheme || !value) continue;
+		if (!scheme) continue;
+		// Tickers match only as country + market + symbol. A bare symbol,
+		// or the same symbol on another venue, is a different identifier.
+		let value = String(r.value || '').trim().toLowerCase();
+		if (scheme === 'ticker') {
+			value = tickerListingKey(resolveTickerListing(String(r.value || ''), r.exchange));
+		}
+		if (!value) continue;
 		const set = out.get(scheme) || new Set<string>();
 		set.add(value);
 		out.set(scheme, set);

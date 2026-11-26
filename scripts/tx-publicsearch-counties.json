@@ -1,0 +1,23 @@
+[
+  {
+    "label": "Dallas County",
+    "host": "dallas.tx.publicsearch.us",
+    "out": "dallas-deeds",
+    "note": "Already mirrored 2016-01-01 through 2026-11-21. This pass catches up to today."
+  },
+  {
+    "label": "Collin County",
+    "host": "collin.tx.publicsearch.us",
+    "out": "collin-deeds"
+  },
+  {
+    "label": "Denton County",
+    "host": "denton.tx.publicsearch.us",
+    "out": "denton-deeds"
+  },
+  {
+    "label": "Tarrant County",
+    "host": "tarrant.tx.publicsearch.us",
+    "out": "tarrant-deeds"
+  }
+]

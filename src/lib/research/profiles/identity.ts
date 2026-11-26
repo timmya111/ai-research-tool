@@ -1,4 +1,9 @@
-import { normalizeText, stripLegalSuffixes } from '@/lib/research/profiles/normalize';
+import {
+	irsEinSetsConflict,
+	normalizeText,
+	stripLegalSuffixes,
+} from '@/lib/research/profiles/normalize';
+import { tickerListingKey, resolveTickerListing } from '@/lib/research/profiles/tickerListing';
 import type {
 	CorroborationHit,
 	IdentityDecision,
@@ -40,6 +45,8 @@ export type ProfileIdentityContext = {
 	startDate: string | null;
 	endDate: string | null;
 	timelineYears: number[];
+	/** Listing venue for ticker identifiers (metadata.exchange). Bare symbols do not match. */
+	listingExchange?: string | null;
 };
 
 export type CandidateIdentityInput = {
@@ -54,6 +61,8 @@ export type CandidateIdentityInput = {
 	candidateEndDate?: string | null;
 	candidateEventDates?: string[];
 	candidateText: string;
+	/** Listing venue when the candidate ticker value does not already include one. */
+	candidateExchange?: string | null;
 };
 
 const NICKNAME_GROUPS: string[][] = [
@@ -786,6 +795,10 @@ export function buildProfileIdentityContext(detail: ProfileDetail): ProfileIdent
 		value: i.value,
 		normalizedValue: i.normalizedValue,
 	}));
+	const listingExchange =
+		typeof detail.profile.metadata?.exchange === 'string'
+			? detail.profile.metadata.exchange
+			: null;
 	const locations = detail.locations.map((l) => ({
 		raw: l.raw,
 		city: l.city,
@@ -901,6 +914,7 @@ export function buildProfileIdentityContext(detail: ProfileDetail): ProfileIdent
 		startDate: detail.profile.startDate,
 		endDate: detail.profile.endDate,
 		timelineYears,
+		listingExchange,
 	};
 }
 
@@ -1057,12 +1071,30 @@ export function evaluateIdentityMatch(
 		corroborations.push(hit);
 	};
 
-	// 1. Exact shared identifier check (CRD, CIK, ticker, EIN, Wikidata, ORCID, ROR, instrument)
+	// 1. Exact shared identifier check (CRD, CIK, EIN, Wikidata, ORCID, ROR, instrument).
+	// Tickers count only when symbol, listing country, and market all match.
 	const candidateIdents = candidate.candidateIdentifiers || [];
 	for (const pi of profile.identifiers) {
 		for (const ci of candidateIdents) {
+			if (pi.scheme !== ci.scheme) continue;
+			if (pi.scheme === 'ticker') {
+				const left = tickerListingKey(
+					resolveTickerListing(pi.value, profile.listingExchange),
+				);
+				const right = tickerListingKey(
+					resolveTickerListing(ci.value, candidate.candidateExchange),
+				);
+				if (left && left === right) {
+					addCorrob({
+						kind: 'shared_identifier',
+						value: `ticker:${left}`,
+						detail: `Same ticker listing ${left} (symbol, country, and market)`,
+					});
+				}
+				continue;
+			}
 			const cNorm = String(ci.value || '').trim().toLowerCase().replace(/\s+/g, '');
-			if (pi.scheme === ci.scheme && pi.normalizedValue && pi.normalizedValue === cNorm) {
+			if (pi.normalizedValue && pi.normalizedValue === cNorm) {
 				addCorrob({
 					kind: 'shared_identifier',
 					value: `${pi.scheme}:${pi.value}`,
@@ -1364,16 +1396,27 @@ export function evaluateIdentityMatch(
 	}
 
 	// 9. Decision logic (STRICT: never merge on name-only match!)
-	const strongIdentCorrobs = corroborations.filter(
-		(c) => c.kind === 'shared_identifier' && !c.value.startsWith('ticker:'),
-	);
-	const hasStrongIdent = strongIdentCorrobs.length > 0;
+	const strongIdentCorrobs = corroborations.filter((c) => c.kind === 'shared_identifier');
+	const profileEins = profile.identifiers
+		.filter((i) => i.scheme === 'irs_ein')
+		.map((i) => i.value);
+	const candidateEins = candidateIdents
+		.filter((i) => i.scheme === 'irs_ein')
+		.map((i) => i.value);
+	const einConflict = irsEinSetsConflict(profileEins, candidateEins);
+	// A copied Wikidata/CIK/ticker must not outrank two different IRS EINs.
+	const hasStrongIdent =
+		!einConflict && strongIdentCorrobs.length > 0;
 	let decision: IdentityDecision = 'reject';
 	let score = 0;
 	let rationale = '';
 	let missingValidationHint: string | null = null;
 
-	if (dateConflict && !hasStrongIdent) {
+	if (einConflict) {
+		decision = 'reject';
+		score = 0.1;
+		rationale = `IRS EINs do not match (${profileEins.join(', ') || '—'} vs ${candidateEins.join(', ') || '—'}). A shared identifier is not a stronger indicator.`;
+	} else if (dateConflict && !hasStrongIdent) {
 		decision = 'reject';
 		score = 0.1;
 		rationale = `Rejected "${candidate.candidateName}" due to date conflict: ${dateConflictReason}.`;

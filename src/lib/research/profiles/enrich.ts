@@ -33,6 +33,7 @@ import {
 	sha256Key,
 } from '@/lib/research/profiles/normalize';
 import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
+import { formatResearchDriveTimelineEntry } from '@/lib/research/profiles/researchDriveDisplay';
 import {
 	isPlausibleStreetHq,
 	lookupOrgFreeEnrich,
@@ -2098,14 +2099,24 @@ function enrichFromKnowledgeSqlite(ctx: ProfileIdentityContext): EnrichSourceOut
 			);
 
 			for (const v of validatedHits.slice(0, 4)) {
+				const isResearchDrive = /research\s*drive/i.test(v.hit.projectName);
+				const rawTitle = `[${v.hit.projectName}] ${v.hit.title}`;
+				const rawSummary = v.hit.snippet.slice(0, isResearchDrive ? 2000 : 400);
+				const formatted = isResearchDrive
+					? formatResearchDriveTimelineEntry({
+							title: rawTitle,
+							summary: rawSummary,
+							sourceCorpus: 'knowledge-sqlite',
+						})
+					: { title: rawTitle, summary: rawSummary };
 				const srId = upsertSourceRecord(
 					{
 						corpus: 'knowledge-sqlite',
 						sourceRef: `knowledge:doc:${v.hit.docId}`,
 						sourceUrl: v.hit.url,
-						title: `[${v.hit.projectName}] ${v.hit.title}`,
+						title: formatted.title,
 						publishedDate: v.hit.date,
-						excerpt: v.hit.snippet.slice(0, 600),
+						excerpt: formatted.summary.slice(0, 600),
 						metadata: { projectName: v.hit.projectName, docId: v.hit.docId },
 					},
 					tx,
@@ -2114,8 +2125,8 @@ function enrichFromKnowledgeSqlite(ctx: ProfileIdentityContext): EnrichSourceOut
 					{
 						profileId: ctx.profileId,
 						eventDate: v.hit.date,
-						title: `[${v.hit.projectName}] ${v.hit.title}`,
-						summary: v.hit.snippet.slice(0, 400),
+						title: formatted.title,
+						summary: formatted.summary.slice(0, isResearchDrive ? 1200 : 400),
 						angle: /county|deeds/i.test(v.hit.projectName) ? 'land_records' : 'general',
 						entryKind: 'filing',
 						confidence: v.evalRes.score,

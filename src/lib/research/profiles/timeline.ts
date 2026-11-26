@@ -584,22 +584,21 @@ export function getProfileTimeline(
 			.all(profile.id, profile.id) as Array<Record<string, unknown>>;
 
 		for (const lr of linkRows) {
-			const otherId =
-				String(lr.from_profile_id) === profile.id
-					? String(lr.to_profile_id)
-					: String(lr.from_profile_id);
-			const otherType =
-				String(lr.from_profile_id) === profile.id ? String(lr.to_type) : String(lr.from_type);
+			const weAreFrom = String(lr.from_profile_id) === profile.id;
+			const otherId = weAreFrom ? String(lr.to_profile_id) : String(lr.from_profile_id);
+			const otherType = weAreFrom ? String(lr.to_type) : String(lr.from_type);
 			const rel = String(lr.relation_type);
 
 			relatedActorIds.add(otherId);
 
-			// Merge timelines from child historic events, parent events, or direct participations
+			// Merge timelines from child historic events, parent subjects, or direct participations.
+			// part_of_subject is directional: only the child (from) pulls the parent subject (to).
+			// Parent hubs (e.g. Global Electrotelluric Framework) must not ingest every child's rail.
 			if (
 				otherType === 'historic_event' ||
-				rel === 'part_of_subject' ||
 				rel === 'participated_in' ||
-				(profile.profileType !== 'historic_event' && rel === 'mentioned_in')
+				(profile.profileType !== 'historic_event' && rel === 'mentioned_in') ||
+				(rel === 'part_of_subject' && weAreFrom)
 			) {
 				targetIds.add(otherId);
 			}

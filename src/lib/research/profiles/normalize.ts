@@ -881,6 +881,43 @@ export function dateToEpochDays(dateStr: string | null | undefined): number | nu
 /**
  * Build safe FTS5 OR query tokens from arbitrary text.
  */
+/** Digits of an IRS EIN. Hyphens and spaces do not make two EINs different. */
+export function irsEinDigits(value: string | null | undefined): string {
+	const digits = String(value || '').replace(/\D/g, '');
+	return digits.length >= 9 ? digits : '';
+}
+
+/**
+ * True when both sides have at least one IRS EIN and none of those EINs match.
+ * A shared Wikidata ID (or other soft identifier) is not a stronger indicator
+ * in that case. An empty side is not a conflict.
+ */
+export function irsEinSetsConflict(
+	left: Iterable<string> | null | undefined,
+	right: Iterable<string> | null | undefined,
+): boolean {
+	const a = new Set<string>();
+	for (const value of left || []) {
+		const digits = irsEinDigits(value);
+		if (digits) a.add(digits);
+	}
+	if (!a.size) return false;
+	let sawRight = false;
+	for (const value of right || []) {
+		const digits = irsEinDigits(value);
+		if (!digits) continue;
+		sawRight = true;
+		if (a.has(digits)) return false;
+	}
+	return sawRight;
+}
+
+export function formatIrsEin(value: string | null | undefined): string {
+	const digits = irsEinDigits(value) || String(value || '').replace(/\D/g, '');
+	if (digits.length === 9) return `${digits.slice(0, 2)}-${digits.slice(2)}`;
+	return String(value || '').trim();
+}
+
 export function buildSafeFtsQuery(query: string): string {
 	const rawTokens = String(query || '')
 		.replace(/["'*^(){}[\]:]/g, ' ')

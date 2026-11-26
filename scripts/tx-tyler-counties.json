@@ -1,0 +1,7 @@
+[
+  { "label": "Rockwall County", "host": "rockwalltx-web.tylerhost.net", "searchId": "DOCSEARCH542S1", "out": "rockwall-deeds" },
+  { "label": "Burnet County", "host": "burnetcountytx-web.tylerhost.net", "searchId": "DOCSEARCH144S1", "out": "burnet-deeds" },
+  { "label": "Liberty County", "host": "libertycountytx-web.tylerhost.net", "searchId": "DOCSEARCH144S1", "out": "liberty-deeds" },
+  { "label": "Kimble County", "host": "kimblecountytx-web.tylerhost.net", "searchId": "DOCSEARCH144S1", "out": "kimble-deeds" },
+  { "label": "Kaufman County", "host": "kaufmancountytx-web.tylerhost.net", "searchId": "DOCSEARCH1008S7", "out": "kaufman-deeds" }
+]

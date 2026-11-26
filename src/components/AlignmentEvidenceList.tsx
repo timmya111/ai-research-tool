@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import { irsEinSetsConflict } from '@/lib/research/profiles/normalize';
 import type { AlignmentEvidenceItem, AlignmentKind } from '@/lib/research/profiles/types';
 
 const FINRA_VISUALIZER_DASHBOARD =
@@ -196,6 +197,8 @@ type MatchSets = {
 	locationKeys: Set<string>;
 	corpusKeys: Set<string>;
 	nameMatch: boolean;
+	/** Both sides have an IRS EIN and the values differ. Shared IDs are not a stronger indicator. */
+	einConflict: boolean;
 	/** Weighted score for quick triage (identifiers count most). */
 	score: number;
 	breakdown: Array<{ label: string; count: number; weight: number; className: string }>;
@@ -229,10 +232,16 @@ function locationOverlapKeys(a: string, b: string): boolean {
 
 function computeMatchSets(left?: ProfilePeek | null, right?: ProfilePeek | null): MatchSets | null {
 	if (!left || !right) return null;
+	const einConflict = irsEinSetsConflict(
+		left.identifiers.filter((i) => i.scheme === 'irs_ein').map((i) => i.value),
+		right.identifiers.filter((i) => i.scheme === 'irs_ein').map((i) => i.value),
+	);
 	const idKeys = new Set<string>();
 	const leftIds = new Map(left.identifiers.map((i) => [idKey(i.scheme, i.value), i]));
 	for (const i of right.identifiers) {
 		const k = idKey(i.scheme, i.value);
+		// A shared Wikidata (or other) id does not count when the IRS EINs differ.
+		if (einConflict) continue;
 		if (leftIds.has(k)) idKeys.add(k);
 	}
 
@@ -303,11 +312,13 @@ function computeMatchSets(left?: ProfilePeek | null, right?: ProfilePeek | null)
 		},
 	];
 	const score = breakdown.reduce((s, b) => s + b.weight, 0);
-	return { idKeys, aliasKeys, locationKeys, corpusKeys, nameMatch, score, breakdown };
+	return { idKeys, aliasKeys, locationKeys, corpusKeys, nameMatch, einConflict, score, breakdown };
 }
 
 const CHIP_MATCH =
 	'inline-flex max-w-full items-center rounded border border-emerald-500/50 bg-emerald-500/25 px-1 py-0.5 text-[10px] font-semibold text-emerald-950 dark:text-emerald-50';
+const CHIP_CONFLICT =
+	'inline-flex max-w-full items-center rounded border border-rose-500/55 bg-rose-500/20 px-1 py-0.5 text-[10px] font-semibold text-rose-950 dark:text-rose-100';
 const CHIP_DIM = 'inline-flex max-w-full items-center rounded px-1 py-0.5 text-[10px] opacity-70';
 const CHIP_EVIDENCE_HIT =
 	'inline-flex items-center rounded border border-[#F97316]/55 bg-[#F97316]/20 px-1 py-0.5 text-[10px] font-semibold text-[#9a3412] dark:text-orange-100';
@@ -557,15 +568,17 @@ export default function AlignmentEvidenceList({
 								seen.add(k);
 								unique.push(i);
 							}
+							const einConflict = Boolean(matches?.einConflict);
 							return unique.map((i, idx) => {
 								const k = idKey(i.scheme, i.value);
-								const hit = matches?.idKeys.has(k);
+								const einClash = einConflict && i.scheme === 'irs_ein';
+								const hit = !einClash && Boolean(matches?.idKeys.has(k));
 								const isFinraCrd = i.scheme === 'finra_crd';
 								const kind =
 									peek.slug?.startsWith('person:') || peek.slug?.startsWith('individual:')
 										? 'individual'
 										: 'firm';
-								const chipClass = hit ? CHIP_MATCH : CHIP_DIM;
+								const chipClass = einClash ? CHIP_CONFLICT : hit ? CHIP_MATCH : CHIP_DIM;
 								if (isFinraCrd) {
 									return (
 										<a
@@ -589,10 +602,16 @@ export default function AlignmentEvidenceList({
 									<span
 										key={`id-${k}-${idx}`}
 										className={chipClass}
-										title={hit ? 'Matching identifier on both profiles (high weight)' : undefined}
+										title={
+											einClash
+												? 'IRS EINs do not match — not a stronger indicator'
+												: hit
+													? 'Matching identifier on both profiles (high weight)'
+													: undefined
+										}
 									>
 										{i.scheme}={i.value}
-										{hit ? ' ✓' : ''}
+										{einClash ? ' ≠' : hit ? ' ✓' : ''}
 									</span>
 								);
 							});
@@ -738,8 +757,9 @@ export default function AlignmentEvidenceList({
 			);
 		}
 		if (!anyOpen) return null;
-		const tone =
-			matches.score >= 6
+		const tone = matches.einConflict
+			? 'border-rose-500/40 bg-rose-500/10'
+			: matches.score >= 6
 				? 'border-emerald-500/50 bg-emerald-500/10'
 				: matches.score >= 3
 					? 'border-amber-500/45 bg-amber-500/10'
@@ -751,8 +771,9 @@ export default function AlignmentEvidenceList({
 						Match weight {matches.score}
 					</span>
 					<span className="text-[10px] opacity-65">
-						Highlighted ✓ chips match on both sides · IDs×3 · name×3 · aliases×2 ·
-						locations×1 · corpora×1
+						{matches.einConflict
+							? 'IRS EINs do not match — shared IDs are not a stronger indicator · IDs×3 · name×3 · aliases×2 · locations×1 · corpora×1'
+							: 'Highlighted ✓ chips match on both sides · IDs×3 · name×3 · aliases×2 · locations×1 · corpora×1'}
 					</span>
 				</div>
 				<div className="flex flex-wrap items-center gap-1.5">

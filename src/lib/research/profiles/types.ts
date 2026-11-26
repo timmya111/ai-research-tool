@@ -43,6 +43,7 @@ export type IdentifierScheme =
 	| 'sec_cik'
 	/** Parent filer's CIK for non-filing subsidiaries (does NOT trigger same-entity shared_identifier merges). */
 	| 'parent_sec_cik'
+	/** Listing key is symbol + country + market. NYSE:BA is not LSE:BA. */
 	| 'ticker'
 	| 'irs_ein'
 	/** CUSIP security identifier (entity / security matching). */

@@ -24,11 +24,18 @@ import {
 } from '@/lib/research/profiles/identity';
 import {
 	dateToEpochDays,
+	formatIrsEin,
+	irsEinSetsConflict,
 	normalizeIsoDate,
 	sha256Key,
 	stripLegalSuffixes,
 } from '@/lib/research/profiles/normalize';
+import {
+	formatTickerListing,
+	sameTickerListing,
+} from '@/lib/research/profiles/tickerListing';
 import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
+import { formatResearchDriveTimelineEntry } from '@/lib/research/profiles/researchDriveDisplay';
 import {
 	getProfileDetail,
 	mergeProfiles,
@@ -57,6 +64,10 @@ export type RunAlignmentPassOptions = {
 
 export type AlignmentPassReport = {
 	sharedIdentifier: number;
+	/** finra_crd / sec_cik / irs_ein pairs merged because the ID is one entity. */
+	sharedIdentifierAutoMerged: number;
+	/** Same EIN/CIK copied across 3+ unrelated names — dismissed, not merged. */
+	sharedIdentifierContaminated: number;
 	sameEntityAlias: number;
 	crossSourceMention: number;
 	sharedAffiliation: number;
@@ -73,6 +84,31 @@ export type AlignmentPassReport = {
 	totalUpserted: number;
 	durationMs: number;
 };
+
+/** Display name with legal suffixes, parentheticals, and a leading "the" removed. */
+function canonicalIdentityName(name: string): string {
+	const noParen = String(name || '')
+		.replace(/\([^)]*\)/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return stripLegalSuffixes(noParen)
+		.replace(/^\bthe\b\s+/, '')
+		.replace(/\bof the united states\b/g, ' ')
+		.replace(/\bof government\b/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+/**
+ * True when one EIN/CIK value is sitting on several unrelated organizations.
+ * Firm and person CRDs stay mergeable even when the cards use different names.
+ */
+function isContaminatedMajorId(scheme: string, names: string[]): boolean {
+	if (scheme === 'finra_crd') return false;
+	if (scheme !== 'irs_ein' && scheme !== 'sec_cik') return false;
+	const distinct = new Set(names.map((n) => canonicalIdentityName(n)).filter(Boolean));
+	return distinct.size >= 3;
+}
 
 const STOP_ALIAS_WORDS = new Set([
 	'united states',
@@ -284,6 +320,8 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 	const counts: AlignmentPassReport = {
 		sharedIdentifier: 0,
+		sharedIdentifierAutoMerged: 0,
+		sharedIdentifierContaminated: 0,
 		sameEntityAlias: 0,
 		crossSourceMention: 0,
 		sharedAffiliation: 0,
@@ -313,15 +351,18 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 	// Individual CRD → Merge. Verify kind via visualizer merged/firm vs merged/individual.
 	const sharedIdentRows = db
 		.prepare(
-			`SELECT a.profile_id AS p1, b.profile_id AS p2, a.scheme, a.value,
+			`SELECT a.profile_id AS p1, b.profile_id AS p2, a.scheme, a.value, b.value AS value_b,
+              a.normalized_value,
               p1.name AS n1, p2.name AS n2, p1.profile_type AS t1, p2.profile_type AS t2,
-              a.source_corpus AS c1, b.source_corpus AS c2
+              a.source_corpus AS c1, b.source_corpus AS c2,
+              json_extract(p1.metadata_json, '$.exchange') AS ex1,
+              json_extract(p2.metadata_json, '$.exchange') AS ex2
        FROM profile_identifiers a
        JOIN profile_identifiers b
          ON a.scheme = b.scheme AND a.normalized_value = b.normalized_value AND a.profile_id < b.profile_id
        JOIN profiles p1 ON p1.id = a.profile_id
        JOIN profiles p2 ON p2.id = b.profile_id
-       WHERE a.scheme NOT IN ('parent_sec_cik', 'url', 'source_id', 'dossier_slug')
+       WHERE a.scheme NOT IN ('parent_sec_cik', 'url', 'source_id', 'dossier_slug', 'okcr_instrument')
          AND NOT (
            a.scheme = 'finra_crd'
            AND (
@@ -332,6 +373,45 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
        LIMIT 300`,
 		)
 		.all() as Array<Record<string, unknown>>;
+
+	// IRS EIN per profile. A shared Wikidata/CIK/ticker is not a stronger
+	// indicator when these sets are both populated and disjoint.
+	const einsByProfile = new Map<string, Set<string>>();
+	for (const row of db
+		.prepare(
+			`SELECT profile_id, value FROM profile_identifiers WHERE scheme = 'irs_ein'`,
+		)
+		.all() as Array<{ profile_id?: string; value?: string }>) {
+		const profileId = String(row.profile_id || '');
+		const digits = String(row.value || '').replace(/\D/g, '');
+		if (!profileId || digits.length < 9) continue;
+		const set = einsByProfile.get(profileId) || new Set<string>();
+		set.add(digits);
+		einsByProfile.set(profileId, set);
+	}
+
+	// EIN/CIK values copied onto 3+ unrelated names (fuzzy IRS enrich). Those pairs
+	// are dismissed. A value shared by duplicate cards of one organization is not.
+	const majorIdHolderNames = new Map<string, string[]>();
+	for (const row of db
+		.prepare(
+			`SELECT i.scheme AS scheme, i.normalized_value AS value, p.name AS name
+       FROM profile_identifiers i
+       JOIN profiles p ON p.id = i.profile_id
+       WHERE i.scheme IN ('irs_ein', 'sec_cik')
+         AND i.normalized_value IN (
+           SELECT normalized_value FROM profile_identifiers
+           WHERE scheme IN ('irs_ein', 'sec_cik')
+           GROUP BY scheme, normalized_value
+           HAVING COUNT(DISTINCT profile_id) >= 3
+         )`,
+		)
+		.all() as Array<Record<string, unknown>>) {
+		const key = `${String(row.scheme)}|${String(row.value)}`;
+		const list = majorIdHolderNames.get(key) || [];
+		list.push(String(row.name || ''));
+		majorIdHolderNames.set(key, list);
+	}
 
 	// 2. Same Entity Alias / Stripped Legal Name across distinct profiles
 	const aliasGroups = db
@@ -533,11 +613,19 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 		const profileAlive = (id: string) => !mergedAwayIds.has(id);
 
 		// Commit (1) Shared Identifiers
+		// finra_crd (same kind), sec_cik, and irs_ein auto-merge when the value is one
+		// entity. A value copied across 3+ unrelated names is contamination: dismiss.
 		for (const r of sharedIdentRows) {
 			const p1 = String(r.p1);
 			const p2 = String(r.p2);
 			const scheme = String(r.scheme);
 			const value = String(r.value);
+			const valueB = String(r.value_b || value);
+			const normValue = String(r.normalized_value || value);
+			const ex1 = r.ex1 != null ? String(r.ex1) : '';
+			const ex2 = r.ex2 != null ? String(r.ex2) : '';
+			const n1 = String(r.n1);
+			const n2 = String(r.n2);
 			const evCorpus = (c: string) =>
 				scheme === 'finra_crd' || isFinraPersonCorpus(String(c || ''))
 					? 'finra-api'
@@ -546,6 +634,146 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 				scheme === 'finra_crd'
 					? `https://finra-sec-data-visualizer-canvas.vercel.app/dashboard/firm/${encodeURIComponent(value)}?disable_analytics=1`
 					: null;
+			const evidence: AlignmentEvidenceItem[] = [
+				{
+					corpus: evCorpus(String(r.c1 || '')),
+					label: `${n1} (${scheme}: ${value})`,
+					url: finraUrl,
+				},
+				{
+					corpus: evCorpus(String(r.c2 || '')),
+					label: `${n2} (${scheme}: ${value})`,
+					url: finraUrl,
+				},
+			];
+			const idKey = `${scheme}|${normValue}`;
+			const holderNames = majorIdHolderNames.get(idKey);
+			if (holderNames && isContaminatedMajorId(scheme, holderNames)) {
+				const shown = [...new Set(holderNames)].slice(0, 6).join('", "');
+				upsertAlignmentCandidate(
+					{
+						dedupeKey: sha256Key(['shared_identifier', p1, p2, scheme, value]),
+						alignmentKind: 'shared_identifier',
+						leftProfileId: p1,
+						rightProfileId: p2,
+						score: 0.15,
+						cautionTier: 'observation',
+						status: 'dismissed',
+						rationale: `Shared ${scheme}=${value} is copied across unrelated organizations ("${shown}"). Dismissed as identifier contamination, not a merge.`,
+						evidence,
+					},
+					tx,
+				);
+				counts.sharedIdentifier += 1;
+				counts.sharedIdentifierContaminated += 1;
+				continue;
+			}
+
+			// Different IRS EINs mean these are not the same organization, even when
+			// Wikidata (or another copied id) matches. Do not leave a 0.96 review card.
+			if (irsEinSetsConflict(einsByProfile.get(p1), einsByProfile.get(p2))) {
+				const leftEins = [...(einsByProfile.get(p1) || [])].map((d) => formatIrsEin(d)).join(', ');
+				const rightEins = [...(einsByProfile.get(p2) || [])].map((d) => formatIrsEin(d)).join(', ');
+				upsertAlignmentCandidate(
+					{
+						dedupeKey: sha256Key(['shared_identifier', p1, p2, scheme, value]),
+						alignmentKind: 'shared_identifier',
+						leftProfileId: p1,
+						rightProfileId: p2,
+						score: 0.15,
+						cautionTier: 'observation',
+						status: 'dismissed',
+						rationale: `IRS EINs do not match (${leftEins} vs ${rightEins}). Shared ${scheme}=${value} is not a stronger indicator. Dismissed.`,
+						evidence,
+					},
+					tx,
+				);
+				counts.sharedIdentifier += 1;
+				counts.sharedIdentifierContaminated += 1;
+				continue;
+			}
+
+			// Global tickers collide (LSE:BA is BAE, NYSE:BA is Boeing). Count a ticker
+			// only when both cards resolve to the same symbol, country, and market.
+			if (scheme === 'ticker' && !sameTickerListing(value, ex1, valueB, ex2)) {
+				const leftListing = formatTickerListing(value, ex1);
+				const rightListing = formatTickerListing(valueB, ex2);
+				upsertAlignmentCandidate(
+					{
+						dedupeKey: sha256Key(['shared_identifier', p1, p2, scheme, value]),
+						alignmentKind: 'shared_identifier',
+						leftProfileId: p1,
+						rightProfileId: p2,
+						score: 0.15,
+						cautionTier: 'observation',
+						status: 'dismissed',
+						rationale: `Ticker ${value} is not one listing. ${leftListing} and ${rightListing} need the same symbol, country, and market. Dismissed.`,
+						evidence,
+					},
+					tx,
+				);
+				counts.sharedIdentifier += 1;
+				counts.sharedIdentifierContaminated += 1;
+				continue;
+			}
+
+			const sameName =
+				canonicalIdentityName(n1) !== '' &&
+				canonicalIdentityName(n1) === canonicalIdentityName(n2);
+			// Firm/person CRD merges even when the cards use different names.
+			// CIK, EIN, and Wikidata merge only when the names are the same entity.
+			// A ticker merges only when the listing (country + market + symbol) matches
+			// and the canonical names are the same company.
+			const autoScheme =
+				scheme === 'finra_crd' ||
+				(sameName &&
+					(scheme === 'sec_cik' ||
+						scheme === 'irs_ein' ||
+						scheme === 'wikidata' ||
+						scheme === 'ticker'));
+			if (
+				autoScheme &&
+				profileAlive(p1) &&
+				profileAlive(p2) &&
+				!profilesHaveConflictingMajorIds(p1, p2, tx)
+			) {
+				const merged = recordMerge(p1, p2);
+				if (merged) {
+					counts.sharedIdentifier += 1;
+					counts.sharedIdentifierAutoMerged += 1;
+					continue;
+				}
+			}
+
+			// A copied EIN, CIK, ticker, or Wikidata on two different organizations
+			// is not a merge. Dismiss it instead of leaving a 0.96 review card.
+			if (
+				!sameName &&
+				(scheme === 'irs_ein' ||
+					scheme === 'sec_cik' ||
+					scheme === 'ticker' ||
+					scheme === 'wikidata' ||
+					scheme === 'cusip')
+			) {
+				upsertAlignmentCandidate(
+					{
+						dedupeKey: sha256Key(['shared_identifier', p1, p2, scheme, value]),
+						alignmentKind: 'shared_identifier',
+						leftProfileId: p1,
+						rightProfileId: p2,
+						score: 0.15,
+						cautionTier: 'observation',
+						status: 'dismissed',
+						rationale: `Shared ${scheme}=${value} does not make "${n1}" and "${n2}" the same entity. Dismissed.`,
+						evidence,
+					},
+					tx,
+				);
+				counts.sharedIdentifier += 1;
+				counts.sharedIdentifierContaminated += 1;
+				continue;
+			}
+
 			upsertAlignmentCandidate(
 				{
 					dedupeKey: sha256Key(['shared_identifier', p1, p2, scheme, value]),
@@ -554,19 +782,8 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 					rightProfileId: p2,
 					score: 0.96,
 					cautionTier: 'stronger_indicator',
-					rationale: `Exact shared identifier ${scheme}=${value} between "${String(r.n1)}" and "${String(r.n2)}".`,
-					evidence: [
-						{
-							corpus: evCorpus(String(r.c1 || '')),
-							label: `${String(r.n1)} (${scheme}: ${value})`,
-							url: finraUrl,
-						},
-						{
-							corpus: evCorpus(String(r.c2 || '')),
-							label: `${String(r.n2)} (${scheme}: ${value})`,
-							url: finraUrl,
-						},
-					],
+					rationale: `Exact shared identifier ${scheme}=${value} between "${n1}" and "${n2}".`,
+					evidence,
 				},
 				tx,
 			);
@@ -1673,14 +1890,24 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 
 							// ONLY attach timeline observations for validated matches!
 							for (const h of hits.slice(0, 3)) {
+								const isResearchDrive = /research\s*drive/i.test(h.projectName);
+								const rawTitle = `[${h.projectName}] ${h.title}`;
+								const rawSummary = String(h.snippet || '');
+								const formatted = isResearchDrive
+									? formatResearchDriveTimelineEntry({
+											title: rawTitle,
+											summary: rawSummary,
+											sourceCorpus: 'knowledge-sqlite',
+										})
+									: { title: rawTitle, summary: rawSummary };
 								const srId = upsertSourceRecord(
 									{
 										corpus: 'knowledge-sqlite',
 										sourceRef: `knowledge:doc:${h.docId}`,
 										sourceUrl: h.url,
-										title: `[${h.projectName}] ${h.title}`,
+										title: formatted.title,
 										publishedDate: h.date,
-										excerpt: h.snippet,
+										excerpt: formatted.summary.slice(0, 600),
 										metadata: { projectName: h.projectName, docId: h.docId },
 									},
 									tx,
@@ -1689,8 +1916,8 @@ export function runAlignmentPass(opts: RunAlignmentPassOptions = {}): AlignmentP
 									{
 										profileId: m.profileId,
 										eventDate: h.date,
-										title: `[${h.projectName}] ${h.title}`,
-										summary: h.snippet,
+										title: formatted.title,
+										summary: formatted.summary.slice(0, isResearchDrive ? 1200 : 600),
 										angle: kind === 'county_filing_match' ? 'land_records' : 'general',
 										entryKind: kind === 'county_filing_match' ? 'filing' : 'observation',
 										confidence: h.score,

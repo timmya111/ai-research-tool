@@ -277,10 +277,9 @@ async function lookupProPublica(
 			organizations?: Array<Record<string, unknown>>;
 		};
 		const orgs = data.organizations || [];
-		// Prefer exact/fuzzy name hit; for short acronyms trust ProPublica's top ranked result.
-		let hit =
-			orgs.find((o) => nameLooksLikeHit(name, String(o.name || ''))) ||
-			(isShortOrAcronymName(name) && orgs[0] ? orgs[0] : null);
+		// Never take ProPublica's top hit without a name match. Short IRS names
+		// ("Sea" = SMUD Employees Association) rank above unrelated "research" orgs.
+		const hit = orgs.find((o) => nameLooksLikeHit(name, String(o.name || '')));
 		if (!hit) return {};
 		const id = String(hit.ein || '').replace(/\D/g, '');
 		if (id.length === 9) {
@@ -295,14 +294,9 @@ async function lookupProPublica(
 
 	if (!org) return {};
 	const orgName = String(org.name || '');
-	const fromEinLookup = einDigits.length === 9;
-	// EIN lookups and acronym top-hits may not fuzzy-match the short query string.
-	if (
-		orgName &&
-		!fromEinLookup &&
-		!isShortOrAcronymName(name) &&
-		!nameLooksLikeHit(name, orgName)
-	) {
+	// An EIN already stored on the profile is not proof of identity — fuzzy enrich
+	// has copied other orgs' EINs. Require the IRS legal name to match.
+	if (orgName && !nameLooksLikeHit(name, orgName)) {
 		return {};
 	}
 

@@ -112,11 +112,21 @@ export function nameLooksLikeHit(orgName: string, title: string): boolean {
 	const b = norm(title);
 	if (!a || !b) return false;
 	if (a === b) return true;
-	if (a.includes(b) || b.includes(a)) return true;
+	// Whole tokens only. Raw includes() treated IRS short names as hits inside
+	// longer words ("Sea" ⊂ "research", "national" ⊂ "international") and copied
+	// that org's EIN and street onto unrelated profiles.
 	const at = a.split(' ').filter((t) => t.length > 2);
-	const bt = new Set(b.split(' ').filter((t) => t.length > 2));
-	if (at.length === 0) return false;
-	const overlap = at.filter((t) => bt.has(t)).length;
+	const bt = b.split(' ').filter((t) => t.length > 2);
+	if (at.length === 0 || bt.length === 0) return false;
+	const aSet = new Set(at);
+	const bSet = new Set(bt);
+	const shorter = at.length <= bt.length ? at : bt;
+	const longer = at.length <= bt.length ? bSet : aSet;
+	const contained = shorter.every((t) => longer.has(t));
+	// One shared token is enough only when it is a distinctive whole word
+	// (length >= 5), so "sea" cannot match by itself.
+	if (contained && (shorter.length >= 2 || shorter[0].length >= 5)) return true;
+	const overlap = at.filter((t) => bSet.has(t)).length;
 	return overlap >= Math.min(2, at.length) && overlap / at.length >= 0.5;
 }
 

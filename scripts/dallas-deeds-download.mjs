@@ -18,6 +18,7 @@
  *   START=2016-01-01 END=2016-01-31 node scripts/dallas-deeds-download.mjs
  *   DEPARTMENTS=RP,FC node scripts/dallas-deeds-download.mjs
  *   HEADED=1 node scripts/dallas-deeds-download.mjs
+ *   PUBLICSEARCH_HOST=collin.tx.publicsearch.us DEEDS_OUT=collin-deeds COUNTY_LABEL="Collin County" node scripts/dallas-deeds-download.mjs
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,12 +27,17 @@ import { chromium } from 'playwright';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const OUT = path.join(ROOT, '.data', 'dallas-deeds');
+const COUNTY_LABEL = String(process.env.COUNTY_LABEL || 'Dallas County').trim() || 'Dallas County';
+const HOST = String(process.env.PUBLICSEARCH_HOST || 'dallas.tx.publicsearch.us')
+	.trim()
+	.replace(/^https?:\/\//, '')
+	.replace(/\/$/, '');
+const OUT = path.join(ROOT, '.data', String(process.env.DEEDS_OUT || 'dallas-deeds').trim() || 'dallas-deeds');
 const RECORDS = path.join(OUT, 'records');
 const DIGESTS = path.join(OUT, 'digests');
 const STATE_PATH = path.join(OUT, 'state.json');
 
-const BASE = 'https://dallas.tx.publicsearch.us';
+const BASE = `https://${HOST}`;
 const PAGE_SIZE = 50;
 const START = String(process.env.START || '2016-01-01');
 const END = String(process.env.END || todayISO());
@@ -192,7 +198,7 @@ async function waitForSocket(page, timeoutMs = 60_000) {
 }
 
 async function ensureSession(page, { forceReload = false } = {}) {
-	if (forceReload || !page.url().includes('dallas.tx.publicsearch.us')) {
+	if (forceReload || !page.url().includes(HOST)) {
 		await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
 	}
 	// Cloudflare interstitial or slow WS boot
@@ -398,7 +404,7 @@ function upsertDayDigest(dept, iso, { saved, numRecords, typeCounts, statistics 
 	const digestPath = path.join(DIGESTS, `${dept}-${month}.md`);
 	let existing = fs.existsSync(digestPath) ? fs.readFileSync(digestPath, 'utf8') : '';
 	if (!existing) {
-		existing = `# Dallas County ${dept} — ${month}\n\nSource: dallas.tx.publicsearch.us Property Records metadata.\n\n`;
+		existing = `# ${COUNTY_LABEL} ${dept} — ${month}\n\nSource: ${HOST} Property Records metadata.\n\n`;
 	}
 
 	const topTypes = [...typeCounts.entries()]
@@ -427,9 +433,9 @@ function upsertDayDigest(dept, iso, { saved, numRecords, typeCounts, statistics 
 
 function writeOverview(state) {
 	const lines = [
-		'# Dallas County recorded instruments (publicsearch)',
+		`# ${COUNTY_LABEL} recorded instruments (publicsearch)`,
 		'',
-		`Source: ${BASE} (GovOS/Neumo/Kofile tenant 48113)`,
+		`Source: ${BASE} (GovOS/Neumo/Kofile)`,
 		`Departments: ${DEPARTMENTS.join(', ')}`,
 		`Range: ${state.start} → ${state.end}`,
 		`Next date: ${state.nextDate}`,
@@ -463,7 +469,7 @@ async function main() {
 	writeOverview(state);
 
 	console.log(
-		`Dallas deeds download: depts=${DEPARTMENTS.join(',')} ${runStart} → ${state.end} (PAGE_SIZE=${PAGE_SIZE})`,
+		`${COUNTY_LABEL} deeds download: host=${HOST} depts=${DEPARTMENTS.join(',')} ${runStart} → ${state.end} (PAGE_SIZE=${PAGE_SIZE})`,
 	);
 
 	const session = {

@@ -86,7 +86,8 @@ const COUNTRY_PATTERNS: Array<{ code: string; re: RegExp }> = [
 	},
 	{
 		code: 'es',
-		re: /\b(?:Spain|Spanish|Madrid|Barcelona|Bilbao|Llodio|Basque Country|Álava|Alava|Seville|Valencia)\b/i,
+		// Exclude U.S. "New Madrid" (Missouri / Reelfoot Rift) — bare "Madrid" alone is Spain.
+		re: /\b(?:Spain|Spanish|Barcelona|Bilbao|Llodio|Basque Country|Álava|Alava|Seville|Valencia)\b|(?<!\bNew\s)\bMadrid\b/i,
 	},
 	{
 		code: 'fr',
