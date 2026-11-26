@@ -253,6 +253,7 @@ export function syncEmploymentSpansToTimeline(profileId: string): {
 						orgName: span.row.orgName,
 						orgType: span.row.orgType,
 						relationType: span.row.relationType,
+						roleLabel: span.row.roleLabel,
 						firmCrd,
 						isCurrent: span.isCurrent,
 					},
