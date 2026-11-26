@@ -91,6 +91,9 @@ import {
 	isShortOrAcronymName,
 	nameLooksLikeHit,
 	looksLikeSecuritiesJunk,
+	looksLikeForeignNonprofitName,
+	BLOCKED_IRS_EINS,
+	isContaminantFreeOrgAddress,
 } from '@/lib/research/profiles/freeOrgShared';
 
 export {
@@ -98,6 +101,9 @@ export {
 	isShortOrAcronymName,
 	nameLooksLikeHit,
 	looksLikeSecuritiesJunk,
+	looksLikeForeignNonprofitName,
+	BLOCKED_IRS_EINS,
+	isContaminantFreeOrgAddress,
 };
 
 function parseWktPoint(wkt: string): { lat: number; lon: number } | null {
@@ -448,14 +454,31 @@ export async function lookupOrgFreeEnrich(
 	}
 
 	const shortName = isShortOrAcronymName(input.name);
-	const runProPublica = input.profileType === 'nonprofit' && !input.skipProPublica;
+	const foreignNonprofit =
+		input.profileType === 'nonprofit' && looksLikeForeignNonprofitName(input.name);
+	const runProPublica =
+		input.profileType === 'nonprofit' && !input.skipProPublica && !foreignNonprofit;
 	// Acronym nonprofits: ProPublica first (Wikidata label collisions are common).
 	const proPublicaFirst = runProPublica && (shortName || Boolean(input.ein));
 
+	const allowEin = (ein: string | null | undefined, profileName: string) => {
+		const v = String(ein || '').trim();
+		if (!v) return false;
+		if (!BLOCKED_IRS_EINS.has(v)) return true;
+		// ASHG may keep its own EIN; never attach that value elsewhere.
+		return v === '52-1419397' && /^american society of human genetics$/i.test(profileName.trim());
+	};
+
 	const mergeBulk = (bulk: Awaited<ReturnType<typeof lookupIrsEoBmf>>) => {
 		if (!bulk) return;
-		if (bulk.ein && !result.ein) result.ein = bulk.ein;
-		if (bulk.address && !result.address) result.address = bulk.address;
+		if (bulk.ein && !result.ein && allowEin(bulk.ein, input.name)) result.ein = bulk.ein;
+		if (
+			bulk.address &&
+			!result.address &&
+			!isContaminantFreeOrgAddress(bulk.address.raw)
+		) {
+			result.address = bulk.address;
+		}
 		if (bulk.startDate && !result.startDate) result.startDate = bulk.startDate;
 		if (bulk.endDate && !result.endDate) result.endDate = bulk.endDate;
 		if (bulk.status === 'archived') result.status = 'archived';
@@ -463,8 +486,8 @@ export async function lookupOrgFreeEnrich(
 		for (const e of bulk.evidence) evidence.push(e);
 	};
 
-	// IRS EO BMF (local CSVs) — strong nonprofit ruling date + status
-	if (input.profileType === 'nonprofit' && !input.skipIrsBmf) {
+	// IRS EO BMF (local CSVs) — U.S. nonprofits only
+	if (input.profileType === 'nonprofit' && !input.skipIrsBmf && !foreignNonprofit) {
 		try {
 			mergeBulk(await lookupIrsEoBmf({ name: input.name, ein: input.ein }));
 		} catch {
@@ -490,11 +513,15 @@ export async function lookupOrgFreeEnrich(
 		if (!runProPublica) return;
 		try {
 			const pp = await lookupProPublica(input.name, input.ein);
-			if (pp.ein) {
+			if (pp.ein && allowEin(pp.ein, input.name)) {
 				result.ein = pp.ein;
 				evidence.push({ field: 'ein', source: 'propublica', value: pp.ein });
 			}
-			if (pp.address && !result.address) {
+			if (
+				pp.address &&
+				!result.address &&
+				!isContaminantFreeOrgAddress(pp.address.raw)
+			) {
 				result.address = pp.address;
 				evidence.push({
 					field: 'address',

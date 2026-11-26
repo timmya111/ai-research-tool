@@ -210,3 +210,134 @@ export function associateDeedsToProfiles(
 	}
 	return report;
 }
+
+export type AssociateTylerJsonlOptions = {
+	/** Directory containing records/RP/YYYY/*.jsonl (e.g. .data/rockwall-deeds). */
+	deedsDir: string;
+	/** County label for timeline titles (e.g. "Rockwall County"). */
+	countyLabel: string;
+	/** Max JSONL rows to scan (default all). */
+	limit?: number;
+	dryRun?: boolean;
+};
+
+function parseTylerRecordedDate(raw: unknown): string | null {
+	const s = String(raw || '').trim();
+	if (!s) return null;
+	// 05/08/2024 03:34 PM  or  2024-05-08
+	const iso = s.match(/^(\d{4}-\d{2}-\d{2})/);
+	if (iso) return iso[1];
+	const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+	if (mdy) {
+		const mm = mdy[1].padStart(2, '0');
+		const dd = mdy[2].padStart(2, '0');
+		return `${mdy[3]}-${mm}-${dd}`;
+	}
+	return null;
+}
+
+function asNameList(v: unknown): string[] {
+	if (Array.isArray(v)) return v.map((x) => String(x || '').trim()).filter(Boolean);
+	if (typeof v === 'string' && v.trim()) return [v.trim()];
+	return [];
+}
+
+/**
+ * Associate Tyler self-service index JSONL (grantor/grantee arrays) to profiles
+ * with the same strict exact-name rules as knowledge deed docs.
+ */
+export function associateTylerJsonlToProfiles(
+	opts: AssociateTylerJsonlOptions,
+): AssociateDeedsReport {
+	const report: AssociateDeedsReport = {
+		documentsScanned: 0,
+		partiesParsed: 0,
+		matches: 0,
+		timelineWrites: 0,
+		identifierWrites: 0,
+		unmatchedParties: 0,
+	};
+	const root = pathResolveDeedsRp(opts.deedsDir);
+	if (!root || !fs.existsSync(root)) return report;
+
+	const pdb = getProfilesDb();
+	const nameIndex = buildNameIndex(pdb);
+	const county = String(opts.countyLabel || 'Tyler County').trim() || 'Tyler County';
+	const limit = opts.limit && opts.limit > 0 ? opts.limit : Number.POSITIVE_INFINITY;
+
+	const years = fs
+		.readdirSync(root, { withFileTypes: true })
+		.filter((d) => d.isDirectory())
+		.map((d) => d.name)
+		.sort();
+
+	outer: for (const year of years) {
+		const yearDir = `${root}/${year}`;
+		const files = fs
+			.readdirSync(yearDir)
+			.filter((n) => n.endsWith('.jsonl'))
+			.sort();
+		for (const file of files) {
+			const full = `${yearDir}/${file}`;
+			const text = fs.readFileSync(full, 'utf8');
+			for (const line of text.split('\n')) {
+				if (!line.trim()) continue;
+				if (report.documentsScanned >= limit) break outer;
+				let rec: Record<string, unknown>;
+				try {
+					rec = JSON.parse(line) as Record<string, unknown>;
+				} catch {
+					continue;
+				}
+				report.documentsScanned += 1;
+				const docId = String(rec.id || rec.docNumber || `${file}:${report.documentsScanned}`);
+				const instrument = String(rec.docNumber || docId);
+				const docType = String(rec.docType || 'Instrument');
+				const recorded = parseTylerRecordedDate(rec.recordedDate);
+				const parties: Array<{ role: string; name: string }> = [];
+				for (const name of asNameList(rec.grantor)) parties.push({ role: 'Grantor', name });
+				for (const name of asNameList(rec.grantee)) parties.push({ role: 'Grantee', name });
+				report.partiesParsed += parties.length;
+
+				for (const party of parties) {
+					const norm = normalizeText(party.name);
+					const hits = nameIndex.get(norm);
+					if (!hits?.length) {
+						report.unmatchedParties += 1;
+						continue;
+					}
+					if (hits.length > 1) {
+						report.unmatchedParties += 1;
+						continue;
+					}
+					report.matches += 1;
+					if (opts.dryRun) continue;
+					upsertTimelineEntry(
+						{
+							profileId: hits[0],
+							entryKind: 'observation',
+							title: `${county}: ${docType} ${instrument} (${party.role})`,
+							summary: `${party.role}: ${party.name}. Exact name match on ${county} Tyler index.`,
+							eventDate: recorded,
+							angle: 'land_records',
+							sourceCorpus: 'tyler-deeds-jsonl',
+							dedupeHint: `tyler:${county}:${docId}:${party.role}:${norm}`,
+						},
+						pdb,
+					);
+					report.timelineWrites += 1;
+				}
+			}
+		}
+	}
+	return report;
+}
+
+function pathResolveDeedsRp(deedsDir: string): string | null {
+	const base = String(deedsDir || '').trim();
+	if (!base) return null;
+	const rp = base.endsWith('/records/RP') || base.endsWith('/records/RP/')
+		? base.replace(/\/$/, '')
+		: `${base.replace(/\/$/, '')}/records/RP`;
+	return rp;
+}

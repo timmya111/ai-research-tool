@@ -1,0 +1,187 @@
+{
+  "description": "Remaining Oklahoma counties on OKCountyRecords after the east-of-I-35 queue. 33 sites. After this finishes, Phase 2 covers 12 non-OKCR counties (caddo, canadian, cleveland, creek, garfield, oklahoma, payne, roger-mills, rogers, tulsa, wagoner, woods).",
+  "fromYear": 2016,
+  "alreadyComplete": [],
+  "notOnOkcr": [
+    "tulsa",
+    "oklahoma",
+    "cleveland",
+    "canadian",
+    "creek",
+    "rogers",
+    "wagoner",
+    "garfield",
+    "woods",
+    "payne",
+    "caddo",
+    "roger-mills"
+  ],
+  "counties": [
+    {
+      "site": "love",
+      "name": "Love County",
+      "hub": "Marietta"
+    },
+    {
+      "site": "carter",
+      "name": "Carter County",
+      "hub": "Ardmore"
+    },
+    {
+      "site": "murray",
+      "name": "Murray County",
+      "hub": "Sulphur"
+    },
+    {
+      "site": "garvin",
+      "name": "Garvin County",
+      "hub": "Pauls Valley"
+    },
+    {
+      "site": "mcclain",
+      "name": "McClain County",
+      "hub": "Purcell"
+    },
+    {
+      "site": "grady",
+      "name": "Grady County",
+      "hub": "Chickasha"
+    },
+    {
+      "site": "stephens",
+      "name": "Stephens County",
+      "hub": "Duncan"
+    },
+    {
+      "site": "jefferson",
+      "name": "Jefferson County",
+      "hub": "Waurika"
+    },
+    {
+      "site": "cotton",
+      "name": "Cotton County",
+      "hub": "Walters"
+    },
+    {
+      "site": "comanche",
+      "name": "Comanche County",
+      "hub": "Lawton"
+    },
+    {
+      "site": "tillman",
+      "name": "Tillman County",
+      "hub": "Frederick"
+    },
+    {
+      "site": "jackson",
+      "name": "Jackson County",
+      "hub": "Altus"
+    },
+    {
+      "site": "kiowa",
+      "name": "Kiowa County",
+      "hub": "Hobart"
+    },
+    {
+      "site": "greer",
+      "name": "Greer County",
+      "hub": "Mangum"
+    },
+    {
+      "site": "harmon",
+      "name": "Harmon County",
+      "hub": "Hollis"
+    },
+    {
+      "site": "beckham",
+      "name": "Beckham County",
+      "hub": "Sayre"
+    },
+    {
+      "site": "washita",
+      "name": "Washita County",
+      "hub": "Cordell"
+    },
+    {
+      "site": "custer",
+      "name": "Custer County",
+      "hub": "Arapaho"
+    },
+    {
+      "site": "blaine",
+      "name": "Blaine County",
+      "hub": "Watonga"
+    },
+    {
+      "site": "kingfisher",
+      "name": "Kingfisher County",
+      "hub": "Kingfisher"
+    },
+    {
+      "site": "logan",
+      "name": "Logan County",
+      "hub": "Guthrie"
+    },
+    {
+      "site": "kay",
+      "name": "Kay County",
+      "hub": "Newkirk"
+    },
+    {
+      "site": "noble",
+      "name": "Noble County",
+      "hub": "Perry"
+    },
+    {
+      "site": "grant",
+      "name": "Grant County",
+      "hub": "Medford"
+    },
+    {
+      "site": "alfalfa",
+      "name": "Alfalfa County",
+      "hub": "Cherokee"
+    },
+    {
+      "site": "major",
+      "name": "Major County",
+      "hub": "Fairview"
+    },
+    {
+      "site": "dewey",
+      "name": "Dewey County",
+      "hub": "Taloga"
+    },
+    {
+      "site": "woodward",
+      "name": "Woodward County",
+      "hub": "Woodward"
+    },
+    {
+      "site": "ellis",
+      "name": "Ellis County",
+      "hub": "Arnett"
+    },
+    {
+      "site": "harper",
+      "name": "Harper County",
+      "hub": "Buffalo"
+    },
+    {
+      "site": "beaver",
+      "name": "Beaver County",
+      "hub": "Beaver"
+    },
+    {
+      "site": "texas",
+      "name": "Texas County",
+      "hub": "Guymon"
+    },
+    {
+      "site": "cimarron",
+      "name": "Cimarron County",
+      "hub": "Boise City"
+    }
+  ],
+  "note": "65 OKCR sites total; east-i35 + this queue. Statewide plan in memory topic okcr-east-i35.md."
+}

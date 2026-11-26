@@ -227,6 +227,11 @@ async function searchDay(iso) {
 	return docs;
 }
 
+async function resetSession() {
+	cookies.clear();
+	await acceptDisclaimer();
+}
+
 async function withRetry(fn) {
 	let last;
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
@@ -234,12 +239,23 @@ async function withRetry(fn) {
 			return await fn();
 		} catch (err) {
 			last = err;
-			console.warn(`[retry] attempt=${attempt}: ${String(err).slice(0, 180)}`);
-			await sleep(1500 * attempt);
+			const msg = String(err);
+			console.warn(`[retry] attempt=${attempt}: ${msg.slice(0, 180)}`);
+			// Empty/non-JSON searchPost usually means a poisoned or expired session cookie jar.
+			const hard = /searchPost was not JSON|HTTP 405|disclaimer was not accepted|recording date fields not/i.test(
+				msg,
+			);
+			await sleep(hard ? 2500 * attempt : 1500 * attempt);
 			try {
-				await acceptDisclaimer();
+				if (hard) {
+					console.warn('[session] clearing cookies and re-accepting disclaimer');
+					await resetSession();
+				} else {
+					await acceptDisclaimer();
+				}
 			} catch (err2) {
 				console.warn(`[session] disclaimer refresh failed: ${String(err2).slice(0, 160)}`);
+				cookies.clear();
 			}
 		}
 	}

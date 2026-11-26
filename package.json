@@ -18,6 +18,7 @@
 		"bryan:backfill:2016-current": "node scripts/bryan-backfill-2016-current.mjs",
 		"okcr:backfill:county": "node scripts/okcr-county-backfill.mjs",
 		"okcr:backfill:east-i35": "node scripts/okcr-east-i35-backfill.mjs",
+		"okcr:backfill:rest-ok": "node scripts/okcr-rest-ok-backfill.mjs",
 		"okcr:backfill:cherokee": "OKCR_SITES=cherokee node scripts/okcr-east-i35-backfill.mjs",
 		"seismic:download": "node scripts/seismic-usgs-download.mjs",
 		"seismic:ingest": "node scripts/seismic-ingest-knowledge.mjs",

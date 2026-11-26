@@ -46,6 +46,8 @@ const {
 	lookupOrgFreeEnrich,
 	looksLikeSecuritiesJunk,
 	isPlausibleStreetHq,
+	isContaminantFreeOrgAddress,
+	looksLikeForeignNonprofitName,
 } = await import('../src/lib/research/profiles/freeOrgEnrich.ts');
 
 const ALLOWED = new Set(['education', 'nonprofit', 'medical_hospital', 'government']);
@@ -184,7 +186,13 @@ for (let i = 0; i < queue.length; i++) {
 		}
 
 		const parts = [];
-		if (row.needAddr && hit.address && isPlausibleStreetHq(hit.address.raw)) {
+		if (
+			row.needAddr &&
+			hit.address &&
+			isPlausibleStreetHq(hit.address.raw) &&
+			!isContaminantFreeOrgAddress(hit.address.raw) &&
+			!(row.profileType === 'nonprofit' && looksLikeForeignNonprofitName(row.name) && hit.address.source === 'irs-eo-bmf')
+		) {
 			const parsed = parseAddressParts(hit.address.raw);
 			const corpus = `free-${hit.address.source}`;
 			if (!dryRun) {

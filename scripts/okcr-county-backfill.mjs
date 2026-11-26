@@ -416,6 +416,7 @@ async function main() {
 				emptyStreak = 0;
 			}
 
+			let pageIngestFailed = false;
 			for (let i = 0; i < fresh.length; i += BATCH_SIZE) {
 				const batch = fresh.slice(i, i + BATCH_SIZE);
 				try {
@@ -429,9 +430,20 @@ async function main() {
 					log(`ingest batch saved=${result.saved} skipped=${result.skipped} cumulativeSaved=${state.saved}`);
 				} catch (error) {
 					state.errors += 1;
+					pageIngestFailed = true;
 					log(`ingest error:`, error instanceof Error ? error.message : error);
 					await sleep(2000);
+					// Do not advance past this page — otherwise filings are skipped forever.
+					break;
 				}
+			}
+
+			if (pageIngestFailed && fresh.length) {
+				state.nextPage = page;
+				saveState(state);
+				log(`ingest failed on page ${page} — pausing advance (nextPage stays ${page})`);
+				await sleep(15_000);
+				continue;
 			}
 
 			page += 1;

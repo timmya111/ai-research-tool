@@ -130,6 +130,67 @@ export function nameLooksLikeHit(orgName: string, title: string): boolean {
 	return overlap >= Math.min(2, at.length) && overlap / at.length >= 0.5;
 }
 
+/**
+ * Foreign / non-US nonprofit names must not query IRS EO BMF or US ProPublica
+ * chapter stubs — short US registrant names contaminate international cards.
+ */
+export function looksLikeForeignNonprofitName(name: string): boolean {
+	const n = String(name || '').toLowerCase();
+	if (!n) return false;
+	if (
+		/\b(china|chinese|beijing|shanghai|hong kong|japan|japanese|korea|korean|india|indian|sri lanka|mongolia|taiwan|thailand|vietnam|indonesia|malaysia|philippines|bangladesh|pakistan)\b/.test(
+			n,
+		)
+	) {
+		return true;
+	}
+	if (
+		/\b(africa|african|austria|austrian|denmark|danish|sweden|swedish|norway|norwegian|germany|german|goethe|france|french|netherlands|dutch|belgium|belgian|swiss|switzerland|italy|italian|spain|spanish|portugal|portuguese|brazil|brazilian|canada|canadian|mexico|mexican|argentina|chile|peru|colombia|russia|russian|ukraine|poland|hungary|turkey|israel|saudi|emirates|uae|dubai|egypt|nigeria|kenya|ghana|uganda|senegal|morocco|hague)\b/.test(
+			n,
+		)
+	) {
+		return true;
+	}
+	if (
+		/\b(icrc|red cross|imperial war|calouste|gulbenkian|boao|caritas internationalis|actionaid|amnesty international|care international|grameen|fung global|médecins|medecins sans|doctors without borders|world health organization|unicef|unesco|oecd|asian strategy|asli|wifo|brac)\b/.test(
+			n,
+		)
+	) {
+		return true;
+	}
+	if (/\b(association pour|association la |institut für|instituto |fundação|fundacion)\b/.test(n)) {
+		return true;
+	}
+	// Chan Zuckerberg Initiative / Biohub must not inherit Foundation BMF street/EIN
+	if (/\bchan zuckerberg\b/.test(n) && !/\bfoundation\b/.test(n)) return true;
+	return false;
+}
+
+/** Known contaminant BMF / ProPublica streets — never write as HQ. */
+export function isContaminantFreeOrgAddress(raw: string): boolean {
+	const s = String(raw || '').toLowerCase().replace(/\s+/g, ' ');
+	if (!s) return false;
+	if (s.includes('capitol hil')) return true;
+	if (s.includes('17870 copper queen')) return true;
+	if (s.includes('314 lytton')) return true;
+	if (s.includes('10 mela ln')) return true;
+	if (s.includes('9388 lightwave')) return true;
+	return false;
+}
+
+/** IRS EINs previously stripped as contamination — never reattach. */
+export const BLOCKED_IRS_EINS = new Set([
+	'23-7066476',
+	'20-1269904',
+	'52-1419397', // ASHG only; never Genetics Society of America
+	'45-5002209', // CZI Foundation — not Initiative/Biohub
+	'56-1909683',
+	'47-1121853',
+	'26-3898882',
+	'26-0102131',
+	'38-4357064',
+]);
+
 /** Skip mistyped securities / broker cards parked under government. */
 export function looksLikeSecuritiesJunk(name: string, profileType: ProfileType): boolean {
 	if (profileType !== 'government') return false;
