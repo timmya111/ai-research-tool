@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Associate OKCR / county deed knowledge docs to profiles by exact Grantor/Grantee name match.
+ * Strict keys: profile normalized_name + aliases of kind name / other_name / former_name /
+ * formerly / aka / legal_name (under-title Other names included). Excludes slug / acronym /
+ * ticker / crd. Same rules as src/lib/research/profiles/associateDeeds.ts.
  *
  *   node scripts/associate-deeds-to-profiles.mjs
  *   node scripts/associate-deeds-to-profiles.mjs --dry-run --limit 500
@@ -75,6 +78,16 @@ const pdb = new DatabaseSync(PROFILES_DB);
 pdb.exec('PRAGMA foreign_keys = ON');
 pdb.exec('PRAGMA busy_timeout = 120000');
 
+const DEED_MATCH_ALIAS_KINDS = new Set([
+	'name',
+	'other_name',
+	'former_name',
+	'formerly',
+	'aka',
+	'legal_name',
+]);
+const DEED_MATCH_ALIAS_EXCLUDE = new Set(['slug', 'acronym', 'ticker', 'crd']);
+
 const nameIndex = new Map();
 const push = (norm, profileId) => {
 	if (!norm || norm.length < 3) return;
@@ -87,11 +100,16 @@ for (const row of pdb.prepare('SELECT id, normalized_name FROM profiles').all())
 }
 for (const row of pdb
 	.prepare(
-		`SELECT profile_id AS id, normalized_alias AS n FROM profile_aliases
-     WHERE alias_kind IS NULL OR alias_kind NOT IN ('slug')`,
+		`SELECT profile_id AS id, alias, normalized_alias AS n, alias_kind AS kind
+     FROM profile_aliases`,
 	)
 	.all()) {
-	push(String(row.n || ''), String(row.id));
+	const kind = String(row.kind || 'name').trim().toLowerCase() || 'name';
+	if (DEED_MATCH_ALIAS_EXCLUDE.has(kind)) continue;
+	if (row.kind != null && row.kind !== '' && !DEED_MATCH_ALIAS_KINDS.has(kind)) continue;
+	const profileId = String(row.id);
+	push(String(row.n || ''), profileId);
+	push(normalizeText(row.alias || ''), profileId);
 }
 
 const params = [];

@@ -44,6 +44,11 @@ import {
 } from '@/lib/research/profiles/normalize';
 import { getProfilesDir } from '@/lib/research/profiles/paths';
 import {
+	inferGenderFromPersonName,
+	normalizePersonGender,
+	withInferredPersonGender,
+} from '@/lib/research/profiles/personGender';
+import {
 	PROFILE_TYPES,
 	type AliasKind,
 	type AlignmentCandidate,
@@ -58,6 +63,8 @@ import {
 	type PersonEmploymentEntry,
 	type Profile,
 	type ProfileAlias,
+	type FirmOwnershipGroup,
+	type FirmOwnershipGroupNode,
 	type ProfileDetail,
 	type ProfileIdentifier,
 	type ProfileLink,
@@ -271,6 +278,11 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 		const nextEnd =
 			inputEnd !== undefined ? inputEnd : existing.end_date != null ? String(existing.end_date) : null;
 		mergedMeta = syncLifeDateMetadata(input.profileType, mergedMeta, nextStart, nextEnd);
+		const displayName =
+			cleanName.length >= String(existing.name || '').length ? cleanName : String(existing.name);
+		if (input.profileType === 'person') {
+			mergedMeta = withInferredPersonGender(displayName, mergedMeta);
+		}
 
 		db.prepare(
 			`UPDATE profiles
@@ -278,7 +290,7 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
            start_date = ?, end_date = ?, metadata_json = ?, updated_at = ?
        WHERE id = ?`,
 		).run(
-			cleanName.length >= String(existing.name || '').length ? cleanName : String(existing.name),
+			displayName,
 			normalizedName,
 			nextStatus,
 			nextSummary,
@@ -308,6 +320,9 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 	const startDate = inputStart ?? null;
 	const endDate = inputEnd ?? null;
 	meta = syncLifeDateMetadata(input.profileType, meta, startDate, endDate);
+	if (input.profileType === 'person') {
+		meta = withInferredPersonGender(cleanName, meta);
+	}
 
 	db.prepare(
 		`INSERT INTO profiles(
@@ -407,6 +422,9 @@ export function updateProfileFields(
 	let nextMeta = patch.metadata ? { ...current.metadata, ...patch.metadata } : { ...current.metadata };
 	if (patch.startDate !== undefined || patch.endDate !== undefined) {
 		nextMeta = syncLifeDateMetadata(nextType, nextMeta, nextStart, nextEnd);
+	}
+	if (nextType === 'person') {
+		nextMeta = withInferredPersonGender(nextName, nextMeta);
 	}
 	const now = new Date().toISOString();
 
@@ -2227,6 +2245,8 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				l.peerStartDate = peerInfo.startDate;
 				l.peerEndDate = peerInfo.endDate;
 				l.peerSummary = peerInfo.summary || null;
+				const fromMeta = normalizePersonGender(peerInfo.metadata?.gender ?? peerInfo.metadata?.sex);
+				l.peerGender = fromMeta || inferGenderFromPersonName(peerInfo.name);
 			}
 			l.peerPrimaryLocation = pickBestFullAddress(peerLocsById.get(peerId) || []);
 		}
@@ -2254,6 +2274,9 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		.sort((a, b) => b.length - a.length)
 		.slice(0, 2);
 
+	const ownershipGroup =
+		profile.profileType === 'firm' ? buildFirmOwnershipGroup(profile, dedupedLinks, db) : null;
+
 	return {
 		profile,
 		aliases,
@@ -2264,6 +2287,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 		recentTimeline,
 		employmentHistory,
 		categoryTags,
+		ownershipGroup,
 		counts: {
 			aliases: aliases.length,
 			identifiers: identifiers.length,
@@ -2274,6 +2298,113 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			employmentHistory: employmentHistory.length,
 		},
 	};
+}
+
+/**
+ * Expand owned_by into a full Ownership / Group tree.
+ * Subsidiary cards get the holding parent as root plus every sibling under that parent
+ * (same tree the parent card shows). Parent cards get self as root plus inbound children.
+ */
+function buildFirmOwnershipGroup(
+	profile: Profile,
+	links: ProfileLink[],
+	db: DatabaseSync,
+): FirmOwnershipGroup | null {
+	const outboundParents = links.filter(
+		(l) => l.relationType === 'owned_by' && l.fromProfileId === profile.id && l.toProfileId && l.toName,
+	);
+	const inboundSubs = links.filter(
+		(l) => l.relationType === 'owned_by' && l.toProfileId === profile.id && l.fromProfileId && l.fromName,
+	);
+	if (!outboundParents.length && !inboundSubs.length) return null;
+
+	const toSubNode = (
+		id: string,
+		name: string,
+		role: string | null,
+		startDate: string | null,
+		endDate: string | null,
+	): FirmOwnershipGroupNode => ({ id, name, role, startDate, endDate });
+
+	if (outboundParents.length) {
+		// Prefer the first parent; load all owned_by children of that parent (siblings + self).
+		const parentLink = outboundParents[0]!;
+		const parentId = parentLink.toProfileId;
+		const root: FirmOwnershipGroupNode = {
+			id: parentId,
+			name: String(parentLink.toName),
+			role: null,
+			startDate: parentLink.peerStartDate ?? parentLink.startDate ?? null,
+			endDate: parentLink.peerEndDate ?? parentLink.endDate ?? null,
+		};
+		// If peer dates missing (enrichment skipped), fall back to parent profile row.
+		if (!root.startDate && !root.endDate) {
+			const prow = db
+				.prepare('SELECT start_date, end_date FROM profiles WHERE id = ?')
+				.get(parentId) as { start_date?: string | null; end_date?: string | null } | undefined;
+			if (prow) {
+				root.startDate = prow.start_date != null ? String(prow.start_date) : null;
+				root.endDate = prow.end_date != null ? String(prow.end_date) : null;
+			}
+		}
+		const siblingRows = db
+			.prepare(
+				`SELECT fp.id AS id, fp.name AS name, fp.start_date AS start_date, fp.end_date AS end_date,
+                pl.role_label AS role_label
+         FROM profile_links pl
+         JOIN profiles fp ON fp.id = pl.from_profile_id
+         WHERE pl.relation_type = 'owned_by' AND pl.to_profile_id = ?
+         ORDER BY fp.name ASC`,
+			)
+			.all(parentId) as Array<Record<string, unknown>>;
+		const byId = new Map<string, FirmOwnershipGroupNode>();
+		for (const r of siblingRows) {
+			const id = String(r.id);
+			byId.set(
+				id,
+				toSubNode(
+					id,
+					String(r.name),
+					r.role_label != null ? String(r.role_label) : null,
+					r.start_date != null ? String(r.start_date) : null,
+					r.end_date != null ? String(r.end_date) : null,
+				),
+			);
+		}
+		// Ensure current firm is present even if the sibling query missed it.
+		if (!byId.has(profile.id)) {
+			byId.set(
+				profile.id,
+				toSubNode(
+					profile.id,
+					profile.name,
+					parentLink.roleLabel,
+					profile.startDate,
+					profile.endDate,
+				),
+			);
+		}
+		return { currentProfileId: profile.id, root, subsidiaries: [...byId.values()] };
+	}
+
+	// Current firm is the ownership root.
+	const root: FirmOwnershipGroupNode = {
+		id: profile.id,
+		name: profile.name,
+		role: null,
+		startDate: profile.startDate,
+		endDate: profile.endDate,
+	};
+	const subsidiaries = inboundSubs.map((l) =>
+		toSubNode(
+			l.fromProfileId,
+			String(l.fromName),
+			l.roleLabel,
+			l.peerStartDate ?? l.startDate ?? null,
+			l.peerEndDate ?? l.endDate ?? null,
+		),
+	);
+	return { currentProfileId: profile.id, root, subsidiaries };
 }
 
 export function addPersonEmployment(input: {

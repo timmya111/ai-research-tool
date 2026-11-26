@@ -9,6 +9,7 @@ import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import { formatTickerListing } from '@/lib/research/profiles/tickerListing';
 import { summaryMarkdownToHtml } from '@/lib/research/profiles/summaryMarkdown';
 import { formatResearchDriveTimelineEntry } from '@/lib/research/profiles/researchDriveDisplay';
+import { formatFamilyPeerRoleLabel } from '@/lib/research/profiles/personGender';
 import type {
 	AliasKind,
 	AlignmentCandidate,
@@ -16,6 +17,7 @@ import type {
 	AlignmentStatus,
 	CautionTier,
 	EnrichProfileReport,
+	FirmOwnershipGroup,
 	LocationRole,
 	Profile,
 	ProfileDetail,
@@ -1031,11 +1033,69 @@ function renderClickableOccupation(occupation: string, orgPeers: OccupationOrgPe
 	return parts;
 }
 
-type FamilyRelativePeer = { id: string; name: string; role: string | null };
+type FamilyRelativePeer = {
+	id: string;
+	name: string;
+	role: string | null;
+	/** Peer profile life/operating span (for ASCII year suffixes). */
+	startDate?: string | null;
+	endDate?: string | null;
+	/** Peer gender when known — peer-centric Family / Relatives labels. */
+	gender?: 'female' | 'male' | null;
+};
 
 type FamilyTreeRow =
 	| { kind: 'person'; prefix: string; peer: FamilyRelativePeer; gen: number | null }
 	| { kind: 'label'; prefix: string; text: string };
+
+/** First 4-digit year in a date string, or null. */
+function treeYearOf(raw?: string | null): number | null {
+	const m = String(raw || '')
+		.trim()
+		.match(/((?:18|19|20)\d{2})/);
+	return m ? Number(m[1]) : null;
+}
+
+/** Compact year span for ASCII trees: `1936–`, `2002–2011`, `1962`. */
+function formatTreeYearSpan(startDate?: string | null, endDate?: string | null): string | null {
+	const s = treeYearOf(startDate);
+	const e = treeYearOf(endDate);
+	if (s != null && e != null) return s === e ? String(s) : `${s}–${e}`;
+	if (s != null) return `${s}–`;
+	if (e != null) return String(e);
+	return null;
+}
+
+function peerIsInactive(peer: { startDate?: string | null; endDate?: string | null }): boolean {
+	return Boolean(peer.endDate && String(peer.endDate).trim());
+}
+
+/**
+ * Sort key for hierarchy rows: most recent year first.
+ * Active (no endDate) sort above ended; among actives later start wins;
+ * among ended later end wins; undated last.
+ */
+function compareTreePeersByRecentYear(
+	a: { name: string; startDate?: string | null; endDate?: string | null },
+	b: { name: string; startDate?: string | null; endDate?: string | null },
+): number {
+	const aEnd = treeYearOf(a.endDate);
+	const bEnd = treeYearOf(b.endDate);
+	const aStart = treeYearOf(a.startDate);
+	const bStart = treeYearOf(b.startDate);
+	const aActive = aEnd == null;
+	const bActive = bEnd == null;
+	if (aActive !== bActive) return aActive ? -1 : 1;
+	if (aActive && bActive) {
+		if (aStart != null && bStart != null && aStart !== bStart) return bStart - aStart;
+		if (aStart != null && bStart == null) return -1;
+		if (aStart == null && bStart != null) return 1;
+	} else {
+		if (aEnd != null && bEnd != null && aEnd !== bEnd) return bEnd - aEnd;
+		if (aStart != null && bStart != null && aStart !== bStart) return bStart - aStart;
+	}
+	return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+}
 
 const FAMILY_ROLE_GEN_RE = /^(\d+)(?:st|nd|rd|th)\s+Generation\s*[·•\-–—]\s*(.+)$/i;
 
@@ -1317,9 +1377,12 @@ function buildFamilyRelativeTreeRows(peers: FamilyRelativePeer[]): FamilyTreeRow
 function FamilyRelativesTree({
 	peers,
 	onJump,
+	subject,
 }: {
 	peers: FamilyRelativePeer[];
 	onJump: (id: string) => void;
+	/** Optional subject root so life years (incl. ended/disabled) show above the tree. */
+	subject?: { id: string; name: string; startDate?: string | null; endDate?: string | null } | null;
 }): ReactNode {
 	const rows = buildFamilyRelativeTreeRows(peers);
 	if (!rows) {
@@ -1336,7 +1399,9 @@ function FamilyRelativesTree({
 							{peer.name}
 						</button>
 						{peer.role ?
-							<span className='text-[10px] opacity-70'>({peer.role})</span>
+							<span className='text-[10px] opacity-70'>
+								({formatFamilyPeerRoleLabel(peer.role, peer.name, peer.gender) || peer.role})
+							</span>
 						:	null}
 					</span>
 				))}
@@ -1344,37 +1409,155 @@ function FamilyRelativesTree({
 		);
 	}
 
+	const subjectYears = subject ? formatTreeYearSpan(subject.startDate, subject.endDate) : null;
+	const subjectInactive = subject ? peerIsInactive(subject) : false;
+
 	return (
-		<div className='mt-1 rounded border border-rose-500/20 bg-black/25 px-2.5 py-2 font-mono text-[11px] leading-snug'>
+		<div className='mt-1 min-w-0 overflow-hidden rounded border border-rose-500/20 bg-black/25 px-2.5 py-2 font-mono text-[11px] leading-snug'>
+			{subject ?
+				<div className={`mb-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1.5 ${subjectInactive ? 'opacity-55' : ''}`}>
+					<span
+						className={
+							subjectInactive ?
+								'min-w-0 break-words font-semibold text-zinc-400'
+							:	'min-w-0 break-words font-semibold text-rose-100/90'
+						}>
+						{subject.name}
+					</span>
+					{subjectYears ?
+						<span className={`shrink-0 text-[10px] ${subjectInactive ? 'text-zinc-500' : 'text-rose-100/45'}`}>{subjectYears}</span>
+					:	null}
+				</div>
+			:	null}
 			{rows.map((row, i) => {
 				if (row.kind === 'label') {
 					return (
 						<div
 							key={`lbl-${i}`}
-							className='whitespace-pre text-rose-100/55'>
-							<span className='text-rose-200/40'>{row.prefix}</span>
-							{row.text}
+							className='flex min-w-0 text-rose-100/55'>
+							<span className='shrink-0 whitespace-pre text-rose-200/40'>{row.prefix}</span>
+							<span className='min-w-0 break-words'>{row.text}</span>
 						</div>
 					);
 				}
+				const kinshipRole = formatFamilyPeerRoleLabel(row.peer.role, row.peer.name, row.peer.gender);
 				const shortRole =
 					row.gen != null ?
 						`Gen ${row.gen}${row.peer.role && row.gen <= 3 ? ` · ${parseFamilyRelativeRole(row.peer.role).branch}` : ''}`
-					:	row.peer.role;
+					:	kinshipRole;
+				const years = formatTreeYearSpan(row.peer.startDate, row.peer.endDate);
+				const inactive = peerIsInactive(row.peer);
 				return (
 					<div
 						key={row.peer.id}
-						className='whitespace-pre'>
-						<span className='text-rose-200/40'>{row.prefix}</span>
-						<button
-							type='button'
-							onClick={() => onJump(row.peer.id)}
-							className='cursor-pointer border-0 bg-transparent p-0 font-mono text-[11px] font-semibold text-[#F97316] underline'>
-							{row.peer.name}
-						</button>
-						{shortRole ?
-							<span className='text-[10px] text-rose-100/50'>{`  [${shortRole}]`}</span>
-						:	null}
+						className={`flex min-w-0 items-start ${inactive ? 'opacity-55' : ''}`}>
+						<span className='shrink-0 whitespace-pre text-rose-200/40'>{row.prefix}</span>
+						<div className='min-w-0 flex-1 break-words'>
+							<button
+								type='button'
+								onClick={() => onJump(row.peer.id)}
+								className={
+									inactive ?
+										'cursor-pointer break-words border-0 bg-transparent p-0 text-left font-mono text-[11px] font-semibold text-zinc-400 underline decoration-zinc-500/60'
+									:	'cursor-pointer break-words border-0 bg-transparent p-0 text-left font-mono text-[11px] font-semibold text-[#F97316] underline'
+								}>
+								{row.peer.name}
+							</button>
+							{years ?
+								<span className={`text-[10px] ${inactive ? 'text-zinc-500' : 'text-rose-100/45'}`}>{`  ${years}`}</span>
+							:	null}
+							{shortRole ?
+								<span className={`text-[10px] ${inactive ? 'text-zinc-500' : 'text-rose-100/50'}`}>{`  [${shortRole}]`}</span>
+							:	null}
+						</div>
+					</div>
+				);
+			})}
+		</div>
+	);
+}
+
+/** ASCII ownership tree from expanded FirmOwnershipGroup (parent root + all subsidiaries). */
+function FirmOwnershipTree({
+	group,
+	onJump,
+}: {
+	group: FirmOwnershipGroup;
+	onJump: (id: string) => void;
+}): ReactNode {
+	const subsidiaries = [...group.subsidiaries].sort(compareTreePeersByRecentYear);
+	if (!subsidiaries.length && group.root.id === group.currentProfileId) return null;
+
+	const rootYears = formatTreeYearSpan(group.root.startDate, group.root.endDate);
+	const rootInactive = peerIsInactive(group.root);
+	const rootIsCurrent = group.root.id === group.currentProfileId;
+
+	return (
+		<div className='mt-1 min-w-0 overflow-hidden rounded border border-sky-500/20 bg-black/25 px-2.5 py-2 font-mono text-[11px] leading-snug'>
+			<div className={`mb-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1.5 ${rootInactive ? 'opacity-55' : ''}`}>
+				{rootIsCurrent ?
+					<span
+						className={
+							rootInactive ?
+								'min-w-0 break-words font-semibold text-zinc-400'
+							:	'min-w-0 break-words font-semibold text-sky-100/90'
+						}>
+						{group.root.name}
+					</span>
+				:	<button
+						type='button'
+						onClick={() => onJump(group.root.id)}
+						className={
+							rootInactive ?
+								'cursor-pointer break-words border-0 bg-transparent p-0 text-left font-mono text-[11px] font-semibold text-zinc-400 underline decoration-zinc-500/60'
+							:	'cursor-pointer break-words border-0 bg-transparent p-0 text-left font-mono text-[11px] font-semibold text-[#F97316] underline'
+						}>
+						{group.root.name}
+					</button>
+				}
+				{rootYears ?
+					<span className={`shrink-0 text-[10px] ${rootInactive ? 'text-zinc-500' : 'text-sky-100/45'}`}>{rootYears}</span>
+				:	null}
+			</div>
+			{subsidiaries.map((peer, ii) => {
+				const last = ii === subsidiaries.length - 1;
+				const prefix = last ? '└── ' : '├── ';
+				const years = formatTreeYearSpan(peer.startDate, peer.endDate);
+				const inactive = peerIsInactive(peer);
+				const isCurrent = peer.id === group.currentProfileId;
+				return (
+					<div
+						key={peer.id}
+						className={`flex min-w-0 items-start ${inactive && !isCurrent ? 'opacity-55' : ''}`}>
+						<span className='shrink-0 whitespace-pre text-sky-200/40'>{prefix}</span>
+						<div className='min-w-0 flex-1 break-words'>
+							{isCurrent ?
+								<span
+									className={
+										inactive ?
+											'min-w-0 break-words font-semibold text-zinc-300'
+										:	'min-w-0 break-words font-semibold text-sky-100/90'
+									}>
+									{peer.name}
+								</span>
+							:	<button
+									type='button'
+									onClick={() => onJump(peer.id)}
+									className={
+										inactive ?
+											'cursor-pointer break-words border-0 bg-transparent p-0 text-left font-mono text-[11px] font-semibold text-zinc-400 underline decoration-zinc-500/60'
+										:	'cursor-pointer break-words border-0 bg-transparent p-0 text-left font-mono text-[11px] font-semibold text-[#F97316] underline'
+									}>
+									{peer.name}
+								</button>
+							}
+							{years ?
+								<span className={`text-[10px] ${inactive ? 'text-zinc-500' : 'text-sky-100/45'}`}>{`  ${years}`}</span>
+							:	null}
+							{peer.role ?
+								<span className={`text-[10px] ${inactive ? 'text-zinc-500' : 'text-sky-100/50'}`}>{`  [${peer.role}]`}</span>
+							:	null}
+						</div>
 					</div>
 				);
 			})}
@@ -1411,6 +1594,8 @@ function enrichedDetailCardClass(key: string): string {
 			return 'border-amber-500/35 bg-amber-500/10';
 		case 'familyAndRelatives':
 			return 'border-rose-500/35 bg-rose-500/10';
+		case 'ownershipHierarchy':
+			return 'border-sky-500/35 bg-sky-500/10';
 		case 'companyType':
 		case 'industry':
 		case 'products':
@@ -5845,10 +6030,16 @@ export default function ProfilesClient({
 															id: peerId,
 															name: peerName,
 															role: l.roleLabel || null,
+															startDate: l.peerStartDate ?? null,
+															endDate: l.peerEndDate ?? null,
+															gender: l.peerGender ?? null,
 														};
 													})
-													.filter((x): x is { id: string; name: string; role: string | null } => x !== null)
+													.filter((x): x is FamilyRelativePeer => x !== null)
 													.filter((peer, i, arr) => arr.findIndex((p) => p.id === peer.id) === i);
+												// Firm ownership ASCII: expanded group (parent root + all subsidiaries).
+												const ownershipGroup =
+													detail.profile.profileType === 'firm' ? detail.ownershipGroup : null;
 												const occupationOrgPeers = detail.links
 													.map((l) => {
 														if (!OCCUPATION_LINK_RELATIONS.has(l.relationType)) return null;
@@ -5876,19 +6067,30 @@ export default function ProfilesClient({
 												);
 												// identifyingKeywords / citizenship / netWorth / familyAndRelatives stay in metadata
 												// FINRA/SEC/Wikipedia deep links live in the Sources & Identifiers card below.
-												if (!generalRows.length && !militaryRows.length && !highlightRow && !titleOccupationRow && !familyPeers.length) {
+												if (
+													!generalRows.length &&
+													!militaryRows.length &&
+													!highlightRow &&
+													!titleOccupationRow &&
+													!familyPeers.length &&
+													!ownershipGroup
+												) {
 													return null;
 												}
 												return (
 													<div className='space-y-3'>
-														{generalRows.length > 0 || highlightRow || titleOccupationRow || familyPeers.length > 0 ?
+														{generalRows.length > 0 ||
+														highlightRow ||
+														titleOccupationRow ||
+														familyPeers.length > 0 ||
+														ownershipGroup ?
 															(() => {
 																const compactRows = generalRows.filter((r) => !isFullWidthDetailCard(r.key, r.text));
 																const wideRows = generalRows.filter((r) => isFullWidthDetailCard(r.key, r.text));
 																return (
-																	<div className='grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3'>
+																	<div className='grid min-w-0 gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3'>
 																		{titleOccupationRow ?
-																			<div className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass('title')}`}>
+																			<div className={`col-span-full min-w-0 rounded border px-2.5 py-2 ${enrichedDetailCardClass('title')}`}>
 																				{titleOccupationRow.title ?
 																					<div>
 																						<div className='text-[10px] font-semibold uppercase opacity-65'>Title</div>
@@ -5908,24 +6110,39 @@ export default function ProfilesClient({
 																		{compactRows.map((row) => (
 																			<div
 																				key={row.key}
-																				className={`rounded border px-2.5 py-1.5 ${enrichedDetailCardClass(row.key)}`}>
+																				className={`min-w-0 overflow-hidden rounded border px-2.5 py-1.5 ${enrichedDetailCardClass(row.key)}`}>
 																				<div className='text-[10px] font-semibold uppercase opacity-65'>{row.label}</div>
-																				<div className='mt-0.5 break-words leading-snug'>{row.text}</div>
+																				<div className='mt-0.5 break-words [overflow-wrap:anywhere] leading-snug'>{row.text}</div>
 																			</div>
 																		))}
 																		{wideRows.map((row) => (
 																			<div
 																				key={row.key}
-																				className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass(row.key)}`}>
+																				className={`col-span-full min-w-0 overflow-hidden rounded border px-2.5 py-2 ${enrichedDetailCardClass(row.key)}`}>
 																				<div className='text-[10px] font-semibold uppercase opacity-65'>{row.label}</div>
-																				<div className='mt-0.5 break-words leading-snug'>{row.text}</div>
+																				<div className='mt-0.5 break-words [overflow-wrap:anywhere] leading-snug'>{row.text}</div>
 																			</div>
 																		))}
 																		{familyPeers.length > 0 ?
-																			<div className={`col-span-full rounded border px-2.5 py-2 ${enrichedDetailCardClass('familyAndRelatives')}`}>
+																			<div className={`col-span-full min-w-0 overflow-hidden rounded border px-2.5 py-2 ${enrichedDetailCardClass('familyAndRelatives')}`}>
 																				<div className='text-[10px] font-semibold uppercase opacity-65'>Family / Relatives</div>
 																				<FamilyRelativesTree
 																					peers={familyPeers}
+																					onJump={jumpToProfile}
+																					subject={{
+																						id: detail.profile.id,
+																						name: detail.profile.name,
+																						startDate: detail.profile.startDate,
+																						endDate: detail.profile.endDate,
+																					}}
+																				/>
+																			</div>
+																		:	null}
+																		{ownershipGroup ?
+																			<div className={`col-span-full min-w-0 overflow-hidden rounded border px-2.5 py-2 ${enrichedDetailCardClass('ownershipHierarchy')}`}>
+																				<div className='text-[10px] font-semibold uppercase opacity-65'>Ownership / Group</div>
+																				<FirmOwnershipTree
+																					group={ownershipGroup}
 																					onJump={jumpToProfile}
 																				/>
 																			</div>

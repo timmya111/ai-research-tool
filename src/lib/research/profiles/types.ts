@@ -398,6 +398,8 @@ export type ProfileLink = {
 	peerEndDate?: string | null;
 	peerSummary?: string | null;
 	peerPrimaryLocation?: string | null;
+	/** Peer person gender when known (`female` / `male`) — Family / Relatives kinship labels */
+	peerGender?: 'female' | 'male' | null;
 	/** Merged source corpora when multiple duplicate links to the same peer were collapsed */
 	sources?: string[];
 };
@@ -477,6 +479,27 @@ export type ProfileTimelineResult = {
 	}>;
 };
 
+/** One node in the firm Ownership / Group ASCII tree (holding parent or subsidiary). */
+export type FirmOwnershipGroupNode = {
+	id: string;
+	name: string;
+	role: string | null;
+	startDate: string | null;
+	endDate: string | null;
+};
+
+/**
+ * Expanded ownership group for firm detail.
+ * When the current firm is a subsidiary, `root` is the holding parent and
+ * `subsidiaries` includes every sibling under that parent (including current).
+ * When the current firm is the parent, `root` is self and `subsidiaries` are its children.
+ */
+export type FirmOwnershipGroup = {
+	currentProfileId: string;
+	root: FirmOwnershipGroupNode;
+	subsidiaries: FirmOwnershipGroupNode[];
+};
+
 export type ProfileDetail = {
 	profile: Profile;
 	aliases: ProfileAlias[];
@@ -489,6 +512,8 @@ export type ProfileDetail = {
 	employmentHistory: PersonEmploymentEntry[];
 	/** Main category labels derived from linked orgs/events + manual tags */
 	categoryTags: ProfileType[];
+	/** Firm Ownership / Group tree (parent + all subsidiaries); null when no owned_by links */
+	ownershipGroup: FirmOwnershipGroup | null;
 	counts: {
 		aliases: number;
 		identifiers: number;

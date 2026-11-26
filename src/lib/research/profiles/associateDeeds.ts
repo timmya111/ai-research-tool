@@ -1,9 +1,10 @@
 /**
  * Associate county deed / OKCR knowledge documents to entity profiles when
  * Grantor/Grantee (or Dallas party) script names exactly match a profile name
- * or alias (normalized).
+ * or a strict name-like alias (normalized) — including under-title **other names**.
  *
- * Safe by design: exact normalized name/alias only — no fuzzy absorb.
+ * Safe by design: exact normalized name / other_name / former_name / legal_name only —
+ * no fuzzy absorb. Short ambiguous kinds (slug, acronym, ticker, crd) are excluded.
  */
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -14,6 +15,19 @@ import { upsertTimelineEntry } from '@/lib/research/profiles/store';
 
 const PARTY_LINE_RE =
 	/^-\s*(Grantor|Grantee|Grantors|Grantees|Buyer|Seller|Borrower|Lender)\s*:\s*(.+)$/gim;
+
+/** Alias kinds allowed as strict deed party keys (exact normalized equality). */
+const DEED_MATCH_ALIAS_KINDS = new Set([
+	'name',
+	'other_name',
+	'former_name',
+	'formerly',
+	'aka',
+	'legal_name',
+]);
+
+/** Alias kinds that must never drive deed association (too short / not a party name). */
+const DEED_MATCH_ALIAS_EXCLUDE = new Set(['slug', 'acronym', 'ticker', 'crd']);
 
 export type AssociateDeedsOptions = {
 	/** Only documents updated at/after this ISO timestamp. */
@@ -67,14 +81,20 @@ function buildNameIndex(db: DatabaseSync): Map<string, string[]> {
 		.all() as Array<{ id: string; normalized_name: string }>) {
 		push(String(row.normalized_name || ''), String(row.id));
 	}
+	// Strict name keys: canonical name aliases + under-title other names (+ former/legal).
+	// Re-normalize raw `alias` so stale normalized_alias rows still match party lines.
 	for (const row of db
 		.prepare(
-			`SELECT profile_id AS id, normalized_alias AS n
-       FROM profile_aliases
-       WHERE alias_kind IS NULL OR alias_kind NOT IN ('slug')`,
+			`SELECT profile_id AS id, alias, normalized_alias AS n, alias_kind AS kind
+       FROM profile_aliases`,
 		)
-		.all() as Array<{ id: string; n: string }>) {
-		push(String(row.n || ''), String(row.id));
+		.all() as Array<{ id: string; alias: string; n: string; kind: string | null }>) {
+		const kind = String(row.kind || 'name').trim().toLowerCase() || 'name';
+		if (DEED_MATCH_ALIAS_EXCLUDE.has(kind)) continue;
+		if (row.kind != null && row.kind !== '' && !DEED_MATCH_ALIAS_KINDS.has(kind)) continue;
+		const profileId = String(row.id);
+		push(String(row.n || ''), profileId);
+		push(normalizeText(row.alias || ''), profileId);
 	}
 	return map;
 }
