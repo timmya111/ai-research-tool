@@ -1242,26 +1242,37 @@ export function ingestFirmDetailPayloadIntoDb(
 			timelineAdded += 1;
 		}
 
-		// Timeline: top regulatory disclosures (cap 15 per firm)
+		// Dated disclosure detail only. Count-only firm rows (no eventDate / detail) are
+		// written later from BrokerCheck PDFs via /api/profiles/[id]/disclosures.
 		for (const disc of disclosures.slice(0, 15)) {
 			const dType = String(disc.disclosureType || 'Regulatory Disclosure').trim();
 			const dDate = parseFinraDate(disc.eventDate);
+			if (!dDate) continue;
 			const det = (disc.disclosureDetail || {}) as Record<string, unknown>;
+			const hasDetail = det && typeof det === 'object' && Object.keys(det).length > 0;
+			if (!hasDetail && !disc.disclosureResolution) continue;
 			const initiatedBy = typeof det['Initiated By'] === 'string' ? det['Initiated By'] : '';
-			const resolution = typeof det.Resolution === 'string' ? det.Resolution : '';
-			const summary = [initiatedBy ? `Initiated by ${initiatedBy}` : '', resolution].filter(Boolean).join(' — ');
+			const resolution =
+				typeof det.Resolution === 'string' ? det.Resolution
+				: typeof disc.disclosureResolution === 'string' ? disc.disclosureResolution
+				: '';
+			const allegations = typeof det.Allegations === 'string' ? det.Allegations : '';
+			const summary = [allegations, initiatedBy ? `Initiated by ${initiatedBy}` : '', resolution]
+				.filter(Boolean)
+				.join(' — ');
 			upsertTimelineEntry(
 				{
 					profileId,
 					eventDate: dDate,
-					datePrecision: dDate ? 'day' : 'unknown',
-					title: `FINRA ${dType}: ${firmName}`,
+					datePrecision: 'day',
+					title: `BrokerCheck ${dType}${resolution ? ` — ${resolution}` : ''}: ${firmName}`,
 					summary: summary || `CRD# ${clean} disclosure record`,
 					angle: 'regulatory_finra',
 					entryKind: 'filing',
 					sourceCorpus: CORPUS,
 					sourceRecordId: srId,
-					dedupeHint: `finra-disc:${clean}:${dType}:${dDate || ''}:${initiatedBy.slice(0, 30)}`,
+					dedupeHint: `finra-disclosure:${clean}:${dType}:${dDate}:${resolution}:${allegations.slice(0, 80)}`,
+					metadata: { kind: 'finra_disclosure', crd: clean, crdKind: 'firm', disclosureType: dType },
 				},
 				tx,
 			);

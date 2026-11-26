@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
+import { syncEmploymentSpansToTimeline } from '@/lib/research/profiles/employmentTimeline';
 import { normalizeGeoKey } from '@/lib/research/profiles/normalize';
 import { getProfile, upsertSourceRecord, upsertTimelineEntry } from '@/lib/research/profiles/store';
 import { getProfileTimeline } from '@/lib/research/profiles/timeline';
@@ -31,7 +32,17 @@ export async function GET(request: Request, context: Ctx) {
 	const includeLinkedEvents =
 		includeLinkedParam == null ? undefined : includeLinkedParam !== '0' && includeLinkedParam !== 'false';
 
-	const result = getProfileTimeline(decodeURIComponent(String(id || '').trim()), {
+	const key = decodeURIComponent(String(id || '').trim());
+	const profile = getProfile(key);
+	if (profile?.profileType === 'person') {
+		try {
+			syncEmploymentSpansToTimeline(profile.id);
+		} catch {
+			/* employment span sync is best-effort */
+		}
+	}
+
+	const result = getProfileTimeline(key, {
 		from,
 		to,
 		angle,

@@ -2063,20 +2063,37 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			linkByPeer.set(peerId, { ...l, sources: [l.sourceCorpus] });
 			continue;
 		}
-		const existScore =
-			(REL_PRIORITY[existing.relationType] || 0) * 3 +
-			(existing.startDate || existing.endDate ? 4 : 0) +
-			(existing.roleLabel ? 2 : 0) +
-			(existing.fromProfileId === profile.id ? 1 : 0);
-		const candScore =
-			(REL_PRIORITY[l.relationType] || 0) * 3 +
-			(l.startDate || l.endDate ? 4 : 0) +
-			(l.roleLabel ? 2 : 0) +
-			(l.fromProfileId === profile.id ? 1 : 0);
+		const existOut = existing.fromProfileId === profile.id;
+		const candOut = l.fromProfileId === profile.id;
+		const bothFamily =
+			existing.relationType === 'family_or_associate' && l.relationType === 'family_or_associate';
 
-		const winner = candScore > existScore ? { ...l } : { ...existing };
-		const loser = candScore > existScore ? existing : l;
-		winner.roleLabel = mergeRoleLabels(winner.roleLabel, loser.roleLabel);
+		// Family bidirectional pairs carry inverse roleLabels ("Mother" vs "Son").
+		// Prefer the outbound row (role describes subject→peer) and never concatenate inverses.
+		let winner: ProfileLink;
+		let loser: ProfileLink;
+		if (bothFamily && existOut !== candOut) {
+			winner = { ...(candOut ? l : existing) };
+			loser = candOut ? existing : l;
+		} else {
+			const existScore =
+				(REL_PRIORITY[existing.relationType] || 0) * 3 +
+				(existing.startDate || existing.endDate ? 4 : 0) +
+				(existing.roleLabel ? 2 : 0) +
+				(existOut ? 1 : 0);
+			const candScore =
+				(REL_PRIORITY[l.relationType] || 0) * 3 +
+				(l.startDate || l.endDate ? 4 : 0) +
+				(l.roleLabel ? 2 : 0) +
+				(candOut ? 1 : 0);
+			winner = candScore > existScore ? { ...l } : { ...existing };
+			loser = candScore > existScore ? existing : l;
+			if (!bothFamily) {
+				winner.roleLabel = mergeRoleLabels(winner.roleLabel, loser.roleLabel);
+			} else if (!winner.roleLabel && loser.roleLabel) {
+				winner.roleLabel = loser.roleLabel;
+			}
+		}
 		winner.startDate =
 			winner.startDate && loser.startDate
 				? winner.startDate < loser.startDate

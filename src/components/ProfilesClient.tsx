@@ -3,13 +3,20 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import AlignmentEvidenceList from '@/components/AlignmentEvidenceList';
+import { FinraDisclosuresPanel } from '@/components/FinraDisclosuresPanel';
+import { ProfileTimelineCareerView } from '@/components/ProfileTimelineCareerView';
 import ThemeToggle from '@/components/ThemeToggle';
+import type { ProfileFinraDisclosures } from '@/lib/research/finraDisclosuresShared';
 import { detectFirmActiveFinraScope, detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
 import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import { formatTickerListing } from '@/lib/research/profiles/tickerListing';
 import { summaryMarkdownToHtml } from '@/lib/research/profiles/summaryMarkdown';
 import { formatResearchDriveTimelineEntry } from '@/lib/research/profiles/researchDriveDisplay';
-import { formatFamilyPeerRoleLabel } from '@/lib/research/profiles/personGender';
+import {
+	formatFamilyPeerRoleLabel,
+	invertFamilyRoleForOutbound,
+	type PersonGender,
+} from '@/lib/research/profiles/personGender';
 import type {
 	AliasKind,
 	AlignmentCandidate,
@@ -3273,6 +3280,9 @@ export default function ProfilesClient({
 	const [overviewEventLinks, setOverviewEventLinks] = useState<Record<string, OverviewEventLink> | null>(
 		null,
 	);
+	const [finraDisclosures, setFinraDisclosures] = useState<ProfileFinraDisclosures | null>(null);
+	const [loadingFinraDisclosures, setLoadingFinraDisclosures] = useState(false);
+	const [finraDisclosuresError, setFinraDisclosuresError] = useState<string | null>(null);
 
 	// Global alignments triage state
 	const [globalAlignments, setGlobalAlignments] = useState<AlignmentCandidate[]>([]);
@@ -3702,6 +3712,74 @@ export default function ProfilesClient({
 		}, 0);
 		return () => clearTimeout(timer);
 	}, [selectedId, mainView, loadDetail]);
+
+	const detailFinraCrd =
+		detail && (detail.profile.profileType === 'person' || detail.profile.profileType === 'firm') ?
+			resolveProfileFinraCrd(detail.profile.profileType, detail.profile.metadata, detail.identifiers)
+		:	null;
+
+	// FINRA / SEC disclosures below summary when person|firm has a CRD.
+	useEffect(() => {
+		if (!detail?.profile?.id || mainView !== 'profile' || !detailFinraCrd) {
+			setFinraDisclosures(null);
+			setFinraDisclosuresError(null);
+			setLoadingFinraDisclosures(false);
+			return;
+		}
+		let cancelled = false;
+		setLoadingFinraDisclosures(true);
+		setFinraDisclosuresError(null);
+		const profileKey = detail.profile.slug || detail.profile.id;
+		void (async () => {
+			try {
+				const res = await fetch(`/api/profiles/${encodeURIComponent(profileKey)}/disclosures`, {
+					cache: 'no-store',
+				});
+				const data = (await res.json()) as (ProfileFinraDisclosures | { ok: false; error?: string }) & {
+					skip?: boolean;
+					error?: string;
+					timeline?: { added?: number; updated?: number; written?: number } | null;
+				};
+				if (cancelled) return;
+				if (!res.ok || (data as { ok?: boolean }).ok === false) {
+					setFinraDisclosures(null);
+					setFinraDisclosuresError(data.error || `HTTP ${res.status}`);
+					return;
+				}
+				if (data.skip) {
+					setFinraDisclosures(null);
+					return;
+				}
+				setFinraDisclosures(data as ProfileFinraDisclosures);
+				const added = Number(data.timeline?.added || 0);
+				const cleared = Number(
+					(data.timeline as { clearedStubs?: number } | null | undefined)?.clearedStubs || 0,
+				);
+				if (added > 0 || cleared > 0) {
+					// New disclosure rows (or stub cleanup) — refresh Timeline tab counts/entries.
+					void loadDetail(profileKey);
+					if (profileTab === 'timeline') void loadTimeline(profileKey);
+				}
+			} catch (err) {
+				if (cancelled) return;
+				setFinraDisclosures(null);
+				setFinraDisclosuresError(err instanceof Error ? err.message : String(err));
+			} finally {
+				if (!cancelled) setLoadingFinraDisclosures(false);
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		detail?.profile?.id,
+		detail?.profile?.slug,
+		detailFinraCrd,
+		mainView,
+		loadDetail,
+		loadTimeline,
+		profileTab,
+	]);
 
 	// Browser tab: "Profile Name · Profiles" (or Alignments / Profiles browse).
 	useEffect(() => {
@@ -6156,6 +6234,14 @@ export default function ProfilesClient({
 											</button>
 										</div>
 									</div>
+									{(detail.profile.profileType === 'person' || detail.profile.profileType === 'firm') &&
+									resolveProfileFinraCrd(detail.profile.profileType, detail.profile.metadata, detail.identifiers) ?
+										<FinraDisclosuresPanel
+											data={finraDisclosures}
+											loading={loadingFinraDisclosures}
+											error={finraDisclosuresError}
+										/>
+									:	null}
 									{lastEnrichReport && lastEnrichReport.profileId === detail.profile.id ?
 										<div className='mt-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 text-xs'>
 											<div className='flex flex-wrap items-center justify-between gap-2 font-semibold'>
@@ -6280,14 +6366,24 @@ export default function ProfilesClient({
 														if (l.relationType !== 'family_or_associate') return null;
 														if (peerType && peerType !== 'person') return null;
 														if (!peerId || !peerName) return null;
-														return {
+														const peerGender: PersonGender | null =
+															l.peerGender === 'female' || l.peerGender === 'male' ? l.peerGender : null;
+														const rawRole = l.roleLabel || null;
+														// Outbound links name the subject's kinship to the peer ("father of …");
+														// invert so the peer is labeled from the open profile's point of view.
+														const role =
+															outbound && rawRole ?
+																invertFamilyRoleForOutbound(rawRole, peerGender) || rawRole
+															:	rawRole;
+														const peer: FamilyRelativePeer = {
 															id: peerId,
 															name: peerName,
-															role: l.roleLabel || null,
+															role,
 															startDate: l.peerStartDate ?? null,
 															endDate: l.peerEndDate ?? null,
-															gender: l.peerGender ?? null,
+															gender: peerGender,
 														};
+														return peer;
 													})
 													.filter((x): x is FamilyRelativePeer => x !== null)
 													.filter((peer, i, arr) => arr.findIndex((p) => p.id === peer.id) === i);
@@ -7638,192 +7734,240 @@ export default function ProfilesClient({
 																timeline.entries.length > 1 && matchCount > 0 && matchCount < timeline.entries.length;
 															const isCurrentArticle = (title: string) =>
 																Boolean(highlightCurrent && titleMatchesProfile(title));
+															const renderYearSections = (entryList: typeof timeline.entries) => {
 															const byYear = new Map<string, typeof timeline.entries>();
-															for (const entry of timeline.entries) {
-																const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
-																const y =
-																	resolved && /^\d{4}/.test(resolved) ? resolved.slice(0, 4)
-																	: resolved && /\b((?:1[6-9]|20)\d{2})\b/.test(resolved) ?
-																		(resolved.match(/\b((?:1[6-9]|20)\d{2})\b/) || [])[1]
-																	:	'Undated';
-																const list = byYear.get(y) || [];
-																list.push({ ...entry, eventDate: resolved === 'Undated' ? entry.eventDate : resolved });
-																byYear.set(y, list);
+															for (const entry of entryList) {
+															const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
+															const y =
+															resolved && /^\d{4}/.test(resolved) ? resolved.slice(0, 4)
+															: resolved && /\b((?:1[6-9]|20)\d{2})\b/.test(resolved) ?
+															(resolved.match(/\b((?:1[6-9]|20)\d{2})\b/) || [])[1]
+															:	'Undated';
+															const list = byYear.get(y) || [];
+															list.push({ ...entry, eventDate: resolved === 'Undated' ? entry.eventDate : resolved });
+															byYear.set(y, list);
 															}
 															const years = [...byYear.keys()].sort((a, b) => {
-																if (a === 'Undated') return 1;
-																if (b === 'Undated') return -1;
-																return b.localeCompare(a);
+															if (a === 'Undated') return 1;
+															if (b === 'Undated') return -1;
+															return b.localeCompare(a);
 															});
 															return (
-																<div className='space-y-5'>
-																	{years.map((year) => {
-																		const yearEntries = byYear.get(year) || [];
-																		const dateGroups: Array<{
-																			key: string;
-																			label: string;
-																			entries: typeof yearEntries;
-																		}> = [];
-																		const dateIndex = new Map<string, number>();
-																		for (const entry of yearEntries) {
-																			const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
-																			const key = summaryTimelineDateKey(resolved);
-																			const existing = dateIndex.get(key);
-																			if (existing != null) {
-																				dateGroups[existing].entries.push(entry);
-																				continue;
-																			}
-																			dateIndex.set(key, dateGroups.length);
-																			dateGroups.push({
-																				key,
-																				label: summaryTimelineDateLabel(resolved),
-																				entries: [entry],
-																			});
-																		}
-																		return (
-																			<section
-																				key={year}
-																				className='space-y-2'>
-																				<div className='sticky top-0 z-[1] -mx-0.5 flex items-baseline gap-2 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-0.5 py-1.5'>
-																					<h3 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h3>
-																					<span className='text-[10px] opacity-60'>
-																						{yearEntries.length} {yearEntries.length === 1 ? 'entry' : 'entries'}
-																						{dateGroups.length !== yearEntries.length ? ` · ${dateGroups.length} dates` : ''}
-																					</span>
-																				</div>
-																				<div className='relative ml-1.5 space-y-0 border-l-2 border-[var(--app-border)] pl-3.5'>
-																					{dateGroups.map((group) => (
-																						<article
-																							key={`${year}-${group.key}`}
-																							className='relative pb-3.5 last:pb-1'>
-																							<span
-																								aria-hidden
-																								className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[var(--app-surface)]'
-																							/>
-																							<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
-																								<span className='font-mono font-semibold opacity-90'>{group.label}</span>
-																								{group.entries
-																									.map((e) => e.geoLabel)
-																									.filter(Boolean)
-																									.filter((g, i, arr) => arr.indexOf(g) === i)
-																									.map((geo) => (
-																										<span
-																											key={String(geo)}
-																											className='opacity-65'>
-																											📍 {geo}
-																										</span>
-																									))}
-																								{group.entries
-																									.map((e) => e.sourceUrl)
-																									.filter(Boolean)
-																									.filter((u, i, arr) => arr.indexOf(u) === i)
-																									.map((url) => (
-																										<a
-																											key={String(url)}
-																											href={String(url)}
-																											target='_blank'
-																											rel='noreferrer'
-																											className='text-sky-600 underline dark:text-sky-300'>
-																											Source ↗
-																										</a>
-																									))}
-																							</div>
-																							<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
-																								{group.entries.map((entry) => {
-																									const display = formatResearchDriveTimelineEntry({
-																										title: entry.title,
-																										summary: entry.summary,
-																										sourceCorpus: entry.sourceCorpus,
-																									});
-																									const displayTitle = display.title || entry.title || '';
-																									const displaySummary = display.summary || '';
-																									const current = isCurrentArticle(displayTitle) || isCurrentArticle(entry.title || '');
-																									const jumpKey =
-																										entry.linkedProfileSlug ||
-																										entry.linkedProfileId ||
-																										(entry.originProfileId &&
-																										entry.originProfileId !== detail?.profile?.id &&
-																										(entry.originProfileSlug || entry.originProfileId)
-																											? entry.originProfileSlug || entry.originProfileId
-																											: null);
-																									const canJump =
-																										Boolean(jumpKey) &&
-																										jumpKey !== detail?.profile?.id &&
-																										jumpKey !== detail?.profile?.slug;
-																									const focusMatch =
-																										Boolean(timelineFocusTitle) &&
-																										(normTitle(displayTitle) === normTitle(timelineFocusTitle || '') ||
-																											normTitle(entry.title || '') === normTitle(timelineFocusTitle || ''));
-																									const titleClass =
-																										'text-sm font-semibold leading-snug text-left';
-																									return (
-																										<div
-																											key={entry.id}
-																											data-timeline-focus={focusMatch ? '1' : undefined}
-																											className={
-																												focusMatch ?
-																													'rounded-md border border-sky-500/70 bg-sky-500/15 px-2 py-1.5 ring-1 ring-sky-400/40'
-																												: current ?
-																													'rounded-md border border-[#F97316]/60 bg-[#F97316]/10 px-2 py-1.5 ring-1 ring-[#F97316]/35'
-																												:	undefined
-																											}>
-																											<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5'>
-																												{canJump && jumpKey ?
-																													<button
-																														type='button'
-																														onClick={() =>
-																															jumpToProfile(String(jumpKey), {
-																																tab: 'timeline',
-																																focusTimelineTitle: displayTitle,
-																																label:
-																																	entry.linkedProfileName ||
-																																	entry.originProfileSlug ||
-																																	null,
-																															})
-																														}
-																														title={
-																															entry.linkedProfileName
-																																? `Open profile: ${entry.linkedProfileName}`
-																																: 'Open related event profile'
-																														}
-																														className={`${titleClass} text-sky-700 underline decoration-sky-700/40 underline-offset-2 hover:text-sky-900 dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:text-sky-200`}>
-																														{displayTitle}
-																													</button>
-																												:	<div className={titleClass}>{displayTitle}</div>}
-																												{display.isResearchDrive ?
-																													<span className='rounded border border-white/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70'>
-																														Research Drive
-																													</span>
-																												:	null}
-																												{focusMatch ?
-																													<span className='rounded-full bg-sky-600 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
-																														Jumped here
-																													</span>
-																												: current ?
-																													<span className='rounded-full bg-[#F97316] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
-																														This event
-																													</span>
-																												:	null}
-																											</div>
-																											{displaySummary && displaySummary !== displayTitle ?
-																												<p className='m-0 mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80'>
-																													{displaySummary.length > 900 ?
-																														`${displaySummary.slice(0, 900).trim()}…`
-																													:	displaySummary}
-																												</p>
-																											:	null}
-																										</div>
-																									);
-																								})}
-																							</div>
-																						</article>
-																					))}
-																				</div>
-																			</section>
-																		);
-																	})}
-																</div>
+															<div className='space-y-5'>
+															{years.map((year) => {
+															const yearEntries = byYear.get(year) || [];
+															const dateGroups: Array<{
+															key: string;
+															label: string;
+															entries: typeof yearEntries;
+															}> = [];
+															const dateIndex = new Map<string, number>();
+															for (const entry of yearEntries) {
+															const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
+															const key = summaryTimelineDateKey(resolved);
+															const existing = dateIndex.get(key);
+															if (existing != null) {
+															dateGroups[existing].entries.push(entry);
+															continue;
+															}
+															dateIndex.set(key, dateGroups.length);
+															dateGroups.push({
+															key,
+															label: summaryTimelineDateLabel(resolved),
+															entries: [entry],
+															});
+															}
+															return (
+															<section
+															key={year}
+															className='space-y-2'>
+															<div className='sticky top-0 z-[1] -mx-0.5 flex items-baseline gap-2 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-0.5 py-1.5'>
+															<h3 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h3>
+															<span className='text-[10px] opacity-60'>
+															{yearEntries.length} {yearEntries.length === 1 ? 'entry' : 'entries'}
+															{dateGroups.length !== yearEntries.length ? ` · ${dateGroups.length} dates` : ''}
+															</span>
+															</div>
+															<div className='relative ml-1.5 space-y-0 border-l-2 border-[var(--app-border)] pl-3.5'>
+															{dateGroups.map((group) => (
+															<article
+															key={`${year}-${group.key}`}
+															className='relative pb-3.5 last:pb-1'>
+															<span
+															aria-hidden
+															className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[var(--app-surface)]'
+															/>
+															<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+															<span className='font-mono font-semibold opacity-90'>{group.label}</span>
+															{group.entries
+															.map((e) => e.geoLabel)
+															.filter(Boolean)
+															.filter((g, i, arr) => arr.indexOf(g) === i)
+															.map((geo) => (
+															<span
+															key={String(geo)}
+															className='opacity-65'>
+															📍 {geo}
+															</span>
+															))}
+															{group.entries
+															.map((e) => e.sourceUrl)
+															.filter(Boolean)
+															.filter((u, i, arr) => arr.indexOf(u) === i)
+															.map((url) => (
+															<a
+															key={String(url)}
+															href={String(url)}
+															target='_blank'
+															rel='noreferrer'
+															className='text-sky-600 underline dark:text-sky-300'>
+															Source ↗
+															</a>
+															))}
+															</div>
+															<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
+															{group.entries.map((entry) => renderPointCard(entry))}
+															</div>
+															</article>
+															))}
+															</div>
+															</section>
 															);
+															})}
+															</div>
+															);
+															};
+
+															const renderPointCard = (entry: (typeof timeline.entries)[number]) => {
+															const display = formatResearchDriveTimelineEntry({
+															title: entry.title,
+															summary: entry.summary,
+															sourceCorpus: entry.sourceCorpus,
+															});
+															const displayTitle = display.title || entry.title || '';
+															const displaySummary = display.summary || '';
+															const current = isCurrentArticle(displayTitle) || isCurrentArticle(entry.title || '');
+															const jumpKey =
+															entry.linkedProfileSlug ||
+															entry.linkedProfileId ||
+															(entry.originProfileId &&
+															entry.originProfileId !== detail?.profile?.id &&
+															(entry.originProfileSlug || entry.originProfileId)
+															? entry.originProfileSlug || entry.originProfileId
+															: null);
+															const canJump =
+															Boolean(jumpKey) &&
+															jumpKey !== detail?.profile?.id &&
+															jumpKey !== detail?.profile?.slug;
+															const focusMatch =
+															Boolean(timelineFocusTitle) &&
+															(normTitle(displayTitle) === normTitle(timelineFocusTitle || '') ||
+															normTitle(entry.title || '') === normTitle(timelineFocusTitle || ''));
+															const titleClass = 'text-sm font-semibold leading-snug text-left';
+															const isEmpSpan =
+															entry.entryKind === 'employment' ||
+															String(entry.metadata?.kind || '') === 'employment_span';
+															return (
+															<div
+															key={entry.id}
+															data-timeline-focus={focusMatch ? '1' : undefined}
+															className={
+															focusMatch ?
+															'rounded-md border border-sky-500/70 bg-sky-500/15 px-2 py-1.5 ring-1 ring-sky-400/40'
+															: current ?
+															'rounded-md border border-[#F97316]/60 bg-[#F97316]/10 px-2 py-1.5 ring-1 ring-[#F97316]/35'
+															: isEmpSpan ?
+															'rounded-md border border-emerald-500/35 bg-emerald-500/8 px-2 py-1.5'
+															:	undefined
+															}>
+															<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5'>
+															{canJump && jumpKey ?
+															<button
+															type='button'
+															onClick={() =>
+															jumpToProfile(String(jumpKey), {
+															tab: 'timeline',
+															focusTimelineTitle: displayTitle,
+															label:
+															entry.linkedProfileName ||
+															entry.originProfileSlug ||
+															null,
+															})
+															}
+															title={
+															entry.linkedProfileName
+															? `Open profile: ${entry.linkedProfileName}`
+															: 'Open related event profile'
+															}
+															className={`${titleClass} text-sky-700 underline decoration-sky-700/40 underline-offset-2 hover:text-sky-900 dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:text-sky-200`}>
+															{displayTitle}
+															</button>
+															:	<div className={titleClass}>{displayTitle}</div>}
+															{entry.entryKind === 'employment' ?
+															<span className='rounded border border-emerald-500/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200'>
+															Employment
+															</span>
+															: entry.entryKind === 'filing' ?
+															<span className='rounded border border-amber-500/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-200'>
+															Disclosure
+															</span>
+															: entry.entryKind === 'milestone' ?
+															<span className='rounded border border-violet-500/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-900 dark:text-violet-200'>
+															Milestone
+															</span>
+															:	null}
+															{display.isResearchDrive ?
+															<span className='rounded border border-white/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70'>
+															Research Drive
+															</span>
+															:	null}
+															{focusMatch ?
+															<span className='rounded-full bg-sky-600 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
+															Jumped here
+															</span>
+															: current ?
+															<span className='rounded-full bg-[#F97316] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
+															This event
+															</span>
+															:	null}
+															</div>
+															{displaySummary && displaySummary !== displayTitle ?
+															<p className='m-0 mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80'>
+															{displaySummary.length > 900 ?
+															`${displaySummary.slice(0, 900).trim()}…`
+															:	displaySummary}
+															</p>
+															:	null}
+															{isEmpSpan && entry.endDate ?
+															<p className='m-0 mt-1 text-[11px] font-mono opacity-70'>
+															Through {entry.endDate}
+															</p>
+															: isEmpSpan && entry.metadata?.isCurrent ?
+															<p className='m-0 mt-1 text-[11px] font-mono opacity-70'>Through Present</p>
+															:	null}
+															</div>
+															);
+															};
+
+															const useCareerChapters =
+															detail?.profile?.profileType === 'person' &&
+															timeline.entries.some(
+															(e) =>
+															e.entryKind === 'employment' ||
+															String(e.metadata?.kind || '') === 'employment_span',
+															);
+
+															if (useCareerChapters) {
+															return (
+															<ProfileTimelineCareerView
+															entries={timeline.entries}
+															renderPointEntry={(entry) => renderPointCard(entry)}
+															renderUnassignedYearSections={(list) => renderYearSections(list)}
+															/>
+															);
+															}
+
+															return renderYearSections(timeline.entries);
 														})()
 													}
 
