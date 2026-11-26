@@ -808,13 +808,61 @@ export function normalizeIsoDate(raw?: string | null): {
 	const s = String(raw || '').trim();
 	if (!s) return { date: null, precision: 'unknown' };
 
+	const MONTH_NAME_TO_INDEX: Record<string, string> = {
+		jan: '01',
+		january: '01',
+		feb: '02',
+		february: '02',
+		mar: '03',
+		march: '03',
+		apr: '04',
+		april: '04',
+		may: '05',
+		jun: '06',
+		june: '06',
+		jul: '07',
+		july: '07',
+		aug: '08',
+		august: '08',
+		sep: '09',
+		sept: '09',
+		september: '09',
+		oct: '10',
+		october: '10',
+		nov: '11',
+		november: '11',
+		dec: '12',
+		december: '12',
+	};
+
 	// Prefer ISO YYYY-MM-DD first so "1906-06-05" is not misread as US order.
 	const dayMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
 	if (dayMatch) return { date: `${dayMatch[1]}-${dayMatch[2]}-${dayMatch[3]}`, precision: 'day' };
 
 	const isoEmbedded = s.match(/(\d{4})-(\d{2})-(\d{2})/);
-	if (isoEmbedded && !/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(s)) {
+	if (isoEmbedded && !/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(s) && !/^[A-Za-z]/.test(s)) {
 		return { date: `${isoEmbedded[1]}-${isoEmbedded[2]}-${isoEmbedded[3]}`, precision: 'day' };
+	}
+
+	// Long display form: November 26, 2026 / Nov 26, 2026
+	const longDay = s.match(
+		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})$/i,
+	);
+	if (longDay) {
+		const mm = MONTH_NAME_TO_INDEX[longDay[1].toLowerCase().replace(/\.$/, '')];
+		const dd = Number(longDay[2]);
+		if (mm && dd >= 1 && dd <= 31) {
+			return { date: `${longDay[3]}-${mm}-${String(dd).padStart(2, '0')}`, precision: 'day' };
+		}
+	}
+
+	// Month + year: November 2026 / Nov 2026
+	const longMonth = s.match(
+		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{4})$/i,
+	);
+	if (longMonth) {
+		const mm = MONTH_NAME_TO_INDEX[longMonth[1].toLowerCase().replace(/\.$/, '')];
+		if (mm) return { date: `${longMonth[2]}-${mm}`, precision: 'month' };
 	}
 
 	const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -824,7 +872,7 @@ export function normalizeIsoDate(raw?: string | null): {
 		return { date: `${slashMatch[3]}-${mm}-${dd}`, precision: 'day' };
 	}
 
-	// US display form MM-DD-YYYY (e.g. typed into create form as 06-05-1906)
+	// Preferred typed form MM-DD-YYYY (e.g. 11-26-2026)
 	const usDashMatch = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
 	if (usDashMatch) {
 		const mm = Number(usDashMatch[1]);
@@ -837,13 +885,13 @@ export function normalizeIsoDate(raw?: string | null): {
 		}
 	}
 
-	// Compact MMDDYYYY (e.g. 10191983 → 1983-10-19)
+	// Compact MMDDYYYY (e.g. 11262026 → 2026-11-26)
 	const compact = s.match(/^(\d{2})(\d{2})(\d{4})$/);
 	if (compact) {
 		const mm = Number(compact[1]);
 		const dd = Number(compact[2]);
 		const yyyy = Number(compact[3]);
-		if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && yyyy >= 1800 && yyyy <= 2100) {
+		if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && yyyy >= 1600 && yyyy <= 2100) {
 			return {
 				date: `${compact[3]}-${compact[1]}-${compact[2]}`,
 				precision: 'day',
@@ -854,10 +902,10 @@ export function normalizeIsoDate(raw?: string | null): {
 	const monthMatch = s.match(/^(\d{4})-(\d{2})$/);
 	if (monthMatch) return { date: `${monthMatch[1]}-${monthMatch[2]}`, precision: 'month' };
 
-	const yearMatch = s.match(/^(1[89]\d{2}|20\d{2})$/);
+	const yearMatch = s.match(/^(1[6-9]\d{2}|20\d{2})$/);
 	if (yearMatch) return { date: yearMatch[1], precision: 'year' };
 
-	const yearEmbedded = s.match(/\b(1[89]\d{2}|20\d{2})\b/);
+	const yearEmbedded = s.match(/\b(1[6-9]\d{2}|20\d{2})\b/);
 	if (yearEmbedded) return { date: yearEmbedded[1], precision: 'year' };
 
 	return { date: null, precision: 'unknown' };

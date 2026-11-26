@@ -72,6 +72,7 @@
 		"questions:monitor": "node scripts/questions-playlist-daily.mjs",
 		"questions:monitor:once": "QUESTIONS_PLAYLIST_ONCE=1 node scripts/questions-playlist-daily.mjs",
 		"questions:monitor:seed": "QUESTIONS_PLAYLIST_SEED_ONLY=1 QUESTIONS_PLAYLIST_ONCE=1 node scripts/questions-playlist-daily.mjs",
+		"firm:id-filter": "node scripts/firm-name-id-filter.mjs",
 		"news:rss": "node scripts/news-rss-ingest.mjs",
 		"news:rss:loop": "NEWS_RSS_LOOP=1 node scripts/news-rss-ingest.mjs",
 		"news:rss:backfill-full": "NEWS_RSS_BACKFILL_FULL=1 node scripts/news-rss-ingest.mjs",

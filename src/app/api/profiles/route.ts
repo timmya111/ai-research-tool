@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
+import { resolveFirmIdentityOnCreate } from '@/lib/research/profiles/firmIdentityFilter';
 import {
 	addAlias,
 	addIdentifier,
 	addLocation,
 	addPersonEmployment,
+	getProfileDetail,
 	getProfileStats,
 	listProfiles,
 	upsertProfile,
@@ -17,6 +19,7 @@ import {
 	type ProfileStatus,
 	type ProfileType,
 } from '@/lib/research/profiles/types';
+import { scheduleYahooFirmEnrich } from '@/lib/research/profiles/yahooFinance';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -101,8 +104,67 @@ export async function POST(request: Request) {
 				.filter((t) => PROFILE_TYPES.includes(t) && t !== 'person');
 		}
 
+		// Public listed firms: correct wrong types (e.g. government:Walmart) and
+		// reuse the canonical firm card when ticker already exists. Yahoo enrich
+		// runs in the background via FlareSolverr (does not block this request).
+		const skipFirmFilter = body.skipFirmIdentityFilter === true;
+		const identity = skipFirmFilter
+			? null
+			: resolveFirmIdentityOnCreate(name, profileType);
+		let effectiveType = profileType;
+		if (identity?.correctedType) {
+			effectiveType = identity.resolvedType;
+			metaInput.identityFilter = {
+				correctedFrom: identity.requestedType,
+				warnings: identity.warnings,
+				ticker: identity.known?.ticker || null,
+				exchange: identity.known?.exchange || null,
+			};
+		}
+		if (identity?.known) {
+			metaInput.ticker = metaInput.ticker || identity.known.ticker;
+			metaInput.exchange = metaInput.exchange || identity.known.exchange;
+			metaInput.legalName = metaInput.legalName || identity.known.legalName;
+		}
+
+		if (identity?.existingFirm && identity.known) {
+			const existingId = identity.existingFirm.id;
+			addIdentifier({
+				profileId: existingId,
+				scheme: 'ticker',
+				value: identity.known.ticker,
+				sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
+			});
+			if (identity.known.legalName) {
+				addAlias({
+					profileId: existingId,
+					alias: identity.known.legalName,
+					aliasKind: 'other_name',
+					sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
+				});
+			}
+			scheduleYahooFirmEnrich(existingId, identity.known.ticker, {
+				exchange: identity.known.exchange,
+			});
+			const detail = getProfileDetail(existingId);
+			return NextResponse.json(
+				{
+					ok: true,
+					profile: detail?.profile || identity.existingFirm,
+					identityFilter: {
+						reusedExistingFirm: true,
+						correctedType: identity.correctedType,
+						warnings: identity.warnings,
+						ticker: identity.known.ticker,
+						yahooEnrichScheduled: true,
+					},
+				},
+				{ status: 200, headers: { 'Cache-Control': 'no-store' } },
+			);
+		}
+
 		const profile = upsertProfile({
-			profileType,
+			profileType: effectiveType,
 			name,
 			slug: body.slug ? String(body.slug) : undefined,
 			status: (body.status ? String(body.status) : 'pinned') as ProfileStatus,
@@ -112,6 +174,28 @@ export async function POST(request: Request) {
 			metadata: Object.keys(metaInput).length ? metaInput : undefined,
 			sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
 		});
+
+		if (identity?.known) {
+			addIdentifier({
+				profileId: profile.id,
+				scheme: 'ticker',
+				value: identity.known.ticker,
+				sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
+			});
+			if (identity.known.legalName) {
+				addAlias({
+					profileId: profile.id,
+					alias: identity.known.legalName,
+					aliasKind: 'other_name',
+					sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
+				});
+			}
+			if (effectiveType === 'firm') {
+				scheduleYahooFirmEnrich(profile.id, identity.known.ticker, {
+					exchange: identity.known.exchange,
+				});
+			}
+		}
 
 		if (profileType === 'person' && Array.isArray(body.employmentHistory)) {
 			for (const emp of body.employmentHistory as Array<Record<string, unknown>>) {
@@ -177,7 +261,21 @@ export async function POST(request: Request) {
 		}
 
 		return NextResponse.json(
-			{ ok: true, profile },
+			{
+				ok: true,
+				profile,
+				...(identity
+					? {
+							identityFilter: {
+								reusedExistingFirm: false,
+								correctedType: identity.correctedType,
+								warnings: identity.warnings,
+								ticker: identity.known?.ticker || null,
+								yahooEnrichScheduled: Boolean(identity.known && effectiveType === 'firm'),
+							},
+						}
+					: {}),
+			},
 			{ status: 201, headers: { 'Cache-Control': 'no-store' } },
 		);
 	} catch (error: unknown) {

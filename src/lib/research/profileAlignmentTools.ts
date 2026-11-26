@@ -46,6 +46,8 @@ const ALLOWED_IDENTIFIER_SCHEMES = new Set<IdentifierScheme>([
 	'dossier_slug',
 	'source_id',
 	'url',
+	'us_passport',
+	'driver_license',
 ]);
 
 const ALLOWED_RELATIONS = new Set<ProfileRelationType>([

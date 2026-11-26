@@ -55,7 +55,10 @@ export function peerKinshipLabelFromSubjectRole(
 	role: string | null | undefined,
 	peerGender: PersonGender | null,
 ): string | null {
-	const raw = String(role || '').trim();
+	const raw = String(role || '')
+		.trim()
+		.replace(/\s*\(user-confirmed\)\s*$/i, '')
+		.trim();
 	if (!raw) return null;
 	const r = raw.toLowerCase();
 
@@ -63,39 +66,66 @@ export function peerKinshipLabelFromSubjectRole(
 		peerGender === 'female' ? 'mother' : peerGender === 'male' ? 'father' : 'parent';
 	const grandparent =
 		peerGender === 'female' ? 'grandmother' : peerGender === 'male' ? 'grandfather' : 'grandparent';
+	const greatGrandparent =
+		peerGender === 'female' ? 'great-grandmother'
+		: peerGender === 'male' ? 'great-grandfather'
+		: 'great-grandparent';
 	const sibling =
 		peerGender === 'female' ? 'sister' : peerGender === 'male' ? 'brother' : 'sibling';
 	const child =
 		peerGender === 'female' ? 'daughter' : peerGender === 'male' ? 'son' : 'child';
 	const grandchild =
 		peerGender === 'female' ? 'granddaughter' : peerGender === 'male' ? 'grandson' : 'grandchild';
+	const uncleAunt =
+		peerGender === 'female' ? 'aunt' : peerGender === 'male' ? 'uncle' : 'uncle/aunt';
+	const greatUncleAunt =
+		peerGender === 'female' ? 'great-aunt' : peerGender === 'male' ? 'great-uncle' : 'great-uncle/aunt';
+	const nephewNiece =
+		peerGender === 'female' ? 'niece' : peerGender === 'male' ? 'nephew' : 'nephew/niece';
 
-	// Subject-of-peer phrasing → peer's relation to subject (one convention for the tree).
-	if (/^(son|daughter|child)\s+of\b/i.test(raw)) return parent;
-	if (/^(grandson|granddaughter|grandchild)\s+of\b/i.test(raw)) return grandparent;
-	if (/^(brother|sister|sibling)\s+of\b/i.test(raw)) return sibling;
-	if (/^(father|mother|parent)\s+of\b/i.test(raw)) return child;
-	if (/^(grandfather|grandmother|grandparent)\s+of\b/i.test(raw)) return grandchild;
-	if (/^(nephew|niece)\s+of\b/i.test(raw)) {
-		return peerGender === 'female' ? 'aunt' : peerGender === 'male' ? 'uncle' : 'uncle/aunt';
+	// Peer-is-X-of-subject (common on family_or_associate links): "father of …", "Great-uncle of Timothy".
+	if (/^(?:adoptive\s+|step\s+)?great[- ]?grand(?:father|mother|parent)s?\s+of\b/i.test(raw)) {
+		return greatGrandparent;
 	}
-	if (/^(uncle|aunt)\s+of\b/i.test(raw) || /^(great[- ]?)?(uncle|aunt)\s+of\b/i.test(raw)) {
-		return peerGender === 'female' ? 'niece' : peerGender === 'male' ? 'nephew' : 'nephew/niece';
+	if (/^(?:adoptive\s+|step\s+)?(?:maternal\s+|paternal\s+)?grand(?:father|mother|parent)s?\s+of\b/i.test(raw)) {
+		return grandparent;
+	}
+	if (/^(?:adoptive\s+|step\s+)?(?:birth\s+)?(?:father|mother|parent)s?\s+of\b/i.test(raw)) {
+		return parent;
+	}
+	if (/^(?:great[- ]?)?(?:uncle|aunt)s?\s+of\b/i.test(raw)) {
+		return /great/i.test(raw) ? greatUncleAunt : uncleAunt;
+	}
+
+	// Subject-is-X-of-peer → invert for the peer's label: "Son of Laura", "Great-nephew of Hopper".
+	if (/^(?:great[- ]?)?grand(?:son|daughter|child)\s+of\b/i.test(raw)) {
+		return /great/i.test(raw) ? greatGrandparent : grandparent;
+	}
+	if (/^(?:son|daughter|child)\s+of\b/i.test(raw)) return parent;
+	if (/^(?:brother|sister|sibling)\s+of\b/i.test(raw)) return sibling;
+	if (/^(?:great[- ]?)?(?:nephew|niece)\s+of\b/i.test(raw)) {
+		return /great/i.test(raw) ? greatUncleAunt : uncleAunt;
 	}
 	if (/^cousins?\s+of\b/i.test(raw)) return 'cousin';
 
 	// Already peer-centric — gender when we can.
-	if (/^parents?\b/.test(r)) return parent;
+	if (/great[- ]?grand(?:father|mother|parent)/i.test(r)) return greatGrandparent;
+	if (/^parents?\b/.test(r) || /\badoptive\s+(?:father|mother|parent)\b/.test(r)) return parent;
 	if (/^grandparents?\b/.test(r)) return grandparent;
 	if (/^siblings?\b/.test(r)) return sibling;
 	if (/^children\b|^child\b/.test(r)) return child;
 	if (/^grandchildren\b|^grandchild\b/.test(r)) return grandchild;
+	if (/great[- ]?(?:uncle|aunt)/i.test(r)) return greatUncleAunt;
 	if (/\bfather\b/.test(r)) return peerGender === 'female' ? 'mother' : 'father';
 	if (/\bmother\b/.test(r)) return peerGender === 'male' ? 'father' : 'mother';
 	if (/\bbrother\b/.test(r)) return peerGender === 'female' ? 'sister' : peerGender === 'male' ? 'brother' : raw;
 	if (/\bsister\b/.test(r)) return peerGender === 'male' ? 'brother' : peerGender === 'female' ? 'sister' : raw;
 	if (/\bgrandfather\b/.test(r)) return peerGender === 'female' ? 'grandmother' : 'grandfather';
 	if (/\bgrandmother\b/.test(r)) return peerGender === 'male' ? 'grandfather' : 'grandmother';
+	if (/\buncle\b/.test(r)) return peerGender === 'female' ? 'aunt' : 'uncle';
+	if (/\baunt\b/.test(r)) return peerGender === 'male' ? 'uncle' : 'aunt';
+	if (/\bnephew\b/.test(r)) return peerGender === 'female' ? 'niece' : 'nephew';
+	if (/\bniece\b/.test(r)) return peerGender === 'male' ? 'nephew' : 'niece';
 
 	return null;
 }
@@ -106,7 +136,10 @@ export function formatFamilyPeerRoleLabel(
 	peerName: string | null | undefined,
 	peerGenderHint?: PersonGender | null,
 ): string | null {
-	const raw = String(role || '').trim();
+	const raw = String(role || '')
+		.trim()
+		.replace(/\s*\(user-confirmed\)\s*$/i, '')
+		.trim();
 	if (!raw) return null;
 	const gender = peerGenderHint || inferGenderFromPersonName(peerName);
 	const mapped = peerKinshipLabelFromSubjectRole(raw, gender);

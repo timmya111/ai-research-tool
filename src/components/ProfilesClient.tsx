@@ -27,8 +27,23 @@ import type {
 } from '@/lib/research/profiles/types';
 import { LOCATION_ROLES } from '@/lib/research/profiles/types';
 
-/** Placeholder showing page display form + compact MMDDYYYY. */
+/** Typed date inputs: preferred MM-DD-YYYY plus compact MMDDYYYY (also accepts Month D, YYYY). */
 const DATE_INPUT_PLACEHOLDER = 'MM-DD-YYYY or MMDDYYYY';
+const DATE_INPUT_TITLE = 'Accepted: 11-26-2026, 11262026, or November 26, 2026';
+const DISPLAY_MONTH_NAMES = [
+	'January',
+	'February',
+	'March',
+	'April',
+	'May',
+	'June',
+	'July',
+	'August',
+	'September',
+	'October',
+	'November',
+	'December',
+] as const;
 
 const TYPE_META: Record<ProfileType, { label: string; plural: string; badge: string; group: 'actor' | 'narrative' }> = {
 	person: {
@@ -448,7 +463,20 @@ function isHiddenEpsteinSourceIdentifier(scheme: string, value: string): boolean
 
 /** Public registry / market identifiers shown in External Identifiers. */
 // okcr_instrument URLs are property filings — shown as ## Land Deeds content, never as ID chips.
-const PUBLIC_IDENTIFIER_SCHEMES = new Set(['finra_crd', 'sec_cik', 'parent_sec_cik', 'ticker', 'irs_ein', 'cusip', 'ror', 'orcid', 'usgs_event', 'spc_om']);
+const PUBLIC_IDENTIFIER_SCHEMES = new Set([
+	'finra_crd',
+	'sec_cik',
+	'parent_sec_cik',
+	'ticker',
+	'irs_ein',
+	'cusip',
+	'ror',
+	'orcid',
+	'usgs_event',
+	'spc_om',
+	'us_passport',
+	'driver_license',
+]);
 
 const IDENTIFIER_SCHEME_LABELS: Record<string, string> = {
 	finra_crd: 'CRD',
@@ -462,6 +490,8 @@ const IDENTIFIER_SCHEME_LABELS: Record<string, string> = {
 	usgs_event: 'USGS',
 	spc_om: 'SPC',
 	okcr_instrument: 'OKCR',
+	us_passport: 'Passport',
+	driver_license: 'Driver license',
 };
 
 /** Hostname without leading www (e.g. bbc.co.uk). */
@@ -1052,7 +1082,7 @@ type FamilyTreeRow =
 function treeYearOf(raw?: string | null): number | null {
 	const m = String(raw || '')
 		.trim()
-		.match(/((?:18|19|20)\d{2})/);
+		.match(/((?:1[6-9]|20)\d{2})/);
 	return m ? Number(m[1]) : null;
 }
 
@@ -1114,8 +1144,10 @@ type FamilyKinshipGroup =
 	| 'child'
 	| 'sibling'
 	| 'grandparent'
+	| 'great_grandparent'
 	| 'grandchild'
 	| 'uncle_aunt'
+	| 'great_uncle_aunt'
 	| 'nephew_niece'
 	| 'cousin'
 	| 'in_law'
@@ -1126,10 +1158,12 @@ const FAMILY_KINSHIP_ORDER: FamilyKinshipGroup[] = [
 	'spouse',
 	'parent',
 	'grandparent',
+	'great_grandparent',
 	'child',
 	'grandchild',
 	'sibling',
 	'uncle_aunt',
+	'great_uncle_aunt',
 	'nephew_niece',
 	'cousin',
 	'in_law',
@@ -1141,10 +1175,12 @@ const FAMILY_KINSHIP_LABEL: Record<FamilyKinshipGroup, string> = {
 	spouse: 'Spouse',
 	parent: 'Parents',
 	grandparent: 'Grandparents',
+	great_grandparent: 'Great-grandparents',
 	child: 'Children',
 	grandchild: 'Grandchildren',
 	sibling: 'Siblings',
 	uncle_aunt: 'Uncles / Aunts',
+	great_uncle_aunt: 'Great-uncles / Aunts',
 	nephew_niece: 'Nephews / Nieces',
 	cousin: 'Cousins',
 	in_law: 'In-laws',
@@ -1170,10 +1206,14 @@ function roleMentionsPeer(role: string, peerName: string | null | undefined): bo
 
 /**
  * Classify peer into a kinship bucket for ASCII grouping.
- * roleLabel is usually written from the subject's side ("Son of Laura", "Great-uncle of Timothy").
+ * Links usually name the peer's relation to the subject ("father of …", "Great-uncle of Timothy").
+ * Subject-of-peer phrasing ("Son of Laura") is inverted.
  */
 function classifyFamilyKinship(role: string | null | undefined, peerName?: string | null): FamilyKinshipGroup {
-	const raw = String(role || '').trim();
+	const raw = String(role || '')
+		.trim()
+		.replace(/\s*\(user-confirmed\)\s*$/i, '')
+		.trim();
 	if (!raw) return 'other';
 	if (FAMILY_ROLE_GEN_RE.test(raw)) return 'generation';
 	const r = raw.toLowerCase();
@@ -1181,25 +1221,45 @@ function classifyFamilyKinship(role: string | null | undefined, peerName?: strin
 
 	if (/\bspouses?\b|\bwife\b|\bhusband\b|\bmarried\b/.test(r)) return 'spouse';
 
-	// Subject-of-peer phrasing → invert for the peer's bucket.
-	if (aboutPeer || /^(son|daughter|child|father|mother|parent|uncle|aunt|great[- ]?uncle|great[- ]?aunt|nephew|niece|grandfather|grandmother|grandson|granddaughter|cousin)\s+of\b/i.test(raw)) {
-		if (/^(great[- ]?)?(uncle|aunt)s?\s+of\b/i.test(raw) || /\b(great[- ]?)?(uncle|aunt)\s+of\b/i.test(r)) {
-			return 'nephew_niece';
+	// Peer-is-X-of-subject.
+	if (/^(?:adoptive\s+|step\s+)?great[- ]?grand(?:father|mother|parent)s?\s+of\b/i.test(raw)) {
+		return 'great_grandparent';
+	}
+	if (/^(?:adoptive\s+|step\s+)?(?:maternal\s+|paternal\s+)?grand(?:father|mother|parent)s?\s+of\b/i.test(raw)) {
+		return 'grandparent';
+	}
+	if (/^(?:adoptive\s+|step\s+)?(?:birth\s+)?(?:father|mother|parent)s?\s+of\b/i.test(raw)) {
+		return 'parent';
+	}
+	if (/^(?:great[- ]?)?(?:uncle|aunt)s?\s+of\b/i.test(raw)) {
+		return /great/i.test(raw) ? 'great_uncle_aunt' : 'uncle_aunt';
+	}
+
+	// Subject-is-X-of-peer → invert (role mentions the peer, or classic "Son of …").
+	if (
+		aboutPeer ||
+		/^(?:great[- ]?)?(?:son|daughter|child|nephew|niece|grandson|granddaughter|grandchild)\s+of\b/i.test(raw)
+	) {
+		if (/^(?:great[- ]?)?grand(?:son|daughter|child)\s+of\b/i.test(raw)) {
+			return /great/i.test(raw) ? 'great_grandparent' : 'grandparent';
 		}
-		if (/^(son|daughter|child)\s+of\b/i.test(raw)) return 'parent';
-		if (/^(father|mother|parent)\s+of\b/i.test(raw)) return 'child';
-		if (/^(grandfather|grandmother|grandparent)\s+of\b/i.test(raw)) return 'grandchild';
-		if (/^(grandson|granddaughter|grandchild)\s+of\b/i.test(raw)) return 'grandparent';
-		if (/^(nephew|niece)\s+of\b/i.test(raw)) return 'uncle_aunt';
+		if (/^(?:son|daughter|child)\s+of\b/i.test(raw)) return 'parent';
+		if (/^(?:great[- ]?)?(?:nephew|niece)\s+of\b/i.test(raw)) {
+			return /great/i.test(raw) ? 'great_uncle_aunt' : 'uncle_aunt';
+		}
 		if (/^cousins?\s+of\b/i.test(raw)) return 'cousin';
 	}
 
+	if (/great[- ]?grand(?:father|mother|parent)/i.test(r)) return 'great_grandparent';
 	if (/\bgrandparents?\b|\bgrandfather\b|\bgrandmother\b|\bgrandpa\b|\bgrandma\b/.test(r)) return 'grandparent';
-	if (/\bparents?\b|\bfather\b|\bmother\b|\bdad\b|\bmom\b/.test(r)) return 'parent';
+	if (/\bparents?\b|\bfather\b|\bmother\b|\bdad\b|\bmom\b|\badoptive\s+(?:father|mother|parent)\b/.test(r)) {
+		return 'parent';
+	}
 	if (/\bgrandchildren\b|\bgrandson\b|\bgranddaughter\b/.test(r)) return 'grandchild';
 	if (/\b(sons?|daughters?|children|child)\b/.test(r)) return 'child';
 	if (/\bsiblings?\b|\bbrothers?\b|\bsisters?\b/.test(r)) return 'sibling';
-	if (/\bgreat[- ]?uncles?\b|\bgreat[- ]?aunts?\b|\buncles?\b|\baunts?\b/.test(r)) return 'uncle_aunt';
+	if (/\bgreat[- ]?uncles?\b|\bgreat[- ]?aunts?\b/.test(r)) return 'great_uncle_aunt';
+	if (/\buncles?\b|\baunts?\b/.test(r)) return 'uncle_aunt';
 	if (/\bnephews?\b|\bnieces?\b/.test(r)) return 'nephew_niece';
 	if (/\bcousins?\b/.test(r)) return 'cousin';
 	if (/\bin[- ]laws?\b|\bfather[- ]in[- ]law\b|\bmother[- ]in[- ]law\b|\bson[- ]in[- ]law\b|\bdaughter[- ]in[- ]law\b/.test(r)) {
@@ -1637,77 +1697,105 @@ function getFlagLabel(code: string): string {
 	return c.toUpperCase();
 }
 
-/** Display dates as mo-day-year (MM-DD-YYYY). Partial ISO stays MM-YYYY or YYYY. */
-function formatDisplayDate(iso?: string | null): string {
+/** Compact display / input canonical form: MM-DD-YYYY (partial → MM-YYYY or YYYY). */
+function formatDisplayDateShort(iso?: string | null): string {
 	const raw = String(iso || '').trim();
 	if (!raw) return '';
-	const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+	const parsed = normalizeIsoDate(raw).date || raw;
+	const ymd = parsed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
 	if (ymd) return `${ymd[2]}-${ymd[3]}-${ymd[1]}`;
-	// Legacy create-form US dashes (MM-DD-YYYY) before ISO normalization
-	const us = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+	const us = parsed.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
 	if (us) {
 		return `${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}-${us[3]}`;
 	}
-	const ym = raw.match(/^(\d{4})-(\d{2})$/);
+	const ym = parsed.match(/^(\d{4})-(\d{2})$/);
 	if (ym) return `${ym[2]}-${ym[1]}`;
-	const y = raw.match(/^(\d{4})$/);
+	const y = parsed.match(/^(\d{4})$/);
 	if (y) return y[1];
 	return raw;
 }
 
-/** Normalize typed date input to page display form (MM-DD-YYYY) when parseable. */
+/** Spacious display: November 26, 2026 / November 2026 / 2026. */
+function formatDisplayDateLong(iso?: string | null): string {
+	const raw = String(iso || '').trim();
+	if (!raw) return '';
+	const parsed = normalizeIsoDate(raw).date || raw;
+	const ymd = parsed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+	if (ymd) {
+		const month = Number(ymd[2]);
+		const day = Number(ymd[3]);
+		if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+			return `${DISPLAY_MONTH_NAMES[month - 1]} ${day}, ${ymd[1]}`;
+		}
+	}
+	const us = parsed.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+	if (us) {
+		const month = Number(us[1]);
+		const day = Number(us[2]);
+		if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+			return `${DISPLAY_MONTH_NAMES[month - 1]} ${day}, ${us[3]}`;
+		}
+	}
+	const ym = parsed.match(/^(\d{4})-(\d{2})$/);
+	if (ym) {
+		const month = Number(ym[2]);
+		if (month >= 1 && month <= 12) return `${DISPLAY_MONTH_NAMES[month - 1]} ${ym[1]}`;
+	}
+	const mmYyyy = parsed.match(/^(\d{2})-(\d{4})$/);
+	if (mmYyyy) {
+		const month = Number(mmYyyy[1]);
+		if (month >= 1 && month <= 12) return `${DISPLAY_MONTH_NAMES[month - 1]} ${mmYyyy[2]}`;
+	}
+	const y = parsed.match(/^(\d{4})$/);
+	if (y) return y[1];
+	return formatDisplayDateShort(raw) || raw;
+}
+
+/** Default string helper: compact MM-DD-YYYY (inputs, titles, fallbacks). */
+function formatDisplayDate(iso?: string | null): string {
+	return formatDisplayDateShort(iso);
+}
+
+/** Normalize typed date input to MM-DD-YYYY when parseable (keeps MMDDYYYY / long names accepted). */
 function formatDateDraftOnBlur(raw: string): string {
 	const trimmed = String(raw || '').trim();
 	if (!trimmed) return '';
 	const iso = normalizeIsoDate(trimmed).date;
 	if (!iso) return trimmed;
-	return formatDisplayDate(iso) || trimmed;
+	return formatDisplayDateShort(iso) || trimmed;
 }
 
-const SUMMARY_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] as const;
+function sameProfileDate(a?: string | null, b?: string | null): boolean {
+	const na = normalizeIsoDate(String(a || '').trim()).date || String(a || '').trim() || null;
+	const nb = normalizeIsoDate(String(b || '').trim()).date || String(b || '').trim() || null;
+	return na === nb;
+}
+
+/** Responsive date: long form from `sm` up, compact MM-DD-YYYY on narrow viewports. */
+function ProfileDate({ iso, className }: { iso?: string | null; className?: string }) {
+	const short = formatDisplayDateShort(iso);
+	const long = formatDisplayDateLong(iso);
+	if (!short && !long) return null;
+	if (!long || long === short) return <span className={className}>{short || long}</span>;
+	return (
+		<span className={className}>
+			<span className='sm:hidden'>{short}</span>
+			<span className='hidden sm:inline'>{long}</span>
+		</span>
+	);
+}
+
+const SUMMARY_MONTH_NAMES = DISPLAY_MONTH_NAMES;
 
 /** Summary-section only: November 22, 2026 / June 2026 / 1995 – 1999 / October 2008 – present. */
 function formatSummaryDatePart(part: string): string {
 	const s = String(part || '').trim();
 	if (!s) return '';
 	if (/^present$/i.test(s)) return 'present';
-	const iso = s.match(/^((?:18|19|20)\d{2})-(\d{2})-(\d{2})$/);
-	if (iso) {
-		const month = Number(iso[2]);
-		const day = Number(iso[3]);
-		if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-			return `${SUMMARY_MONTH_NAMES[month - 1]} ${day}, ${iso[1]}`;
-		}
-	}
-	const us = s.match(/^(\d{2})-(\d{2})-((?:18|19|20)\d{2})$/);
-	if (us) {
-		const month = Number(us[1]);
-		const day = Number(us[2]);
-		if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-			return `${SUMMARY_MONTH_NAMES[month - 1]} ${day}, ${us[3]}`;
-		}
-	}
-	const yyyyMm = s.match(/^((?:18|19|20)\d{2})-(\d{2})$/);
-	if (yyyyMm) {
-		const month = Number(yyyyMm[2]);
-		if (month >= 1 && month <= 12) return `${SUMMARY_MONTH_NAMES[month - 1]} ${yyyyMm[1]}`;
-	}
-	const mmYyyy = s.match(/^(\d{2})-((?:18|19|20)\d{2})$/);
-	if (mmYyyy) {
-		const month = Number(mmYyyy[1]);
-		if (month >= 1 && month <= 12) return `${SUMMARY_MONTH_NAMES[month - 1]} ${mmYyyy[2]}`;
-	}
-	if (/^(?:18|19|20)\d{2}$/.test(s)) return s;
-	const seasonYear = s.match(/^(Spring|Summer|Fall|Autumn|Winter)\s+((?:18|19|20)\d{2})$/i);
+	const long = formatDisplayDateLong(s);
+	if (long && long !== s) return long;
+	const seasonYear = s.match(/^(Spring|Summer|Fall|Autumn|Winter)\s+((?:1[6-9]|20)\d{2})$/i);
 	if (seasonYear) return `${seasonYear[1]} ${seasonYear[2]}`;
-	const monYear = s.match(
-		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:18|19|20)\d{2})$/i,
-	);
-	if (monYear) {
-		const key = monYear[1].toLowerCase().replace(/\.$/, '').slice(0, 3);
-		const idx = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(key);
-		if (idx >= 0) return `${SUMMARY_MONTH_NAMES[idx]} ${monYear[2]}`;
-	}
 	return s;
 }
 
@@ -1721,11 +1809,11 @@ function formatSummaryDateLabel(label: string): string {
 		formatted = `${formatSummaryDatePart(enRange[1])} – ${formatSummaryDatePart(enRange[2])}`;
 	} else {
 		// Hyphen year–year / year–present only (avoid splitting MM-DD-YYYY).
-		const yearRange = raw.match(/^((?:18|19|20)\d{2})\s*-\s*((?:18|19|20)\d{2}|present|Present)$/i);
+		const yearRange = raw.match(/^((?:1[6-9]|20)\d{2})\s*-\s*((?:1[6-9]|20)\d{2}|present|Present)$/i);
 		if (yearRange) {
 			formatted = `${formatSummaryDatePart(yearRange[1])} – ${formatSummaryDatePart(yearRange[2])}`;
 		} else {
-			const mmYyyyRange = raw.match(/^(\d{2}-(?:18|19|20)\d{2})\s*-\s*((?:18|19|20)\d{2}|\d{2}-(?:18|19|20)\d{2}|present|Present)$/i);
+			const mmYyyyRange = raw.match(/^(\d{2}-(?:1[6-9]|20)\d{2})\s*-\s*((?:1[6-9]|20)\d{2}|\d{2}-(?:1[6-9]|20)\d{2}|present|Present)$/i);
 			if (mmYyyyRange) {
 				formatted = `${formatSummaryDatePart(mmYyyyRange[1])} – ${formatSummaryDatePart(mmYyyyRange[2])}`;
 			} else {
@@ -1738,38 +1826,75 @@ function formatSummaryDateLabel(label: string): string {
 }
 
 function formatExactDate(iso?: string | null): string {
-	return formatDisplayDate(iso);
+	return formatDisplayDateShort(iso);
 }
 
 function formatMonthYear(iso?: string | null): string {
-	return formatDisplayDate(iso);
+	return formatDisplayDateShort(iso);
+}
+
+function buildDateSpanText(
+	formatOne: (iso?: string | null) => string,
+	startDate?: string | null,
+	endDate?: string | null,
+	isCurrent?: boolean | null,
+	opts?: { employedSince?: boolean; isEducation?: boolean },
+): string | null {
+	const s = formatOne(startDate);
+	const e = formatOne(endDate);
+	if (s && e) return s === e ? s : `${s} → ${e}`;
+	if (s) {
+		if (opts?.employedSince) {
+			return (
+				isCurrent === true ? `Employed since ${s}`
+				: isCurrent === false ? s
+				: `${s} → Present`
+			);
+		}
+		return isCurrent === false ? s : `${s} → Present`;
+	}
+	if (e) return opts?.isEducation ? `Grad. ${e}` : `Ended ${e}`;
+	return null;
 }
 
 function formatEmploymentDateSpan(startDate?: string | null, endDate?: string | null, isCurrent?: boolean | null): string | null {
-	const s = formatExactDate(startDate);
-	const e = formatExactDate(endDate);
-	if (s && e) return s === e ? s : `${s} → ${e}`;
-	if (s)
-		return (
-			isCurrent === true ? `Employed since ${s}`
-			: isCurrent === false ? s
-			: `${s} → Present`
-		);
-	if (e) return `Ended ${e}`;
-	return null;
+	return buildDateSpanText(formatDisplayDateShort, startDate, endDate, isCurrent, { employedSince: true });
 }
 
 function formatDateSpan(startDate?: string | null, endDate?: string | null, isCurrent?: boolean | null, isEducation?: boolean): string | null {
-	const s = formatDisplayDate(startDate);
-	const e = formatDisplayDate(endDate);
-	if (s && e) return s === e ? s : `${s} → ${e}`;
-	if (s) return isCurrent === false ? s : `${s} → Present`;
-	if (e) return isEducation ? `Grad. ${e}` : `Ended ${e}`;
-	return null;
+	return buildDateSpanText(formatDisplayDateShort, startDate, endDate, isCurrent, { isEducation });
+}
+
+/** Responsive span text for employment / education / connected-event chips. */
+function ProfileDateSpanText({
+	startDate,
+	endDate,
+	isCurrent,
+	isEducation,
+	employedSince,
+	className,
+}: {
+	startDate?: string | null;
+	endDate?: string | null;
+	isCurrent?: boolean | null;
+	isEducation?: boolean;
+	employedSince?: boolean;
+	className?: string;
+}) {
+	const short = buildDateSpanText(formatDisplayDateShort, startDate, endDate, isCurrent, { employedSince, isEducation });
+	const long = buildDateSpanText(formatDisplayDateLong, startDate, endDate, isCurrent, { employedSince, isEducation });
+	if (!short && !long) return null;
+	if (!long || long === short) return <span className={className}>{short || long}</span>;
+	return (
+		<span className={className}>
+			<span className='sm:hidden'>{short}</span>
+			<span className='hidden sm:inline'>{long}</span>
+		</span>
+	);
 }
 
 const SUMMARY_YEAR_TOKEN =
-	'(?:18|19|20)\\d{2}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|present|Present))?|\\d{4}-\\d{2}-\\d{2}|\\d{2}-\\d{2}-\\d{4}|\\d{2}-\\d{4}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|\\d{2}-\\d{4}|present|Present))?|\\d{4}-\\d{2}(?:\\s*[–—-]\\s*(?:(?:18|19|20)\\d{2}|\\d{4}-\\d{2}|present|Present))?';
+	'(?:1[6-9]|20)\\d{2}(?:\\s*[–—-]\\s*(?:(?:1[6-9]|20)\\d{2}|present|Present))?|\\d{4}-\\d{2}-\\d{2}|\\d{2}-\\d{2}-\\d{4}|\\d{2}-\\d{4}(?:\\s*[–—-]\\s*(?:(?:1[6-9]|20)\\d{2}|\\d{2}-\\d{4}|present|Present))?|\\d{4}-\\d{2}(?:\\s*[–—-]\\s*(?:(?:1[6-9]|20)\\d{2}|\\d{4}-\\d{2}|present|Present))?';
 const SUMMARY_YEAR_RE = new RegExp(`\\b(?:${SUMMARY_YEAR_TOKEN})\\b`, 'g');
 const SUMMARY_YEAR_CONNECTOR_RE = /(?:In|From|During|By|Until|Since|After|Before)\s+$/i;
 const SUMMARY_HEADING_RE = /^#{1,3}\s+(.+)$/;
@@ -1777,9 +1902,31 @@ const SUMMARY_BULLET_RE = /^(?:[-*•]|\d+[.)])\s+(.+)$/;
 // Prefer full dates (YYYY-MM-DD / MM-DD-YYYY) before bare years so
 // "2025-06-09 — …" does not split into date=2025 + text="06-09 — …".
 const SUMMARY_DATED_BULLET_RE =
-	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|present|Present)|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|(?:18|19|20)\d{2}\+|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:1[6-9]|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:1[6-9]|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:1[6-9]|20)\d{2}|(?:1[6-9]|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:1[6-9]|20)\d{2}|(?:1[6-9]|20)\d{2}-\d{2}(?:-\d{2})?\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}-\d{2}(?:-\d{2})?|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?|present|Present)|(?:1[6-9]|20)\d{2}\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}|present|Present)|(?:1[6-9]|20)\d{2}-\d{2}|\d{2}-(?:1[6-9]|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?|(?:1[6-9]|20)\d{2}\+|(?:1[6-9]|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
 const SUMMARY_TITLED_BULLET_RE = /^\*\*([^*]+)\*\*\s*[—–:\-]\s*(.+)$/;
 const SUMMARY_URL_RE = /^(https?:\/\/\S+)$/i;
+
+/** Pull trailing `Source(s): research-drive/…` off claim text (no trailing period). */
+function splitTrailingResearchDriveCitation(text: string): { body: string; citation: string | null } {
+	const raw = String(text || '').trim();
+	if (!raw) return { body: '', citation: null };
+	const m = raw.match(/^(.*?)\s+((?:_*)?(?:Sources?):\s*research-drive\/[^\n_]+?)(?:_*)\.?\s*$/is);
+	if (!m || !m[1]?.trim()) return { body: raw, citation: null };
+	const citation = m[2]
+		.replace(/^_+|_+$/g, '')
+		.replace(/\.\s*$/, '')
+		.trim();
+	return { body: m[1].trim(), citation: citation || null };
+}
+
+/** Style research-drive source citations italic + teal inside markdown HTML. */
+function styleResearchDriveCitationsInHtml(html: string): string {
+	return String(html || '').replace(
+		/((?:Sources?):\s*research-drive\/[^<]+?)(\.?)/gi,
+		(_m, cite: string, _dot: string) =>
+			`<span class="italic text-teal-300/85">${cite.replace(/\.\s*$/, '').trim()}</span>`,
+	);
+}
 
 function SummaryMarkdown({
 	text,
@@ -1792,7 +1939,7 @@ function SummaryMarkdown({
 }) {
 	// Do not auto-bold year/date tokens inside summary prose — timeline rail date
 	// chips already carry the date styling via summaryTimelineDateLabel.
-	const html = summaryMarkdownToHtml(String(text || ''), { inline });
+	const html = styleResearchDriveCitationsInHtml(summaryMarkdownToHtml(String(text || ''), { inline }));
 	if (!html) return null;
 	if (inline) {
 		return (
@@ -1807,6 +1954,30 @@ function SummaryMarkdown({
 			className={className}
 			dangerouslySetInnerHTML={{ __html: html }}
 		/>
+	);
+}
+
+function TimelineEntryMarkdown({
+	text,
+	className,
+}: {
+	text: string;
+	className?: string;
+}) {
+	const { body, citation } = splitTrailingResearchDriveCitation(text);
+	return (
+		<div className={className}>
+			{body ?
+				<SummaryMarkdown
+					text={body}
+					inline
+					className='block text-[12px] leading-relaxed text-white/90'
+				/>
+			:	null}
+			{citation ?
+				<div className='mt-0.5 text-[11px] italic leading-snug text-teal-300/85'>{citation}</div>
+			:	null}
+		</div>
 	);
 }
 
@@ -1858,6 +2029,18 @@ function stripPronunciationGuides(text: string): string {
 const SUMMARY_LABEL_RE = /^(?:\*\*)?([^*:\n]{1,48})(?:\*\*)?\s*:\s*(.+)$/;
 const SUMMARY_DISCLAIMER_RE = /(?:appearance in this curated|does not allege|does not imply|records public|disclaimer|appearing in .{0,40}does not)/i;
 
+/** True when SUMMARY_LABEL_RE split a clock time ("Born 3" + "15 PM…") instead of a field label. */
+function isClockTimeColonSplit(label: string, value: string): boolean {
+	const lab = String(label || '')
+		.replace(/\*\*/g, '')
+		.trim();
+	const val = String(value || '').trim();
+	if (!lab || !val) return false;
+	// Label ends with hour digits; value continues minutes (and optional seconds / AM|PM).
+	if (!/\d{1,2}$/.test(lab)) return false;
+	return /^\d{2}(?::\d{2})?(?:\s*(?:AM|PM|a\.m\.|p\.m\.))?\b/i.test(val);
+}
+
 type SummaryTimelineEntry = { date: string; text: string; sourceTag?: string | null };
 type SummaryBulletEntry = { title?: string | null; text: string; href?: string | null };
 
@@ -1869,7 +2052,8 @@ type SummaryBlock =
 	| { kind: 'bullets'; entries: SummaryBulletEntry[] }
 	| { kind: 'prose'; text: string }
 	| { kind: 'pre'; text: string }
-	| { kind: 'disclaimer'; text: string };
+	| { kind: 'disclaimer'; text: string }
+	| { kind: 'citation'; text: string };
 
 const OVERVIEW_PRIORITY_SECTION_RE =
 	/^(timeline|chronolog|milestones?|key dates|history|linked region|dual-node|see also|related)\b/i;
@@ -2078,24 +2262,24 @@ function looksLikeSummaryDateLabel(raw: string | null | undefined): boolean {
 		.replace(/\*\*/g, '')
 		.trim();
 	if (!s || /^undated$/i.test(s)) return false;
-	if (/^(?:18|19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?$/.test(s)) return true;
+	if (/^(?:1[6-9]|20)\d{2}(?:-\d{2}(?:-\d{2})?)?$/.test(s)) return true;
 	// Decade / open-ended labels used on region synthesis rails (2020s, 2011+, 1980s–2000s).
-	if (/^(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s$/i.test(s)) return true;
-	if (/^(?:18|19|20)\d{2}\+$/.test(s)) return true;
+	if (/^(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s$/i.test(s)) return true;
+	if (/^(?:1[6-9]|20)\d{2}\+$/.test(s)) return true;
 	if (
-		/^(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|present|Present)$/i.test(
+		/^(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?|present|Present)$/i.test(
 			s,
 		)
 	) {
 		return true;
 	}
-	if (/^\d{2}-\d{2}-(?:18|19|20)\d{2}$/.test(s)) return true;
-	if (/^(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present)$/i.test(s)) return true;
+	if (/^\d{2}-\d{2}-(?:1[6-9]|20)\d{2}$/.test(s)) return true;
+	if (/^(?:1[6-9]|20)\d{2}\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}|present)$/i.test(s)) return true;
 	// Historical / BCE years used on region corridors (122 BCE, 1669, 1693).
 	if (/^\d{3,4}(?:\s*(?:BCE|BC|CE|AD))?$/i.test(s)) return true;
 	if (/^\d{3,4}\s*[–—-]\s*(?:\d{3,4}|present|Present)$/i.test(s)) return true;
 	if (
-		/^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}$/i.test(
+		/^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:1[6-9]|20)\d{2}$/i.test(
 			s,
 		)
 	) {
@@ -2103,14 +2287,14 @@ function looksLikeSummaryDateLabel(raw: string | null | undefined): boolean {
 	}
 	// Month + year without day (October 2023) — common on sparse project timelines.
 	if (
-		/^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}$/i.test(
+		/^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:1[6-9]|20)\d{2}$/i.test(
 			s,
 		)
 	) {
 		return true;
 	}
 	// Season + year (Spring 2025 / Fall 2026).
-	if (/^(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}$/i.test(s)) return true;
+	if (/^(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:1[6-9]|20)\d{2}$/i.test(s)) return true;
 	// Geological epoch labels on region timelines (Miocene–Recent, Neogene–Present).
 	if (
 		/^(?:Early|Middle|Late|Lower|Upper)?\s*(?:Cambrian|Ordovician|Silurian|Devonian|Carboniferous|Permian|Triassic|Jurassic|Cretaceous|Paleogene|Neogene|Quaternary|Miocene|Pliocene|Pleistocene|Holocene|Precambrian|Mesoproterozoic|Paleoproterozoic)(?:\s*[–—-]\s*(?:Recent|Present|[A-Za-z]+))?$/i.test(
@@ -2290,17 +2474,40 @@ function parseSummaryBlocks(text: string, opts?: { sourceDate?: string | null })
 
 		const labeled = line.match(SUMMARY_LABEL_RE);
 		if (labeled) {
-			flushTimeline();
-			flushBullets();
 			const label = labeled[1].replace(/^\*\*|\*\*$/g, '').trim();
-			const value = labeled[2].trim();
-			// Year-as-label lines become year sections for scanning.
-			if (new RegExp(`^(?:${SUMMARY_YEAR_TOKEN})$`).test(label.replace(/\*\*/g, ''))) {
-				flushGrid();
-				blocks.push({ kind: 'year', year: label.replace(/\*\*/g, ''), text: value });
+			const value = labeled[2].trim().replace(/\.\s*$/, '');
+			// Keep "Born 3:15 PM…" intact — colon is a clock time, not Key: Value.
+			if (isClockTimeColonSplit(label, value)) {
+				if (timelineEntries.length > 0) {
+					const last = timelineEntries[timelineEntries.length - 1]!;
+					const extra = line.trim();
+					if (extra) last.text = last.text ? `${last.text}\n\n${extra}` : extra;
+				} else {
+					flushCollections();
+					for (const part of sectionProseByYears(line)) blocks.push(part);
+				}
+			} else if (/^sources?$/i.test(label) && /^research-drive\//i.test(value)) {
+				// Footer / aggregate research-drive citations — one italic teal line, not a Sources card.
+				flushCollections();
+				const prefix = /^sources$/i.test(label) ? 'Sources' : 'Source';
+				blocks.push({ kind: 'citation', text: `${prefix}: ${value}` });
 			} else {
-				gridRows.push({ label, value });
+				flushTimeline();
+				flushBullets();
+				// Year-as-label lines become year sections for scanning.
+				if (new RegExp(`^(?:${SUMMARY_YEAR_TOKEN})$`).test(label.replace(/\*\*/g, ''))) {
+					flushGrid();
+					blocks.push({ kind: 'year', year: label.replace(/\*\*/g, ''), text: value });
+				} else {
+					gridRows.push({ label, value });
+				}
 			}
+		} else if (timelineEntries.length > 0) {
+			// Body paragraph under `* YYYY: Title` stays on that entry so adjacent
+			// milestones share one rail (one year header, not N single-entry rails).
+			const last = timelineEntries[timelineEntries.length - 1]!;
+			const extra = line.trim();
+			if (extra) last.text = last.text ? `${last.text}\n\n${extra}` : extra;
 		} else {
 			flushCollections();
 			// Wikipedia prose: only sentence-starting years become date cards
@@ -2334,20 +2541,23 @@ function summaryYearSortKey(yearLabel: string): number {
 		if (startOnly && startOnly !== raw) return summaryYearSortKey(startOnly);
 		return 9999_12_31;
 	}
-	const iso = raw.match(/\b((?:18|19|20)\d{2})-(\d{2})-(\d{2})\b/);
+	const iso = raw.match(/\b((?:1[6-9]|20)\d{2})-(\d{2})-(\d{2})\b/);
 	if (iso) return Number(iso[1]) * 10_000 + Number(iso[2]) * 100 + Number(iso[3]);
-	const us = raw.match(/\b(\d{2})-(\d{2})-((?:18|19|20)\d{2})\b/);
+	const us = raw.match(/\b(\d{2})-(\d{2})-((?:1[6-9]|20)\d{2})\b/);
 	if (us) return Number(us[3]) * 10_000 + Number(us[1]) * 100 + Number(us[2]);
-	const yyyyMm = raw.match(/\b((?:18|19|20)\d{2})-(\d{2})\b/);
+	const yyyyMm = raw.match(/\b((?:1[6-9]|20)\d{2})-(\d{2})\b/);
 	if (yyyyMm) return Number(yyyyMm[1]) * 10_000 + Number(yyyyMm[2]) * 100 + 99;
-	const mmYyyy = raw.match(/\b(\d{2})-((?:18|19|20)\d{2})\b/);
+	const mmYyyy = raw.match(/\b(\d{2})-((?:1[6-9]|20)\d{2})\b/);
 	if (mmYyyy) return Number(mmYyyy[2]) * 10_000 + Number(mmYyyy[1]) * 100 + 99;
 	// BCE / BC → negative sort key so modern years stay above ancient ones.
 	const bce = raw.match(/^(\d{3,4})\s*(?:BCE|BC)\b/i);
 	if (bce) return -Number(bce[1]) * 10_000;
+	// Mid-1840s / Late 1990s — trailing "s" breaks \b after YYYY; optional Late/Early/Mid prefix.
+	const decadeLabel = raw.match(/^(?:(?:Late|Early|Mid)(?:-|\s+))?((?:1[6-9]|20)\d{2})s\b/i);
+	if (decadeLabel) return Number(decadeLabel[1]) * 10_000;
 	const anyYear = raw.match(/^(\d{3,4})\b/);
 	if (anyYear) return Number(anyYear[1]) * 10_000;
-	const nums = [...raw.matchAll(/\b((?:18|19|20)\d{2})\b/g)].map((m) => Number(m[1]));
+	const nums = [...raw.matchAll(/\b((?:1[6-9]|20)\d{2})s?\b/g)].map((m) => Number(m[1]));
 	if (nums.length) return Math.max(...nums) * 10_000;
 	// Geological epoch headers: older than historical BCE so they sort below calendar years.
 	if (/Holocene/i.test(raw)) return -10_000;
@@ -2365,9 +2575,9 @@ function summaryYearSortKey(yearLabel: string): number {
 function summaryTimelineDateKey(date: string | null | undefined): string {
 	const raw = String(date || '').trim();
 	if (!raw || raw === 'Undated') return 'Undated';
-	const iso = raw.match(/\b((?:18|19|20)\d{2}-\d{2}-\d{2})\b/);
+	const iso = raw.match(/\b((?:1[6-9]|20)\d{2}-\d{2}-\d{2})\b/);
 	if (iso) return iso[1];
-	const us = raw.match(/\b(\d{2})-(\d{2})-((?:18|19|20)\d{2})\b/);
+	const us = raw.match(/\b(\d{2})-(\d{2})-((?:1[6-9]|20)\d{2})\b/);
 	if (us) return `${us[3]}-${us[1]}-${us[2]}`;
 	const labeled = formatSummaryDateLabel(raw);
 	return labeled || raw;
@@ -2384,12 +2594,12 @@ function summaryTimelineYearBucket(date: string | null | undefined): string {
 	if (!raw || raw === 'Undated') return 'Undated';
 	const bce = raw.match(/^(\d{3,4})\s*(?:BCE|BC)\b/i);
 	if (bce) return `${bce[1]} BCE`;
-	// 2020s / 1980s–2000s / 2011+ — word-boundary after YYYY fails before trailing "s"/"+".
-	const decadeOrPlus = raw.match(/^((?:18|19|20)\d{2})(?:s|\+)?/i);
+	// Mid-1840s / Late 1990s / 2020s / 2011+ — Late/Early/Mid prefix + trailing "s"/"+".
+	const decadeOrPlus = raw.match(/^(?:(?:Late|Early|Mid)(?:-|\s+))?((?:1[6-9]|20)\d{2})(?:s|\+)?/i);
 	if (decadeOrPlus) return decadeOrPlus[1];
 	const leading = raw.match(/^(\d{3,4})\b/);
 	if (leading) return leading[1];
-	const modern = raw.match(/\b((?:18|19|20)\d{2})\b/);
+	const modern = raw.match(/\b((?:1[6-9]|20)\d{2})s?\b/);
 	if (modern) return modern[1];
 	// Geological epoch labels stay as their own year headers.
 	if (
@@ -2518,27 +2728,33 @@ function SummaryTimelineRail({
 													? resolveOverviewEventLink(entry.text, eventLinks)
 													: null;
 												if (link && onOpenProfile) {
+													const { body, citation } = splitTrailingResearchDriveCitation(entry.text);
 													return (
-														<button
+														<div
 															key={`${group.key}-${ei}`}
-															type='button'
-															onClick={() => onOpenProfile(link.slug || link.id)}
-															title={`Open profile: ${link.name}`}
-															className='block w-full text-left text-[12px] leading-relaxed text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
-															<SummaryMarkdown
-																text={entry.text}
-																inline
-																className='inline text-[12px] leading-relaxed'
-															/>
-														</button>
+															className='space-y-0.5'>
+															<button
+																type='button'
+																onClick={() => onOpenProfile(link.slug || link.id)}
+																title={`Open profile: ${link.name}`}
+																className='block w-full text-left text-[12px] leading-relaxed text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
+																<SummaryMarkdown
+																	text={body || entry.text}
+																	inline
+																	className='inline text-[12px] leading-relaxed'
+																/>
+															</button>
+															{citation ?
+																<div className='text-[11px] italic leading-snug text-teal-300/85'>{citation}</div>
+															:	null}
+														</div>
 													);
 												}
 												return (
-													<SummaryMarkdown
+													<TimelineEntryMarkdown
 														key={`${group.key}-${ei}`}
 														text={entry.text}
-														inline
-														className='block text-[12px] leading-relaxed text-white/90'
+														className='block'
 													/>
 												);
 											})}
@@ -2757,6 +2973,18 @@ function ProfileSummaryText({
 			renderItems.push(...run);
 			continue;
 		}
+		// Merge adjacent timeline rails so shared year buckets (1840–1841 + Mid-1840s) collapse.
+		if (b.kind === 'timeline') {
+			const prev = renderItems[renderItems.length - 1];
+			if (prev && prev.kind === 'timeline') {
+				prev.entries.push(...b.entries);
+				i += 1;
+				continue;
+			}
+			renderItems.push({ kind: 'timeline', entries: [...b.entries] });
+			i += 1;
+			continue;
+		}
 		renderItems.push(b);
 		i += 1;
 	}
@@ -2824,9 +3052,25 @@ function ProfileSummaryText({
 							</SummarySectionCard>
 						);
 					}
+					if (block.kind === 'citation') {
+						return (
+							<div
+								key={`c-${idx}`}
+								className='text-[11px] italic leading-snug text-teal-300/85'>
+								{block.text.replace(/\.\s*$/, '')}
+							</div>
+						);
+					}
 					if (block.kind === 'grid') {
 						// Labels duplicate Title / role chips — hide from overview summary UI.
-						const rows = block.rows.filter((row) => !/^labels$/i.test(String(row.label || '').trim()));
+						// research-drive Sources rows render as citation blocks instead.
+						const rows = block.rows.filter((row) => {
+							const lab = String(row.label || '').trim();
+							const val = String(row.value || '').trim();
+							if (/^labels$/i.test(lab)) return false;
+							if (/^sources?$/i.test(lab) && /^research-drive\//i.test(val)) return false;
+							return true;
+						});
 						if (rows.length === 0) return null;
 						return (
 							<div
@@ -3661,8 +3905,12 @@ export default function ProfilesClient({
 					profileType: newType,
 					name: newName.trim(),
 					summary: newSummary.trim(),
-					startDate: newStartDate.trim() || null,
-					endDate: newEndDate.trim() || null,
+					startDate: newStartDate.trim()
+						? normalizeIsoDate(newStartDate.trim()).date || newStartDate.trim()
+						: null,
+					endDate: newEndDate.trim()
+						? normalizeIsoDate(newEndDate.trim()).date || newEndDate.trim()
+						: null,
 					aliases,
 					locations,
 					employmentHistory,
@@ -3723,8 +3971,8 @@ export default function ProfilesClient({
 		setNameDraft(detail.profile.name);
 		setAltNamesDraft(collectAltNamesForEdit(detail).join(' · '));
 		setSummaryDraft(detail.profile.summary || '');
-		setLifeStartDraft(detail.profile.startDate || '');
-		setLifeEndDraft(detail.profile.endDate || '');
+		setLifeStartDraft(formatDateDraftOnBlur(detail.profile.startDate || ''));
+		setLifeEndDraft(formatDateDraftOnBlur(detail.profile.endDate || ''));
 		setAliasRowsDraft(
 			detail.aliases
 				// other_name is edited under the title (altNamesDraft → replaceOtherNames)
@@ -3800,16 +4048,16 @@ export default function ProfilesClient({
 
 			const nameChanged = nameDraft.trim() !== detail.profile.name;
 			const summaryChanged = summaryDraft !== (detail.profile.summary || '');
-			const startChanged = (lifeStartDraft.trim() || null) !== (detail.profile.startDate || null);
-			const endChanged = (lifeEndDraft.trim() || null) !== (detail.profile.endDate || null);
+			const startChanged = !sameProfileDate(lifeStartDraft, detail.profile.startDate);
+			const endChanged = !sameProfileDate(lifeEndDraft, detail.profile.endDate);
 			if (nameChanged || summaryChanged || startChanged || endChanged) {
 				latest = await patchProfile(profileKey, {
 					...(nameChanged ? { name: nameDraft.trim() } : {}),
 					...(summaryChanged ? { summary: summaryDraft } : {}),
 					...(startChanged || endChanged ?
 						{
-							startDate: lifeStartDraft.trim() || null,
-							endDate: lifeEndDraft.trim() || null,
+							startDate: lifeStartDraft.trim() ? normalizeIsoDate(lifeStartDraft.trim()).date || lifeStartDraft.trim() : null,
+							endDate: lifeEndDraft.trim() ? normalizeIsoDate(lifeEndDraft.trim()).date || lifeEndDraft.trim() : null,
 						}
 					:	{}),
 				});
@@ -3996,7 +4244,9 @@ export default function ProfilesClient({
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					eventDate: obsDate.trim() || null,
+					eventDate: obsDate.trim()
+						? normalizeIsoDate(obsDate.trim()).date || obsDate.trim()
+						: null,
 					title: obsTitle.trim(),
 					summary: obsSummary.trim(),
 					angle: obsAngle,
@@ -4268,8 +4518,12 @@ export default function ProfilesClient({
 					orgName: empOrgName.trim(),
 					orgCategory: empOrgCategory,
 					role: empRole.trim() || null,
-					startDate: empStart.trim() || null,
-					endDate: empEnd.trim() || null,
+					startDate: empStart.trim()
+						? normalizeIsoDate(empStart.trim()).date || empStart.trim()
+						: null,
+					endDate: empEnd.trim()
+						? normalizeIsoDate(empEnd.trim()).date || empEnd.trim()
+						: null,
 					location: empLocation.trim() || null,
 				}),
 			});
@@ -5088,7 +5342,7 @@ export default function ProfilesClient({
 									onChange={(e) => setNewStartDate(e.target.value)}
 									onBlur={() => setNewStartDate((v) => formatDateDraftOnBlur(v))}
 									placeholder={DATE_INPUT_PLACEHOLDER}
-									title='Examples: 10-19-1983 or 10191983'
+									title={DATE_INPUT_TITLE}
 									className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs'
 								/>
 							</label>
@@ -5110,7 +5364,7 @@ export default function ProfilesClient({
 									onChange={(e) => setNewEndDate(e.target.value)}
 									onBlur={() => setNewEndDate((v) => formatDateDraftOnBlur(v))}
 									placeholder={DATE_INPUT_PLACEHOLDER}
-									title='Examples: 10-19-1983 or 10191983'
+									title={DATE_INPUT_TITLE}
 									className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs'
 								/>
 							</label>
@@ -5510,15 +5764,10 @@ export default function ProfilesClient({
 													const hasCrd =
 														(p.profileType === 'person' || p.profileType === 'firm') && Boolean(p.finraCrd);
 													const loc = !hasAlts && p.primaryLocation ? p.primaryLocation : null;
-													const eventDate =
-														p.profileType === 'historic_event'
-															? formatDateSpan(p.startDate, p.endDate, false) ||
-																formatDisplayDate(p.startDate) ||
-																formatDisplayDate(p.endDate) ||
-																null
-															: null;
+													const hasEventDate =
+														p.profileType === 'historic_event' && Boolean(p.startDate || p.endDate);
 													const secondary = hasAlts ? p.alternateNames!.join(' · ') : loc;
-													if (!hasCrd && !eventDate && !secondary) return null;
+													if (!hasCrd && !hasEventDate && !secondary) return null;
 													const bits: Array<{ key: string; node: ReactNode }> = [];
 													if (hasCrd) {
 														bits.push({
@@ -5530,11 +5779,13 @@ export default function ProfilesClient({
 															),
 														});
 													}
-													if (eventDate) {
+													if (hasEventDate) {
 														bits.push({
 															key: 'date',
 															node: (
-																<span className='not-italic font-medium tabular-nums'>{eventDate}</span>
+																<span className='not-italic font-medium tabular-nums'>
+																	<ProfileDateSpanText startDate={p.startDate} endDate={p.endDate} isCurrent={false} />
+																</span>
 															),
 														});
 													}
@@ -5598,7 +5849,7 @@ export default function ProfilesClient({
 															onChange={(e) => setLifeStartDraft(e.target.value)}
 															onBlur={() => setLifeStartDraft((v) => formatDateDraftOnBlur(v))}
 															placeholder={DATE_INPUT_PLACEHOLDER}
-															title={detail.profile.profileType === 'person' ? 'Birth: 10-19-1983 or 10191983' : 'Start: 10-19-1983 or 10191983'}
+															title={DATE_INPUT_TITLE}
 															className='w-[11.5rem] rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px]'
 														/>
 														<span className='opacity-50'>→</span>
@@ -5607,16 +5858,19 @@ export default function ProfilesClient({
 															onChange={(e) => setLifeEndDraft(e.target.value)}
 															onBlur={() => setLifeEndDraft((v) => formatDateDraftOnBlur(v))}
 															placeholder={DATE_INPUT_PLACEHOLDER}
-															title={detail.profile.profileType === 'person' ? 'Death: 10-19-1983 or 10191983' : 'End: 10-19-1983 or 10191983'}
+															title={DATE_INPUT_TITLE}
 															className='w-[11.5rem] rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px]'
 														/>
 													</span>
 												:	<span className='inline-flex flex-wrap items-center gap-1.5 text-[11px] opacity-70'>
 														{detail.profile.startDate || detail.profile.endDate ?
-															<span>
-																{detail.profile.startDate ? formatDisplayDate(detail.profile.startDate) : '—'}
+															<span className='inline-flex flex-wrap items-center gap-1'>
+																{detail.profile.startDate ? <ProfileDate iso={detail.profile.startDate} /> : '—'}
 																{detail.profile.endDate ?
-																	` → ${formatDisplayDate(detail.profile.endDate)}`
+																	<>
+																		<span aria-hidden>→</span>
+																		<ProfileDate iso={detail.profile.endDate} />
+																	</>
 																: detail.profile.profileType === 'person' ?
 																	''
 																:	''}
@@ -6270,7 +6524,20 @@ export default function ProfilesClient({
 												const showLocations = true;
 												const cardCount = 3;
 												const gridCols = 'md:grid-cols-3';
-												const editableIdentSchemes = ['ticker', 'finra_crd', 'sec_cik', 'parent_sec_cik', 'irs_ein', 'cusip', 'url', 'orcid', 'ror', 'wikidata'] as const;
+												const editableIdentSchemes = [
+													'ticker',
+													'finra_crd',
+													'sec_cik',
+													'parent_sec_cik',
+													'irs_ein',
+													'cusip',
+													'url',
+													'orcid',
+													'ror',
+													'wikidata',
+													'us_passport',
+													'driver_license',
+												] as const;
 												return (
 													<div className={`grid gap-3 ${gridCols}`}>
 														{showAliases ?
@@ -6823,7 +7090,9 @@ export default function ProfilesClient({
 													const previousWork = workEntries.filter((e) => e.isCurrent !== true);
 
 													const renderWorkRow = (emp: (typeof workEntries)[number]) => {
-														const span = formatEmploymentDateSpan(emp.startDate, emp.endDate, emp.isCurrent);
+														const hasSpan = Boolean(
+															formatEmploymentDateSpan(emp.startDate, emp.endDate, emp.isCurrent),
+														);
 														const cleanRole = emp.role && !/^(?:current|previous)\s+registration$/i.test(emp.role.trim()) ? emp.role.trim() : null;
 														const showFinraScope =
 															emp.firmFinraScope && !/^active$/i.test(emp.firmFinraScope.trim()) ?
@@ -6836,8 +7105,15 @@ export default function ProfilesClient({
 																className={isCurrentEmp ? EMP_CARD_CURRENT : EMP_CARD_PREVIOUS}>
 																<div className='flex flex-wrap items-center justify-between gap-2'>
 																	<div className='flex flex-wrap items-center gap-1.5'>
-																		{span ?
-																			<span className={isCurrentEmp ? EMP_CHIP_CURRENT : EMP_CHIP_PREVIOUS}>{span}</span>
+																		{hasSpan ?
+																			<span className={isCurrentEmp ? EMP_CHIP_CURRENT : EMP_CHIP_PREVIOUS}>
+																				<ProfileDateSpanText
+																					startDate={emp.startDate}
+																					endDate={emp.endDate}
+																					isCurrent={emp.isCurrent}
+																					employedSince
+																				/>
+																			</span>
 																		:	null}
 																		{emp.orgProfileId ?
 																			<button
@@ -6966,7 +7242,7 @@ export default function ProfilesClient({
 																				onChange={(e) => setEmpStart(e.target.value)}
 																				onBlur={() => setEmpStart((v) => formatDateDraftOnBlur(v))}
 																				placeholder={DATE_INPUT_PLACEHOLDER}
-																				title='From: 10-19-1983 or 10191983'
+																				title={DATE_INPUT_TITLE}
 																				className='w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs'
 																			/>
 																			<input
@@ -6974,7 +7250,7 @@ export default function ProfilesClient({
 																				onChange={(e) => setEmpEnd(e.target.value)}
 																				onBlur={() => setEmpEnd((v) => formatDateDraftOnBlur(v))}
 																				placeholder={DATE_INPUT_PLACEHOLDER}
-																				title='To: 10-19-1983 or 10191983'
+																				title={DATE_INPUT_TITLE}
 																				className='w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs'
 																			/>
 																		</div>
@@ -6996,15 +7272,22 @@ export default function ProfilesClient({
 																	<h3 className='m-0 mb-2 text-xs font-semibold uppercase opacity-75'>Education ({educationEntries.length})</h3>
 																	<div className='space-y-1.5'>
 																		{educationEntries.map((edu) => {
-																			const span = formatDateSpan(edu.startDate, edu.endDate, edu.isCurrent, true);
+																			const hasEduSpan = Boolean(
+																				formatDateSpan(edu.startDate, edu.endDate, edu.isCurrent, true),
+																			);
 																			return (
 																				<div
 																					key={edu.id}
 																					className='flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs'>
 																					<div className='flex flex-wrap items-center gap-1.5'>
-																						{span ?
+																						{hasEduSpan ?
 																							<span className='shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold'>
-																								{span}
+																								<ProfileDateSpanText
+																									startDate={edu.startDate}
+																									endDate={edu.endDate}
+																									isCurrent={edu.isCurrent}
+																									isEducation
+																								/>
 																							</span>
 																						:	null}
 																						{edu.orgProfileId ?
@@ -7124,7 +7407,7 @@ export default function ProfilesClient({
 																		const peerName = isOut ? l.toName : l.fromName;
 																		const evStart = l.startDate || l.peerStartDate || null;
 																		const evEnd = l.endDate || l.peerEndDate || null;
-																		const dateSpan = formatDateSpan(evStart, evEnd, false, false);
+																		const hasDateSpan = Boolean(formatDateSpan(evStart, evEnd, false, false));
 																		return (
 																			<button
 																				key={l.id}
@@ -7132,9 +7415,9 @@ export default function ProfilesClient({
 																				onClick={() => jumpToProfile(peerId)}
 																				className='block w-full cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 text-left transition hover:border-[#F97316]/60 hover:bg-[var(--app-surface-hover)]'>
 																				<div className='flex flex-wrap items-center gap-2'>
-																					{dateSpan ?
+																					{hasDateSpan ?
 																						<span className='shrink-0 rounded border border-amber-500/35 bg-amber-500/12 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-800 dark:text-amber-200'>
-																							{dateSpan}
+																							<ProfileDateSpanText startDate={evStart} endDate={evEnd} isCurrent={false} />
 																						</span>
 																					:	null}
 																					<span className='text-xs font-semibold text-[#F97316] underline'>{peerName}</span>
@@ -7230,13 +7513,17 @@ export default function ProfilesClient({
 																			const peerId = isOut ? l.toProfileId : l.fromProfileId;
 																			const peerName = isOut ? l.toName : l.fromName;
 																			const peerType = (isOut ? l.toType : l.fromType) || 'firm';
-																			const dateSpan = formatDateSpan(
-																				l.startDate,
-																				l.endDate,
+																			const connIsCurrent =
 																				connStatus === 'current' ? true
 																				: connStatus === 'old' ? false
-																				: null,
-																				peerType === 'education',
+																				: null;
+																			const hasConnDateSpan = Boolean(
+																				formatDateSpan(
+																					l.startDate,
+																					l.endDate,
+																					connIsCurrent,
+																					peerType === 'education',
+																				),
 																			);
 																			const roleClean = l.roleLabel && !/^(?:current|previous)\s+registration$/i.test(l.roleLabel.trim()) ? l.roleLabel.trim() : null;
 																			const relNote = scrubEvidenceNoteSourceTags(l.evidenceNote);
@@ -7257,7 +7544,7 @@ export default function ProfilesClient({
 																					}>
 																					<div className='flex flex-wrap items-center justify-between gap-2'>
 																						<div className='flex flex-wrap items-center gap-1.5'>
-																							{dateSpan ?
+																							{hasConnDateSpan ?
 																								<span
 																									className={
 																										connStatus === 'current' ? EMP_CHIP_CURRENT
@@ -7265,7 +7552,12 @@ export default function ProfilesClient({
 																											EMP_CHIP_PREVIOUS
 																										:	'shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold'
 																									}>
-																									{dateSpan}
+																									<ProfileDateSpanText
+																										startDate={l.startDate}
+																										endDate={l.endDate}
+																										isCurrent={connIsCurrent}
+																										isEducation={peerType === 'education'}
+																									/>
 																								</span>
 																							:	null}
 																							{connStatus === 'old' ?
@@ -7351,8 +7643,8 @@ export default function ProfilesClient({
 																const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
 																const y =
 																	resolved && /^\d{4}/.test(resolved) ? resolved.slice(0, 4)
-																	: resolved && /\b((?:18|19|20)\d{2})\b/.test(resolved) ?
-																		(resolved.match(/\b((?:18|19|20)\d{2})\b/) || [])[1]
+																	: resolved && /\b((?:1[6-9]|20)\d{2})\b/.test(resolved) ?
+																		(resolved.match(/\b((?:1[6-9]|20)\d{2})\b/) || [])[1]
 																	:	'Undated';
 																const list = byYear.get(y) || [];
 																list.push({ ...entry, eventDate: resolved === 'Undated' ? entry.eventDate : resolved });
@@ -7545,7 +7837,7 @@ export default function ProfilesClient({
 																value={obsDate}
 																onChange={(e) => setObsDate(e.target.value)}
 																placeholder={DATE_INPUT_PLACEHOLDER}
-																title='Examples: 10-19-1983 or 10191983'
+																title={DATE_INPUT_TITLE}
 																onBlur={(e) => {
 																	const next = formatDateDraftOnBlur(e.target.value);
 																	if (next !== e.target.value) setObsDate(next);

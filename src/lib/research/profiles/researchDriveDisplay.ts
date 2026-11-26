@@ -148,9 +148,23 @@ export function formatResearchDriveTimelineEntry(opts: {
 
 	const ocr = extractResearchDriveOcrText(summary || title);
 	const keyword = keywordTitleFromResearchDriveOcr(ocr, title);
+	// Prefer folder citation (research-drive/Personal) over raw IMG_ / Screenshot filenames.
+	let body = ocr || summary;
+	body = body
+		.replace(
+			/\bResearch Drive:\s*((?:Personal|Family|Landlord|geology|Land)(?:\/[^\s,;]+)?)\s*\/?\s*IMG[_\s-]?\d+[^\n.]*/gi,
+			(_m, folder: string) => `research-drive/${String(folder).replace(/^research-drive\//i, '')}`,
+		)
+		.replace(
+			/\b(?:Source|Sources):\s*(?:Research Drive\s+)?(?:Personal\/)?IMG[_\s-]?\d+(?:\s*[\/,–—-]\s*(?:IMG[_\s-]?\d+)*)*/gi,
+			'Source: research-drive/Personal',
+		)
+		.replace(/\bPersonal\/IMG[_\s-]?\d+\.[A-Za-z0-9]+/gi, 'research-drive/Personal')
+		.replace(/\bFamily\/[^\s,;]*IMG[_\s-]?\d+[^\s,;]*/gi, 'research-drive/Family')
+		.trim();
 	return {
 		title: keyword,
-		summary: ocr || summary,
+		summary: body,
 		isResearchDrive: true,
 	};
 }

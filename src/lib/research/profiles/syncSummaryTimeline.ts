@@ -10,7 +10,7 @@ const HEADING_RE = /^#{1,3}\s+(.+)$/;
 const BULLET_RE = /^[-*•]\s+(.+)$/;
 /** Same family of date labels as ProfilesClient SUMMARY_DATED_BULLET_RE (server-side). */
 const DATED_BULLET_RE =
-	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:18|19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:18|19|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:18|19|20)\d{2}|(?:18|19|20)\d{2}-\d{2}|\d{2}-(?:18|19|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|present|Present)|(?:18|19|20)\d{2}\s*[–—-]\s*(?:(?:18|19|20)\d{2}|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?|(?:18|19|20)\d{2}\+|(?:18|19|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:1[6-9]|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:1[6-9]|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:1[6-9]|20)\d{2}|(?:1[6-9]|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:1[6-9]|20)\d{2}|(?:1[6-9]|20)\d{2}-\d{2}(?:-\d{2})?\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}-\d{2}(?:-\d{2})?|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?|present|Present)|(?:1[6-9]|20)\d{2}\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}|present|Present)|(?:1[6-9]|20)\d{2}-\d{2}|\d{2}-(?:1[6-9]|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?|(?:1[6-9]|20)\d{2}\+|(?:1[6-9]|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
 
 const MONTH_INDEX: Record<string, string> = {
 	jan: '01',
@@ -93,7 +93,7 @@ export function parseTimelineDateLabel(raw: string): {
 	}
 
 	const decadeRange = s.match(
-		/^(?:(?:Late|Early|Mid)(?:-|\s+))?((?:18|19|20)\d)0s\s*[–—-]\s*(?:(?:Late|Early|Mid)(?:-|\s+))?((?:18|19|20)\d)0s$/i,
+		/^(?:(?:Late|Early|Mid)(?:-|\s+))?((?:1[6-9]|20)\d)0s\s*[–—-]\s*(?:(?:Late|Early|Mid)(?:-|\s+))?((?:1[6-9]|20)\d)0s$/i,
 	);
 	if (decadeRange) {
 		const start = `${decadeRange[1]}0`;
@@ -101,14 +101,14 @@ export function parseTimelineDateLabel(raw: string): {
 		return { eventDate: start, endDate: end };
 	}
 
-	const decade = s.match(/^(?:(?:Late|Early|Mid)(?:-|\s+))?((?:18|19|20)\d)0s$/i);
+	const decade = s.match(/^(?:(?:Late|Early|Mid)(?:-|\s+))?((?:1[6-9]|20)\d)0s$/i);
 	if (decade) {
 		const y = `${decade[1]}0`;
 		return { eventDate: y, endDate: String(Number(y) + 9) };
 	}
 
 	const range = s.match(
-		/^(.+?)\s*[–—-]\s*(present|Present|(?:18|19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:18|19|20)\d{2}s?)$/i,
+		/^(.+?)\s*[–—-]\s*(present|Present|(?:1[6-9]|20)\d{2}(?:-\d{2}(?:-\d{2})?)?|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?)$/i,
 	);
 	if (range) {
 		const start = parseTimelineDateLabel(range[1]!).eventDate;
@@ -118,7 +118,7 @@ export function parseTimelineDateLabel(raw: string): {
 	}
 
 	const monthDay = s.match(
-		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+((?:18|19|20)\d{2})$/i,
+		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+((?:1[6-9]|20)\d{2})$/i,
 	);
 	if (monthDay) {
 		const mm = MONTH_INDEX[monthDay[1]!.toLowerCase().replace(/\.$/, '')];
@@ -131,14 +131,14 @@ export function parseTimelineDateLabel(raw: string): {
 	}
 
 	const monthYear = s.match(
-		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:18|19|20)\d{2})$/i,
+		/^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:1[6-9]|20)\d{2})$/i,
 	);
 	if (monthYear) {
 		const mm = MONTH_INDEX[monthYear[1]!.toLowerCase().replace(/\.$/, '')];
 		if (mm) return { eventDate: `${monthYear[2]}-${mm}`, endDate: null };
 	}
 
-	const season = s.match(/^(Spring|Summer|Fall|Autumn|Winter)\s+((?:18|19|20)\d{2})$/i);
+	const season = s.match(/^(Spring|Summer|Fall|Autumn|Winter)\s+((?:1[6-9]|20)\d{2})$/i);
 	if (season) {
 		const mm =
 			/spring/i.test(season[1]!) ? '03'
@@ -444,10 +444,94 @@ export type ReorderSummaryTimelineResult = {
 	error?: string;
 };
 
+type TimelineBlock = {
+	lines: string[];
+	sortKey: number;
+	dated: boolean;
+	origIndex: number;
+};
+
+function isDatedBulletContent(content: string): {
+	dated: boolean;
+	sortKey: number;
+	rawDateLabel: string;
+} {
+	const dated = content.match(DATED_BULLET_RE);
+	if (!dated) return { dated: false, sortKey: -1, rawDateLabel: '' };
+	const rawDateLabel = stripMd(dated[1] || '');
+	const { eventDate, endDate } = parseTimelineDateLabel(rawDateLabel);
+	return {
+		dated: true,
+		sortKey: timelineDateSortKey(eventDate, endDate, rawDateLabel),
+		rawDateLabel,
+	};
+}
+
 /**
- * Deterministically rewrite ## Timeline (etc.) dated bullets newest-first.
+ * Split a section body into chronology blocks: each dated/undated bullet plus the
+ * following prose until the next bullet or heading. Preserves `* YYYY: title` +
+ * paragraph layouts used outside a formal ## Timeline heading.
+ */
+function splitTimelineBlocks(body: string[]): TimelineBlock[] {
+	const blocks: TimelineBlock[] = [];
+	let i = 0;
+	while (i < body.length) {
+		const trimmed = body[i]!.trim();
+		if (!BULLET_RE.test(trimmed)) {
+			i += 1;
+			continue;
+		}
+		const start = i;
+		i += 1;
+		while (i < body.length) {
+			const t = body[i]!.trim();
+			if (BULLET_RE.test(t) || HEADING_RE.test(t)) break;
+			i += 1;
+		}
+		const blockLines = body.slice(start, i);
+		const content = blockLines[0]!.trim().match(BULLET_RE)![1]!.trim();
+		const parsed = isDatedBulletContent(content);
+		blocks.push({
+			lines: blockLines,
+			sortKey: parsed.sortKey,
+			dated: parsed.dated,
+			origIndex: start,
+		});
+	}
+	return blocks;
+}
+
+function findImplicitChronologySpan(lines: string[]): TimelineSectionSpan | null {
+	const bulletIndexes: number[] = [];
+	let dated = 0;
+	for (let i = 0; i < lines.length; i++) {
+		const trimmed = lines[i]!.trim();
+		const m = trimmed.match(BULLET_RE);
+		if (!m) continue;
+		bulletIndexes.push(i);
+		if (isDatedBulletContent(m[1]!.trim()).dated) dated += 1;
+	}
+	if (bulletIndexes.length < 2 || dated < 2) return null;
+	// Require a chronology-like doc: most bullets carry parseable dates.
+	if (dated / bulletIndexes.length < 0.6) return null;
+	const first = bulletIndexes[0]!;
+	const last = bulletIndexes[bulletIndexes.length - 1]!;
+	// Include prose after the last bullet until EOF / next heading.
+	let bodyEnd = lines.length;
+	for (let i = last + 1; i < lines.length; i++) {
+		if (HEADING_RE.test(lines[i]!.trim())) {
+			bodyEnd = i;
+			break;
+		}
+	}
+	return { headingLineIndex: -1, bodyStart: first, bodyEnd };
+}
+
+/**
+ * Deterministically rewrite chronology sections newest-first.
+ * Handles ## Timeline headings and implicit `* YYYY: …` chronologies (with
+ * following prose kept attached to each dated bullet).
  * Undated bullets stay after dated ones (stable among themselves).
- * Leading/trailing prose inside the section is preserved in place.
  */
 export function reorderSummaryTimelineNewestFirst(summary: string): ReorderSummaryTimelineResult {
 	const src = String(summary || '');
@@ -462,7 +546,11 @@ export function reorderSummaryTimelineNewestFirst(summary: string): ReorderSumma
 	}
 
 	const lines = src.split(/\n/);
-	const spans = findTimelineSectionSpans(lines);
+	let spans = findTimelineSectionSpans(lines);
+	if (!spans.length) {
+		const implicit = findImplicitChronologySpan(lines);
+		if (implicit) spans = [implicit];
+	}
 	if (!spans.length) {
 		return {
 			summary: src,
@@ -481,64 +569,30 @@ export function reorderSummaryTimelineNewestFirst(summary: string): ReorderSumma
 	for (let si = spans.length - 1; si >= 0; si--) {
 		const span = spans[si]!;
 		const body = lines.slice(span.bodyStart, span.bodyEnd);
+		const blocks = splitTimelineBlocks(body);
+		if (blocks.length < 2) continue;
 
-		type BulletRow = {
-			line: string;
-			sortKey: number;
-			dated: boolean;
-			origIndex: number;
-		};
+		const datedBlocks = blocks.filter((b) => b.dated);
+		if (datedBlocks.length < 2) continue;
+		totalDated += datedBlocks.length;
 
-		const bulletIndexes: number[] = [];
-		for (let bi = 0; bi < body.length; bi++) {
-			if (BULLET_RE.test(body[bi]!.trim())) bulletIndexes.push(bi);
-		}
-		if (bulletIndexes.length < 2) continue;
-
-		const firstBullet = bulletIndexes[0]!;
-		const lastBullet = bulletIndexes[bulletIndexes.length - 1]!;
+		const firstBullet = blocks[0]!.origIndex;
+		const lastBlock = blocks[blocks.length - 1]!;
+		const lastBulletEnd = lastBlock.origIndex + lastBlock.lines.length;
 		const leading = body.slice(0, firstBullet);
-		const trailing = body.slice(lastBullet + 1);
-		const bullets: BulletRow[] = [];
+		const trailing = body.slice(lastBulletEnd);
 
-		for (const bi of bulletIndexes) {
-			const rawLine = body[bi]!;
-			const content = rawLine.trim().match(BULLET_RE)![1]!.trim();
-			const dated = content.match(DATED_BULLET_RE);
-			if (dated) {
-				const rawDateLabel = stripMd(dated[1] || '');
-				const { eventDate, endDate } = parseTimelineDateLabel(rawDateLabel);
-				bullets.push({
-					line: rawLine,
-					sortKey: timelineDateSortKey(eventDate, endDate, rawDateLabel),
-					dated: true,
-					origIndex: bi,
-				});
-				totalDated += 1;
-			} else {
-				bullets.push({
-					line: rawLine,
-					sortKey: -1,
-					dated: false,
-					origIndex: bi,
-				});
-			}
-		}
-
-		const datedBullets = bullets.filter((b) => b.dated);
-		if (datedBullets.length < 2) continue;
-
-		const sorted = [...bullets].sort((a, b) => {
+		const sorted = [...blocks].sort((a, b) => {
 			if (a.dated !== b.dated) return a.dated ? -1 : 1;
 			if (b.sortKey !== a.sortKey) return b.sortKey - a.sortKey;
 			return a.origIndex - b.origIndex;
 		});
 
-		const sameOrder = sorted.every((b, i) => b.origIndex === bullets[i]!.origIndex);
+		const sameOrder = sorted.every((b, i) => b.origIndex === blocks[i]!.origIndex);
 		if (sameOrder) continue;
 
 		anyChanged = true;
-		const rebuilt = [...leading, ...sorted.map((b) => b.line), ...trailing];
+		const rebuilt = [...leading, ...sorted.flatMap((b) => b.lines), ...trailing];
 		out.splice(span.bodyStart, span.bodyEnd - span.bodyStart, ...rebuilt);
 	}
 
@@ -578,13 +632,13 @@ export function timelineNeedsOllamaReorder(summary: string): boolean {
 				if (content.match(DATED_BULLET_RE)) dated += 1;
 				else {
 					undatedBullets += 1;
-					if (/\b(?:18|19|20)\d{2}\b/.test(content)) yearMentions += 1;
+					if (/\b(?:1[6-9]|20)\d{2}\b/.test(content)) yearMentions += 1;
 				}
 				continue;
 			}
 			if (!HEADING_RE.test(trimmed)) {
 				proseChars += trimmed.length;
-				if (/\b(?:18|19|20)\d{2}\b/.test(trimmed)) yearMentions += 1;
+				if (/\b(?:1[6-9]|20)\d{2}\b/.test(trimmed)) yearMentions += 1;
 			}
 		}
 		// Prose-heavy or undated bullets that still mention years → Ollama.
@@ -711,8 +765,177 @@ ${src.slice(0, 12000)}`,
 	}
 }
 
+const INLINE_CLAIM_DATE_RE =
+	/(January|February|March|April|May|June|July|August|September|October|November|December|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:1[6-9]|20)\d{2}/gi;
+
+/**
+ * Turn pasted prose chronologies like
+ * `March 12, 2026 — Title (details)   August 7, 2024 — …`
+ * into a `## Timeline` section with `* DATE: Title` bullets (details as following prose).
+ * Skips matches already on dated bullet lines.
+ */
+export function promoteInlineDatedClaimsToTimeline(summary: string): ReorderSummaryTimelineResult {
+	const src = String(summary || '');
+	if (!src.trim()) {
+		return { summary: src, changed: false, method: 'none', datedCount: 0, alreadySorted: true };
+	}
+
+	type Claim = { date: string; title: string; detail: string; start: number; end: number };
+	const starts: Array<{ index: number; date: string; bodyStart: number }> = [];
+	const starter = new RegExp(
+		`(${INLINE_CLAIM_DATE_RE.source})\\s*[—–-]\\s*`,
+		'gi',
+	);
+	let m: RegExpExecArray | null;
+	while ((m = starter.exec(src))) {
+		const absIndex = m.index;
+		const lineStart = src.lastIndexOf('\n', absIndex) + 1;
+		const prefix = src.slice(lineStart, absIndex);
+		// Already a markdown bullet / numbered chronology line — leave alone.
+		if (/^\s*(?:[-*•]|\d+[.)])\s+/.test(prefix) || /\*\*.*[—–:]/.test(prefix)) continue;
+		starts.push({
+			index: absIndex,
+			date: stripMd(m[1] || '').replace(/\s+/g, ' ').trim(),
+			bodyStart: absIndex + m[0].length,
+		});
+	}
+	if (starts.length < 2) {
+		return { summary: src, changed: false, method: 'none', datedCount: 0, alreadySorted: true };
+	}
+
+	const claims: Claim[] = [];
+	for (let i = 0; i < starts.length; i++) {
+		const cur = starts[i]!;
+		const nextStart = i + 1 < starts.length ? starts[i + 1]!.index : src.length;
+		let endLimit = nextStart;
+		const slice = src.slice(cur.bodyStart, nextStart);
+		const stop = slice.search(/\n\s*\n|\n(?=\s*Sources\b|\s*#{1,3}\s+)/i);
+		if (stop >= 0) endLimit = cur.bodyStart + stop;
+		let body = src.slice(cur.bodyStart, endLimit).trim();
+		// Trim trailing separators / whitespace left from the run.
+		body = body.replace(/\s+/g, ' ').trim();
+		if (!body) continue;
+		let title = body;
+		let detail = '';
+		const paren = body.match(/^(.+?)\s*\((.+)\)\s*$/);
+		if (paren && paren[1]!.length >= 8) {
+			title = paren[1]!.trim();
+			detail = paren[2]!.trim();
+		} else {
+			title = titleFromBody(body);
+			if (title.length < body.length) {
+				detail = body.slice(title.length).replace(/^[\s.:—–-]+/, '').trim();
+			}
+		}
+		claims.push({
+			date: cur.date,
+			title: title.slice(0, 160),
+			detail,
+			start: cur.index,
+			end: endLimit,
+		});
+	}
+	if (claims.length < 2) {
+		return { summary: src, changed: false, method: 'none', datedCount: 0, alreadySorted: true };
+	}
+
+	// Prefer one contiguous run (≥2 claims with only whitespace between).
+	type Run = { claims: Claim[]; start: number; end: number };
+	const runs: Run[] = [];
+	let run: Claim[] = [claims[0]!];
+	for (let i = 1; i < claims.length; i++) {
+		const prev = claims[i - 1]!;
+		const cur = claims[i]!;
+		const gap = src.slice(prev.end, cur.start);
+		if (/^[\s]*$/.test(gap)) {
+			run.push(cur);
+		} else {
+			if (run.length >= 2) {
+				runs.push({ claims: run, start: run[0]!.start, end: run[run.length - 1]!.end });
+			}
+			run = [cur];
+		}
+	}
+	if (run.length >= 2) {
+		runs.push({ claims: run, start: run[0]!.start, end: run[run.length - 1]!.end });
+	}
+	if (!runs.length) {
+		return { summary: src, changed: false, method: 'none', datedCount: 0, alreadySorted: true };
+	}
+	runs.sort((a, b) => b.claims.length - a.claims.length || a.start - b.start);
+	const best = runs[0]!;
+
+	const bulletLines: string[] = [];
+	for (const c of best.claims) {
+		bulletLines.push(`* ${c.date}: ${c.title}`);
+		if (c.detail) bulletLines.push(c.detail);
+		bulletLines.push('');
+	}
+	while (bulletLines.length && bulletLines[bulletLines.length - 1] === '') bulletLines.pop();
+
+	const before = src.slice(0, best.start).replace(/\s+$/, '');
+	const after = src.slice(best.end).replace(/^\s+/, '');
+
+	const hasTimelineHeading = /^#{1,3}\s+.*\b(timeline|chronolog|milestones?|key dates)\b/im.test(
+		`${before}\n${after}`,
+	);
+
+	let next: string;
+	if (hasTimelineHeading) {
+		// Insert bullets immediately after the first timeline-like heading in `before`, else prepend section.
+		const beforeLines = before.split(/\n/);
+		let insertAt = -1;
+		for (let i = 0; i < beforeLines.length; i++) {
+			const h = beforeLines[i]!.trim().match(HEADING_RE);
+			if (h && TIMELINE_HEADING_TITLE_RE.test(stripMd(h[1] || ''))) {
+				insertAt = i + 1;
+				break;
+			}
+		}
+		if (insertAt >= 0) {
+			beforeLines.splice(insertAt, 0, '', ...bulletLines, '');
+			next = `${beforeLines.join('\n').replace(/\s+$/, '')}${after ? `\n\n${after}` : ''}`.trim() + '\n';
+		} else {
+			next = `${before}\n\n## Timeline\n\n${bulletLines.join('\n')}${after ? `\n\n${after}` : ''}\n`;
+		}
+	} else {
+		// Place Timeline before Sources / next ## heading / end.
+		const afterMatch = after.match(/^(Sources\b.*)$/im);
+		const nextHeading = after.match(/^(#{1,3}\s+.+)$/m);
+		if (afterMatch && afterMatch.index != null) {
+			const head = after.slice(0, afterMatch.index).replace(/\s+$/, '');
+			const tail = after.slice(afterMatch.index);
+			next =
+				`${before}${head ? `\n\n${head}` : ''}\n\n## Timeline\n\n${bulletLines.join('\n')}\n\n${tail}`.trim() +
+				'\n';
+		} else if (nextHeading && nextHeading.index === 0) {
+			next = `${before}\n\n## Timeline\n\n${bulletLines.join('\n')}\n\n${after}`.trim() + '\n';
+		} else if (nextHeading && nextHeading.index != null) {
+			const head = after.slice(0, nextHeading.index).replace(/\s+$/, '');
+			const tail = after.slice(nextHeading.index);
+			next =
+				`${before}${head ? `\n\n${head}` : ''}\n\n## Timeline\n\n${bulletLines.join('\n')}\n\n${tail}`.trim() +
+				'\n';
+		} else {
+			next = `${before}\n\n## Timeline\n\n${bulletLines.join('\n')}${after ? `\n\n${after}` : ''}\n`;
+		}
+	}
+
+	if (next === src) {
+		return { summary: src, changed: false, method: 'none', datedCount: best.claims.length, alreadySorted: true };
+	}
+	return {
+		summary: next,
+		changed: true,
+		method: 'deterministic',
+		datedCount: best.claims.length,
+		alreadySorted: false,
+	};
+}
+
 /**
  * Ensure Overview Timeline content is newest-first:
+ * 0) Promote pasted “Month Day, Year — claim” prose runs into ## Timeline bullets.
  * 1) Deterministic bullet sort when ≥2 dated bullets parse.
  * 2) Ollama rewrite when the section is prose-only / ambiguous (optional).
  */
@@ -720,9 +943,16 @@ export async function ensureSummaryTimelineNewestFirst(
 	summary: string,
 	options: { useOllama?: boolean; model?: string } = {},
 ): Promise<ReorderSummaryTimelineResult> {
-	const deterministic = reorderSummaryTimelineNewestFirst(summary);
-	if (deterministic.changed) {
-		return deterministic;
+	const promoted = promoteInlineDatedClaimsToTimeline(summary);
+	const deterministic = reorderSummaryTimelineNewestFirst(promoted.summary);
+	if (promoted.changed || deterministic.changed) {
+		return {
+			summary: deterministic.summary,
+			changed: true,
+			method: 'deterministic',
+			datedCount: Math.max(deterministic.datedCount, promoted.datedCount),
+			alreadySorted: deterministic.alreadySorted && !promoted.changed,
+		};
 	}
 
 	const useOllama = options.useOllama !== false;

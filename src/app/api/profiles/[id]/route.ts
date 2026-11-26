@@ -221,6 +221,8 @@ export async function PATCH(request: Request, context: Ctx) {
 				'okcr_instrument',
 				'source_id',
 				'url',
+				'us_passport',
+				'driver_license',
 			];
 			if (!value || !allowed.includes(scheme)) {
 				return NextResponse.json(

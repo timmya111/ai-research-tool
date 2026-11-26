@@ -56,7 +56,11 @@ export type IdentifierScheme =
 	| 'dossier_slug'
 	| 'okcr_instrument'
 	| 'source_id'
-	| 'url';
+	| 'url'
+	/** U.S. passport book number (e.g. A04768849). */
+	| 'us_passport'
+	/** State driver license / ID number (store digits/letters only; note state in summary). */
+	| 'driver_license'
 
 export type LocationRole =
 	| 'hq'
