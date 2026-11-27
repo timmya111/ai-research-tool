@@ -369,3 +369,7 @@ See `.env.example` for the full list. Common ones:
 - OKCR results-table legals can end with `N more…`; enrich with `pnpm okcr:enrich-legals` or open the instrument detail page.
 - News RSS digests (`pnpm news:rss*`) land in knowledge projects you can select in chat, then ask the model to promote people/orgs into Profiles.
 - Long-running jobs may use wrappers under `~/.grok/long-running-background-tasks/` (optional; not required for a fresh clone).
+
+## Further reading
+
+- [Knowledge store design](https://github.com/timmya111/ai-research-tool/blob/main/docs/knowledge-store-design.md) — SQLite RAG layout, ingest, search, and API (`docs/knowledge-store-design.md`)
