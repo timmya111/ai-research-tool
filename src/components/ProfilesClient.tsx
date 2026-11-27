@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import AlignmentEvidenceList from '@/components/AlignmentEvidenceList';
 import { FinraDisclosuresPanel } from '@/components/FinraDisclosuresPanel';
 import { ProfileTimelineCareerView } from '@/components/ProfileTimelineCareerView';
@@ -1993,6 +1993,276 @@ function styleResearchDriveCitationsInHtml(html: string): string {
 	);
 }
 
+type ProfileHighlightMatcher = {
+	regex: RegExp;
+	exactCaseTerms: Set<string>;
+	peerRegex: RegExp | null;
+	peerExactCaseTerms: Set<string>;
+};
+
+const ProfileHighlightContext = createContext<ProfileHighlightMatcher | null>(null);
+
+const HIGHLIGHT_STOP_TERMS = new Set([
+	'the', 'and', 'inc', 'llc', 'corp', 'ltd', 'bank', 'company', 'group', 'trust',
+	'partners', 'holdings', 'financial', 'capital', 'services', 'management', 'fund',
+	'state', 'united states', 'america', 'american', 'national', 'federal', 'general',
+	'first', 'public', 'us', 'uk', 'ok', 'tx', 'ca', 'ny', 'co', 'na', 'pc', 'lp', 'llp',
+]);
+
+/** Section-Township-Range PLSS land area descriptors (e.g., "S24 T2S R10E NE", "S07 T2S R10E SW SW SE Partial"). */
+const PLSS_LAND_AREA_RE =
+	/\b(?:S\d{1,2}\s+T\d{1,2}[NS]?\s+R\d{1,2}[EW]?(?:\s+(?:NE|NW|SE|SW|N2|S2|E2|W2|NE4|NW4|SE4|SW4|Partial)){0,6}|(?:NE4|NW4|SE4|SW4|N2|S2|E2|W2)(?:\s+(?:NE4|NW4|SE4|SW4|N2|S2|E2|W2)){0,3}\s+S\d{1,2}\s+T\d{1,2}[NS]?\s+R\d{1,2}[EW]?)\b/gi;
+
+function escapeRegExpChars(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildProfileHighlightMatcher(detail: ProfileDetail | null): ProfileHighlightMatcher | null {
+	if (!detail?.profile?.name) return null;
+	const terms = new Map<string, { pattern: string; length: number; exactCase: boolean; raw: string }>();
+
+	const addTermInto = (
+		target: Map<string, { pattern: string; length: number; exactCase: boolean; raw: string }>,
+		raw: string,
+		opts?: { exactCase?: boolean; minLen?: number },
+	) => {
+		const clean = String(raw || '')
+			.replace(/\s*\([^)]*\)\s*/g, ' ')
+			.replace(/[,;:\s]+$/g, '')
+			.replace(/\s+/g, ' ')
+			.trim();
+		if (!clean || clean.length < 2) return;
+		const low = clean.toLowerCase();
+		if (HIGHLIGHT_STOP_TERMS.has(low)) return;
+		const exactCase = Boolean(opts?.exactCase || (clean.length <= 3 && !clean.includes(' ')));
+		if (exactCase && !/^[A-Z0-9&.-]{2,6}$/.test(clean)) return;
+		if (!exactCase && clean.length < (opts?.minLen ?? 4)) return;
+		const words = clean.split(/[\s,]+/).filter(Boolean);
+		if (words.length === 0) return;
+		const pattern = words.map((w) => escapeRegExpChars(w)).join('[\\s,]+');
+		const key = exactCase ? `EXACT:${clean}` : `CI:${low}`;
+		if (!target.has(key)) {
+			target.set(key, { pattern, length: clean.length, exactCase, raw: clean });
+		}
+	};
+
+	const addTerm = (raw: string, opts?: { exactCase?: boolean }) => addTermInto(terms, raw, opts);
+
+	addTerm(detail.profile.name);
+	const stripped = detail.profile.name
+		.replace(
+			/,?\s+\b(?:incorporated|inc\.?|l\.?l\.?c\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?p\.?|l\.?p\.?|p\.?l\.?l\.?c\.?|p\.?c\.?|p\.?l\.?c\.?|n\.?a\.?|co\.?|company)\s*$/i,
+			'',
+		)
+		.trim();
+	if (stripped && stripped.length >= 4 && stripped.toLowerCase() !== detail.profile.name.toLowerCase()) {
+		addTerm(stripped);
+	}
+
+	const allowedAliasKinds = new Set(['name', 'other_name', 'former_name', 'formerly', 'aka', 'legal_name', 'acronym', 'ticker']);
+	for (const a of detail.aliases || []) {
+		const kind = String(a.aliasKind || 'name').toLowerCase();
+		if (!allowedAliasKinds.has(kind)) continue;
+		const val = String(a.alias || '').trim();
+		if (!val) continue;
+		const isCode = kind === 'ticker' || kind === 'acronym';
+		const normalizedCode = isCode && val.includes(':') ? val.split(':').pop()!.trim() : val;
+		addTerm(normalizedCode, { exactCase: isCode && normalizedCode.length <= 3 });
+	}
+
+	for (const ident of detail.identifiers || []) {
+		if (String(ident.scheme || '').toLowerCase() !== 'ticker') continue;
+		const rawVal = String(ident.value || '').trim();
+		const sym = rawVal.includes(':') ? rawVal.split(':').pop()!.trim() : rawVal;
+		if (sym) addTerm(sym, { exactCase: sym.length <= 3 });
+	}
+
+	if (terms.size === 0) return null;
+	const sorted = [...terms.values()].sort((a, b) => b.length - a.length);
+	const exactCaseTerms = new Set(sorted.filter((t) => t.exactCase).map((t) => t.raw));
+	const union = sorted.map((t) => t.pattern).join('|');
+
+	// Also build secondary highlight matcher for connected peer profiles (capped at 60 distinctive names)
+	const peerTerms = new Map<string, { pattern: string; length: number; exactCase: boolean; raw: string }>();
+	for (const l of (detail.links || []).slice(0, 80)) {
+		const isOut = l.fromProfileId === detail.profile.id;
+		const peerName = String(isOut ? l.toName : l.fromName || '').trim();
+		if (!peerName || peerName.length < 5) continue;
+		const peerLow = peerName.toLowerCase();
+		if (terms.has(`CI:${peerLow}`)) continue;
+		addTermInto(peerTerms, peerName, { minLen: 5 });
+		const peerStripped = peerName
+			.replace(
+				/,?\s+\b(?:incorporated|inc\.?|l\.?l\.?c\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?p\.?|l\.?p\.?|p\.?l\.?l\.?c\.?|p\.?c\.?|p\.?l\.?c\.?|n\.?a\.?|co\.?|company)\s*$/i,
+				'',
+			)
+			.trim();
+		if (peerStripped.length >= 6 && peerStripped.includes(' ') && !terms.has(`CI:${peerStripped.toLowerCase()}`)) {
+			addTermInto(peerTerms, peerStripped, { minLen: 6 });
+		}
+		if (peerTerms.size >= 60) break;
+	}
+	const peerSorted = [...peerTerms.values()].sort((a, b) => b.length - a.length);
+	const peerExactCaseTerms = new Set(peerSorted.filter((t) => t.exactCase).map((t) => t.raw));
+	let peerRegex: RegExp | null = null;
+	if (peerSorted.length > 0) {
+		try {
+			peerRegex = new RegExp(`(?<![A-Za-z0-9])(?:${peerSorted.map((t) => t.pattern).join('|')})(?![A-Za-z0-9])`, 'gi');
+		} catch {
+			peerRegex = null;
+		}
+	}
+
+	try {
+		return {
+			regex: new RegExp(`(?<![A-Za-z0-9])(?:${union})(?![A-Za-z0-9])`, 'gi'),
+			exactCaseTerms,
+			peerRegex,
+			peerExactCaseTerms,
+		};
+	} catch {
+		return null;
+	}
+}
+
+function textMatchesActiveProfile(text: string, matcher: ProfileHighlightMatcher | null): boolean {
+	if (!text || !matcher) return false;
+	matcher.regex.lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = matcher.regex.exec(text))) {
+		const matched = m[0];
+		if (matched.length <= 3 && !matcher.exactCaseTerms.has(matched)) {
+			if (m.index === matcher.regex.lastIndex) matcher.regex.lastIndex += 1;
+			continue;
+		}
+		return true;
+	}
+	return false;
+}
+
+function highlightProfileMatchesInHtml(html: string, matcher: ProfileHighlightMatcher | null): string {
+	if (!html || !matcher) return html;
+	const tokens = html.split(/(<[^>]+>)/g);
+	let insideAnchor = 0;
+	let insideMark = 0;
+	let insideCode = 0;
+	return tokens
+		.map((tok) => {
+			if (!tok) return tok;
+			if (tok.startsWith('<')) {
+				if (/^<a\b/i.test(tok)) insideAnchor += 1;
+				else if (/^<\/a>/i.test(tok)) insideAnchor = Math.max(0, insideAnchor - 1);
+				else if (/^<mark\b/i.test(tok)) insideMark += 1;
+				else if (/^<\/mark>/i.test(tok)) insideMark = Math.max(0, insideMark - 1);
+				else if (/^<code\b/i.test(tok)) insideCode += 1;
+				else if (/^<\/code>/i.test(tok)) insideCode = Math.max(0, insideCode - 1);
+				return tok;
+			}
+			if (insideAnchor > 0 || insideMark > 0 || insideCode > 0) return tok;
+
+			// 1. Highlight active profile name/alias/ticker in vivid amber/orange
+			matcher.regex.lastIndex = 0;
+			let out = tok.replace(matcher.regex, (matched) => {
+				if (matched.length <= 3 && !matcher.exactCaseTerms.has(matched)) return matched;
+				return `<mark style="background:rgba(249,115,22,0.34);color:#fef3c7;border:1px solid rgba(251,191,36,0.75);border-radius:4px;padding:0 4px;font-weight:700">${matched}</mark>`;
+			});
+
+			// 2. Highlight PLSS land area descriptors (e.g., S24 T2S R10E NE) in emerald mono chips
+			out = out
+				.split(/(<mark\b[^>]*>[\s\S]*?<\/mark>)/gi)
+				.map((seg) => {
+					if (!seg || /^<mark\b/i.test(seg)) return seg;
+					PLSS_LAND_AREA_RE.lastIndex = 0;
+					let sub = seg.replace(
+						PLSS_LAND_AREA_RE,
+						(area) =>
+							`<mark style="background:rgba(16,185,129,0.22);color:#a7f3d0;border:1px solid rgba(52,211,153,0.55);border-radius:4px;padding:0 4px;font-family:ui-monospace,monospace;font-style:normal;font-weight:600">${area}</mark>`,
+					);
+					// 3. Highlight connected peer profile names in sky-blue
+					if (matcher.peerRegex) {
+						sub = sub
+							.split(/(<mark\b[^>]*>[\s\S]*?<\/mark>)/gi)
+							.map((pSeg) => {
+								if (!pSeg || /^<mark\b/i.test(pSeg) || !matcher.peerRegex) return pSeg;
+								matcher.peerRegex.lastIndex = 0;
+								return pSeg.replace(matcher.peerRegex, (peerHit) => {
+									if (peerHit.length <= 3 && !matcher.peerExactCaseTerms.has(peerHit)) return peerHit;
+									return `<mark style="background:rgba(56,189,248,0.22);color:#bae6fd;border:1px solid rgba(56,189,248,0.55);border-radius:4px;padding:0 4px;font-weight:600">${peerHit}</mark>`;
+								});
+							})
+							.join('');
+					}
+					return sub;
+				})
+				.join('');
+			return out;
+		})
+		.join('');
+}
+
+function HighlightProfileText({ text, className }: { text: string; className?: string }) {
+	const matcher = useContext(ProfileHighlightContext);
+	if (!text) {
+		return className ? <span className={className}>{text}</span> : <>{text}</>;
+	}
+	const renderAreas = (chunk: string, keyPrefix: string): ReactNode => {
+		PLSS_LAND_AREA_RE.lastIndex = 0;
+		const areaParts: ReactNode[] = [];
+		let aLast = 0;
+		let am: RegExpExecArray | null;
+		let aHit = 0;
+		while ((am = PLSS_LAND_AREA_RE.exec(chunk))) {
+			if (am.index > aLast) areaParts.push(chunk.slice(aLast, am.index));
+			areaParts.push(
+				<mark
+					key={`${keyPrefix}-area-${aHit++}`}
+					className='rounded border border-emerald-500/55 bg-emerald-400/20 px-1 font-mono text-[11px] font-semibold text-emerald-900 dark:border-emerald-400/55 dark:bg-emerald-400/20 dark:text-emerald-200'>
+					{am[0]}
+				</mark>,
+			);
+			aLast = am.index + am[0].length;
+			if (aHit > 120) break;
+		}
+		if (aHit === 0) return chunk;
+		if (aLast < chunk.length) areaParts.push(chunk.slice(aLast));
+		return areaParts;
+	};
+	if (!matcher) {
+		const rendered = renderAreas(text, 'no-m');
+		return className ? <span className={className}>{rendered}</span> : <>{rendered}</>;
+	}
+	const parts: ReactNode[] = [];
+	matcher.regex.lastIndex = 0;
+	let lastIdx = 0;
+	let m: RegExpExecArray | null;
+	let hitIdx = 0;
+	while ((m = matcher.regex.exec(text))) {
+		const matched = m[0];
+		if (matched.length <= 3 && !matcher.exactCaseTerms.has(matched)) {
+			if (m.index === matcher.regex.lastIndex) matcher.regex.lastIndex += 1;
+			continue;
+		}
+		if (m.index > lastIdx) {
+			parts.push(renderAreas(text.slice(lastIdx, m.index), `pre-${hitIdx}`));
+		}
+		parts.push(
+			<mark
+				key={`hl-${hitIdx++}`}
+				className='rounded border border-amber-500/75 bg-amber-400/35 px-1 font-bold text-amber-950 dark:border-amber-400/75 dark:bg-[#F97316]/35 dark:text-amber-100'>
+				{matched}
+			</mark>,
+		);
+		lastIdx = m.index + matched.length;
+		if (hitIdx > 200) break;
+	}
+	if (hitIdx === 0) {
+		const rendered = renderAreas(text, 'tail');
+		return className ? <span className={className}>{rendered}</span> : <>{rendered}</>;
+	}
+	if (lastIdx < text.length) parts.push(renderAreas(text.slice(lastIdx), 'end'));
+	return className ? <span className={className}>{parts}</span> : <>{parts}</>;
+}
+
 function SummaryMarkdown({
 	text,
 	inline = false,
@@ -2002,9 +2272,11 @@ function SummaryMarkdown({
 	inline?: boolean;
 	className?: string;
 }) {
+	const highlightMatcher = useContext(ProfileHighlightContext);
 	// Do not auto-bold year/date tokens inside summary prose — timeline rail date
 	// chips already carry the date styling via summaryTimelineDateLabel.
-	const html = styleResearchDriveCitationsInHtml(summaryMarkdownToHtml(String(text || ''), { inline }));
+	const rawHtml = styleResearchDriveCitationsInHtml(summaryMarkdownToHtml(String(text || ''), { inline }));
+	const html = highlightProfileMatchesInHtml(rawHtml, highlightMatcher);
 	if (!html) return null;
 	if (inline) {
 		return (
@@ -2029,9 +2301,16 @@ function TimelineEntryMarkdown({
 	text: string;
 	className?: string;
 }) {
+	const highlightMatcher = useContext(ProfileHighlightContext);
 	const { body, citation } = splitTrailingResearchDriveCitation(text);
+	const isMatchedRow = textMatchesActiveProfile(body || text, highlightMatcher);
 	return (
-		<div className={className}>
+		<div
+			className={
+				isMatchedRow
+					? `${className ? `${className} ` : ''}rounded border-l-2 border-[#F97316]/75 bg-[#F97316]/[0.07] px-2 py-1`
+					: className
+			}>
 			{body ?
 				<SummaryMarkdown
 					text={body}
@@ -4482,6 +4761,8 @@ export default function ProfilesClient({
 			setMergingProfiles(false);
 		}
 	}
+
+	const profileHighlightMatcher = useMemo(() => buildProfileHighlightMatcher(detail), [detail]);
 
 	const loadGlobalAlignments = useCallback(async () => {
 		setLoadingGlobalAlign(true);
@@ -7371,7 +7652,8 @@ export default function ProfilesClient({
 								<p className='text-xs opacity-70'>Loading profile…</p>
 							: !detail ?
 								<p className='text-xs opacity-70'>Select a profile on the left to inspect its dossier, timeline gaps, and alignments.</p>
-							:	<div ref={detailTopRef}>
+							:	<ProfileHighlightContext.Provider value={profileHighlightMatcher}>
+								<div ref={detailTopRef}>
 									{/* Profile Header */}
 									<div className='flex flex-wrap items-start justify-between gap-2 border-b border-[var(--app-border)] pb-3'>
 										<div>
@@ -8158,7 +8440,7 @@ export default function ProfilesClient({
 												},
 												{
 													id: 'timeline' as const,
-													label: `Timeline (${detail.counts.timelineEntries})`,
+													label: `Timeline (${(timeline && timeline.profile.id === detail.profile.id ? timeline.totalEntries : detail.counts.timelineEntries).toLocaleString()})`,
 													show: detail.counts.timelineEntries > 0,
 												},
 												{
@@ -9416,7 +9698,9 @@ export default function ProfilesClient({
 																					:	null}
 																				</div>
 																				{cardDesc ?
-																					<p className='mt-1 mb-0 line-clamp-2 text-[11px] leading-relaxed opacity-80'>{cardDesc}</p>
+																					<p className='mt-1 mb-0 line-clamp-2 text-[11px] leading-relaxed opacity-80'>
+																						<HighlightProfileText text={cardDesc} />
+																					</p>
 																				:	null}
 																			</button>
 																		);
@@ -9522,7 +9806,9 @@ export default function ProfilesClient({
 																									{doc.dateIssued ?
 																										<span className='font-mono text-[10px] opacity-70'>{doc.dateIssued}</span>
 																									:	null}
-																									<span className='font-semibold'>{doc.title}</span>
+																									<span className='font-semibold'>
+																										<HighlightProfileText text={doc.title} />
+																									</span>
 																								</div>
 																								<div className='mt-0.5 flex flex-wrap items-center gap-2 text-[10px] opacity-70'>
 																									<span>{doc.courtOrSource}</span>
@@ -9564,7 +9850,7 @@ export default function ProfilesClient({
 																							<pre className='mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 font-mono text-[11px] leading-relaxed'>
 																								{loadingOcrDocId === doc.id && !fullText ?
 																									'Loading full extracted text…'
-																								:	fullText || doc.textExcerpt || 'No text extracted.'}
+																								:	<HighlightProfileText text={fullText || doc.textExcerpt || 'No text extracted.'} />}
 																							</pre>
 																						:	null}
 																					</div>
@@ -9845,7 +10131,9 @@ export default function ProfilesClient({
 																					</div>
 																				:	null}
 																				{showRelNote ?
-																					<p className='m-0 mt-1.5 text-[11px] leading-snug opacity-70'>{displayNote}</p>
+																					<p className='m-0 mt-1.5 text-[11px] leading-snug opacity-70'>
+																						<HighlightProfileText text={displayNote} />
+																					</p>
 																				:	null}
 																			</div>
 																		);
@@ -10450,6 +10738,9 @@ export default function ProfilesClient({
 															const isEmpSpan =
 															entry.entryKind === 'employment' ||
 															String(entry.metadata?.kind || '') === 'employment_span';
+															const isMatchedDeedOrFirm =
+															entry.angle === 'land_records' ||
+															textMatchesActiveProfile(`${displayTitle} ${displaySummary}`, profileHighlightMatcher);
 															return (
 															<div
 															key={entry.id}
@@ -10461,6 +10752,8 @@ export default function ProfilesClient({
 															'rounded-md border border-[#F97316]/60 bg-[#F97316]/10 px-2 py-1.5 ring-1 ring-[#F97316]/35'
 															: isEmpSpan ?
 															'rounded-md border border-emerald-500/35 bg-emerald-500/8 px-2 py-1.5'
+															: isMatchedDeedOrFirm ?
+															'rounded border-l-2 border-[#F97316]/75 bg-[#F97316]/[0.06] px-2 py-1'
 															:	undefined
 															}>
 															<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5'>
@@ -10483,9 +10776,9 @@ export default function ProfilesClient({
 															: 'Open related event profile'
 															}
 															className={`${titleClass} text-sky-700 underline decoration-sky-700/40 underline-offset-2 hover:text-sky-900 dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:text-sky-200`}>
-															{displayTitle}
+															<HighlightProfileText text={displayTitle} />
 															</button>
-															:	<div className={titleClass}>{displayTitle}</div>}
+															:	<div className={titleClass}><HighlightProfileText text={displayTitle} /></div>}
 															{entry.entryKind === 'employment' ?
 															<span className='rounded border border-emerald-500/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200'>
 															Employment
@@ -10516,9 +10809,9 @@ export default function ProfilesClient({
 															</div>
 															{displaySummary && displaySummary !== displayTitle ?
 															<p className='m-0 mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80'>
-															{displaySummary.length > 900 ?
-															`${displaySummary.slice(0, 900).trim()}…`
-															:	displaySummary}
+															<HighlightProfileText
+															text={displaySummary.length > 900 ? `${displaySummary.slice(0, 900).trim()}…` : displaySummary}
+															/>
 															</p>
 															:	null}
 															{isEmpSpan && entry.endDate ?
@@ -10739,6 +11032,7 @@ export default function ProfilesClient({
 										</div>
 									:	null}
 								</div>
+								</ProfileHighlightContext.Provider>
 							}
 						</section>
 					</div>

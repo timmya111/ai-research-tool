@@ -4,6 +4,7 @@ import {
 	runAutoProfileResearchPipeline,
 	shouldScheduleAutoResearch,
 } from '@/lib/research/profiles/autoResearchPipeline';
+import { resolveEntityStartEndDates } from '@/lib/research/profiles/dateResolver';
 import { resolveFirmIdentityOnCreate } from '@/lib/research/profiles/firmIdentityFilter';
 import {
 	addAlias,
@@ -256,18 +257,43 @@ export async function POST(request: Request) {
 			}
 		}
 
+		let resolvedStartDate = initialStartDate;
+		let resolvedEndDate = body.endDate ? String(body.endDate) : null;
+		let autoDateMeta: { qid: string | null; wikiUrl: string | null } = { qid: null, wikiUrl: null };
+		if (!resolvedStartDate || !resolvedEndDate) {
+			try {
+				const dateHit = await resolveEntityStartEndDates({
+					name,
+					profileType: effectiveType,
+					summary: initialSummary,
+					allowWebLookup: effectiveType !== 'region',
+				});
+				if (!resolvedStartDate && dateHit.startDate) resolvedStartDate = dateHit.startDate;
+				if (!resolvedEndDate && dateHit.endDate) resolvedEndDate = dateHit.endDate;
+				autoDateMeta = { qid: dateHit.qid, wikiUrl: dateHit.wikiUrl };
+			} catch {
+				/* non-fatal — continue with user-provided dates */
+			}
+		}
+
 		let profile = upsertProfile({
 			profileType: effectiveType,
 			name,
 			slug: body.slug ? String(body.slug) : undefined,
 			status: (body.status ? String(body.status) : 'pinned') as ProfileStatus,
 			summary: initialSummary,
-			startDate: initialStartDate,
-			endDate: body.endDate ? String(body.endDate) : null,
+			startDate: resolvedStartDate,
+			endDate: resolvedEndDate,
 			metadata: Object.keys(metaInput).length ? metaInput : undefined,
 			sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
 			skipDuplicateCheck: forceCreate,
 		});
+		if (autoDateMeta.qid) {
+			addIdentifier({ profileId: profile.id, scheme: 'wikidata', value: autoDateMeta.qid, sourceCorpus: 'date-resolver' });
+		}
+		if (autoDateMeta.wikiUrl) {
+			addIdentifier({ profileId: profile.id, scheme: 'url', value: autoDateMeta.wikiUrl, sourceCorpus: 'date-resolver' });
+		}
 		// Immediately surface any potential duplicate candidates in /profiles/alignments.
 		recordDuplicateAlignmentCandidates(profile.id);
 

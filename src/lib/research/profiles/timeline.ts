@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { getProfilesDb } from '@/lib/research/profiles/db';
 import { isCityLevelGeoKey } from '@/lib/research/profiles/edgeWeights';
+import { parseOkcrFilingRaw } from '@/lib/research/profiles/landDeeds';
 import {
 	dateToEpochDays,
 	normalizeIsoDate,
+	normalizeText,
 } from '@/lib/research/profiles/normalize';
 import { getKnowledgeSqlitePath } from '@/lib/research/profiles/paths';
 import { getProfile, rowToTimeline } from '@/lib/research/profiles/store';
@@ -685,6 +687,260 @@ function searchKnowledgeForGap(
  * compute angle/corpus breakdowns, detect chronological gaps,
  * and surface cross-source gap-fill leads.
  */
+const DEED_TIMELINE_STOP_TERMS = new Set([
+	'public',
+	'usa',
+	'u s a',
+	'united states',
+	'united states of america',
+	'unknown',
+	'none',
+	'integrity',
+	'state',
+	'county',
+	'city',
+	'trust',
+	'bank',
+	'first',
+	'general',
+	'national',
+	'american',
+	'federal',
+	'capital',
+	'financial',
+	'company',
+	'corporation',
+	'group',
+	'partners',
+	'holdings',
+	'services',
+	'management',
+	'energy',
+	'oil',
+	'gas',
+	'resources',
+	'properties',
+	'realty',
+	'credit',
+	'mortgage',
+	'insurance',
+	'oklahoma',
+	'texas',
+	'arkansas',
+	'vision',
+	'liberty',
+	'heritage',
+	'summit',
+	'frontier',
+	'pioneer',
+	'standard',
+	'premier',
+	'citizens',
+	'republic',
+]);
+
+/**
+ * Query local knowledge.sqlite via FTS5 (`chunks_fts`) to surface all matching OKCR county land deeds
+ * where this profile's name, legal alias, or ticker appears in the Grantor/Grantee party lines.
+ */
+function loadMatchingKnowledgeDeedsForTimeline(
+	pdb: DatabaseSync,
+	profile: { id: string; name: string; slug: string; profileType: string },
+	opts: { from?: string; to?: string; maxDocs?: number },
+): TimelineEntry[] {
+	if (profile.profileType === 'historic_event' || profile.profileType === 'region') return [];
+
+	const aliasRows = pdb
+		.prepare(
+			`SELECT alias, alias_kind FROM profile_aliases
+       WHERE profile_id = ? AND lower(coalesce(alias_kind, 'name')) IN ('name','other_name','former_name','formerly','aka','legal_name','ticker','acronym')`,
+		)
+		.all(profile.id) as Array<{ alias: string; alias_kind: string | null }>;
+	const tickerRows = pdb
+		.prepare(`SELECT value FROM profile_identifiers WHERE profile_id = ? AND lower(scheme) = 'ticker'`)
+		.all(profile.id) as Array<{ value: string }>;
+
+	const phrases: Array<{ raw: string; fts: string; exactCase: boolean; re: RegExp }> = [];
+	const seen = new Set<string>();
+	const addPhrase = (raw: string, optsIn?: { exactCase?: boolean }) => {
+		const clean = String(raw || '')
+			.replace(/\s*\([^)]*\)\s*/g, ' ')
+			.replace(/[,;:\s]+$/g, '')
+			.replace(/\s+/g, ' ')
+			.trim();
+		if (!clean) return;
+		const norm = normalizeText(clean);
+		if (!norm || DEED_TIMELINE_STOP_TERMS.has(norm)) return;
+		const words = norm.split(' ').filter(Boolean);
+		if (words.length === 0) return;
+
+		// For persons, require full name (>= 2 words) so last names alone never match
+		if (profile.profileType === 'person' && words.length < 2) return;
+
+		const exactCase = Boolean(optsIn?.exactCase || (words.length === 1 && clean.length <= 4));
+		if (words.length === 1) {
+			if (exactCase) {
+				// Allow 3-5 char uppercase tickers/acronyms like BOKF, USAA, IBM — skip 1-2 char codes
+				if (!/^[A-Z0-9]{3,5}$/.test(clean)) return;
+			} else if (norm.length < 6) {
+				return;
+			}
+		} else if (norm.length < 6) {
+			return;
+		}
+		if (seen.has(norm)) return;
+		seen.add(norm);
+
+		const pat = words.map((w) => escapeRegExp(exactCase ? w.toUpperCase() : w)).join('[\\s.,&\'’\\-/]+');
+		try {
+			phrases.push({
+				raw: clean,
+				fts: `"${clean.replace(/"/g, '').trim()}"`,
+				exactCase,
+				re: new RegExp(`(?<![A-Za-z0-9])${pat}(?![A-Za-z0-9])`, exactCase ? '' : 'i'),
+			});
+		} catch {
+			/* skip invalid regex */
+		}
+	};
+
+	addPhrase(profile.name);
+	const stripped = profile.name
+		.replace(
+			/,?\s+\b(?:incorporated|inc\.?|l\.?l\.?c\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?p\.?|l\.?p\.?|p\.?l\.?l\.?c\.?|p\.?c\.?|p\.?l\.?c\.?|n\.?a\.?|co\.?|company)\s*$/i,
+			'',
+		)
+		.trim();
+	if (stripped && stripped.toLowerCase() !== profile.name.toLowerCase()) {
+		addPhrase(stripped);
+	}
+	for (const a of aliasRows) {
+		const kind = String(a.alias_kind || 'name').toLowerCase();
+		const val = String(a.alias || '').trim();
+		const isCode = kind === 'ticker' || kind === 'acronym';
+		const codeVal = isCode && val.includes(':') ? val.split(':').pop()!.trim() : val;
+		addPhrase(codeVal, { exactCase: isCode && codeVal.length <= 4 });
+	}
+	for (const t of tickerRows) {
+		const v = String(t.value || '').trim();
+		const sym = v.includes(':') ? v.split(':').pop()!.trim() : v;
+		addPhrase(sym, { exactCase: sym.length <= 4 });
+	}
+
+	if (phrases.length === 0) return [];
+	const ftsQuery = phrases
+		.slice(0, 8)
+		.map((p) => p.fts)
+		.join(' OR ');
+
+	const kdb = openKnowledgeReadOnly();
+	if (!kdb) return [];
+
+	const maxDocs = Math.max(50, Math.min(1200, opts.maxDocs ?? 900));
+	const out: TimelineEntry[] = [];
+	const seenInst = new Set<string>();
+
+	try {
+		const rows = kdb
+			.prepare(
+				`SELECT DISTINCT d.id, d.title, d.url, d.raw_text, p.name AS project_name
+         FROM chunks_fts f
+         JOIN chunks c ON c.rowid = f.rowid
+         JOIN documents d ON d.id = c.document_id
+         JOIN projects p ON p.id = d.project_id
+         WHERE chunks_fts MATCH ?
+         LIMIT ?`,
+			)
+			.all(ftsQuery, maxDocs) as Array<{
+			id: string;
+			title: string;
+			url: string | null;
+			raw_text: string;
+			project_name: string;
+		}>;
+
+		for (const row of rows) {
+			const raw = String(row.raw_text || '');
+			if (!/Grantor:|Grantee:|Buyer:|Seller:/i.test(raw)) continue;
+			const parsed = parseOkcrFilingRaw(raw, {
+				url: row.url || undefined,
+				title: row.title,
+				subjectName: profile.name,
+			});
+			if (!parsed) continue;
+
+			// Strict verification: match phrase must appear in Grantor or Grantee party line (not just legal text)
+			const partyLine = `${parsed.grantor} | ${parsed.grantee}`;
+			const matched = phrases.some((p) => p.re.test(partyLine));
+			if (!matched) continue;
+
+			const eventDate = parsed.recordedIso || null;
+			if (opts.from && eventDate && eventDate < opts.from) continue;
+			if (opts.to && eventDate && eventDate > opts.to) continue;
+
+			const county = parsed.county && parsed.county !== 'Unknown County' ? parsed.county : row.project_name;
+			const instKey = `${county.toLowerCase()}|${(parsed.instrument || row.id).toLowerCase()}`;
+			if (seenInst.has(instKey)) continue;
+			seenInst.add(instKey);
+
+			const book = raw.match(/^-\s*Book\s*:\s*(.+)$/im)?.[1]?.trim() || '';
+			const pages = raw.match(/^-\s*Pages\s*:\s*(.+)$/im)?.[1]?.trim() || '';
+			const bookPages = [book && !/^unknown$/i.test(book) ? `Book ${book}` : '', pages && !/^unknown$/i.test(pages) ? `Pages ${pages}` : '']
+				.filter(Boolean)
+				.join(', ');
+
+			const instBit = parsed.instrument ? ` (${parsed.instrument})` : '';
+			const title = `${county}: ${parsed.type}${instBit}: ${parsed.grantor} → ${parsed.grantee}`.replace(/\s+/g, ' ').trim();
+			const summaryParts: string[] = [];
+			if (parsed.legal && !/^unknown$/i.test(parsed.legal)) {
+				summaryParts.push(`Legal: ${parsed.legal.replace(/\s+/g, ' ').trim()}`);
+			}
+			if (bookPages) summaryParts.push(bookPages);
+
+			out.push({
+				id: `deed:${row.id}`,
+				dedupeKey: `deed:${row.id}`,
+				profileId: profile.id,
+				eventDate,
+				datePrecision: eventDate ? 'day' : 'unknown',
+				endDate: null,
+				title,
+				summary: summaryParts.join(' · '),
+				angle: 'land_records',
+				entryKind: 'filing',
+				geoKey: null,
+				geoLabel: county,
+				confidence: 0.92,
+				sourceCorpus: 'okcr-deeds-match',
+				sourceRecordId: null,
+				metadata: {
+					instrument: parsed.instrument,
+					deedType: parsed.type,
+					grantor: parsed.grantor,
+					grantee: parsed.grantee,
+				},
+				createdAt: eventDate || '',
+				sourceUrl: parsed.url || row.url || null,
+				sourceRef: parsed.instrument || row.id,
+				originProfileId: profile.id,
+				originProfileName: profile.name,
+				originProfileType: profile.profileType as TimelineEntry['originProfileType'],
+				originProfileSlug: profile.slug,
+			});
+		}
+	} catch {
+		/* FTS edge case — non-fatal */
+	} finally {
+		try {
+			kdb.close();
+		} catch {
+			/* ignore */
+		}
+	}
+
+	return out;
+}
+
 export function getProfileTimeline(
 	idOrSlug: string,
 	opts: GetProfileTimelineOptions = {},
@@ -702,7 +958,7 @@ export function getProfileTimeline(
 	const detectGaps = opts.detectGaps !== false;
 	const fillFromKnowledge = opts.fillFromKnowledge !== false;
 	const minGapDays = Math.max(7, Math.min(3650, Math.floor(Number(opts.minGapDays ?? 30))));
-	const limit = Math.max(10, Math.min(500, Math.floor(Number(opts.limit ?? 200))));
+	const limit = Math.max(10, Math.min(1500, Math.floor(Number(opts.limit ?? 600))));
 
 	// Collect direct profileId + linked historic_event / related child profile IDs
 	const targetIds = new Set<string>([profile.id]);
@@ -790,7 +1046,48 @@ export function getProfileTimeline(
 	const contentKey = (entry: TimelineEntry) =>
 		`${entry.eventDate || ''}|${entry.endDate || ''}|${normalizeDedupeTitle(entry.title)}`;
 	const mapped = rows.map((r) => rowToTimeline(r));
-	mapped.sort((a, b) => {
+
+	// Pull all matching county land deeds from knowledge.sqlite FTS5 so the Timeline tab displays
+	// full Grantor -> Grantee + PLSS legal details (and supersedes thin placeholder deed rows).
+	const matchedDeedEntries =
+		(!opts.angle || opts.angle === 'land_records') && (!opts.corpus || opts.corpus === 'okcr-deeds-match')
+			? loadMatchingKnowledgeDeedsForTimeline(db, profile, {
+					from: opts.from,
+					to: opts.to,
+					maxDocs: Math.min(1200, Math.max(600, limit)),
+				})
+			: [];
+
+	const extractInstrumentKey = (e: TimelineEntry): string | null => {
+		const m =
+			String(e.sourceRef || '').match(/\b(I-\d{4}-\d+)\b/i) ||
+			String(e.title || '').match(/\b(I-\d{4}-\d+)\b/i);
+		return m ? m[1]!.toUpperCase() : null;
+	};
+	const richDeedInstruments = new Set<string>();
+	for (const d of matchedDeedEntries) {
+		const k = extractInstrumentKey(d);
+		if (k) richDeedInstruments.add(k);
+	}
+
+	const combined = [
+		...matchedDeedEntries,
+		...mapped.filter((e) => {
+			// Replace thin "Exact name match on county deed" placeholders when we have the full deed entry
+			if (e.angle === 'land_records' && /Exact name match on county deed/i.test(e.summary || '')) {
+				const k = extractInstrumentKey(e);
+				if (k && richDeedInstruments.has(k)) return false;
+			}
+			return true;
+		}),
+	];
+
+	combined.sort((a, b) => {
+		const da = a.eventDate || '';
+		const dbDate = b.eventDate || '';
+		if (da && !dbDate) return -1;
+		if (!da && dbDate) return 1;
+		if (da !== dbDate) return dbDate.localeCompare(da);
 		const aOwn = a.originProfileId === profile.id ? 0 : 1;
 		const bOwn = b.originProfileId === profile.id ? 0 : 1;
 		if (aOwn !== bOwn) return aOwn - bOwn;
@@ -801,7 +1098,7 @@ export function getProfileTimeline(
 	});
 	const deduped: TimelineEntry[] = [];
 	const seen = new Set<string>();
-	for (const entry of mapped) {
+	for (const entry of combined) {
 		const exact = `${entry.sourceCorpus}|${entry.eventDate || ''}|${entry.title.toLowerCase().slice(0, 90)}`;
 		const soft = contentKey(entry);
 		if (seen.has(exact) || seen.has(soft)) continue;

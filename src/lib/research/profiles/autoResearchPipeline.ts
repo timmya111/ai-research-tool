@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getProfilesDb } from '@/lib/research/profiles/db';
+import { resolveEntityStartEndDates } from '@/lib/research/profiles/dateResolver';
 import { enrichProfile } from '@/lib/research/profiles/enrich';
 import {
 	buildProfileIdentityContext,
@@ -142,6 +143,7 @@ export type AutoResearchStatus = {
 			matchedUpdated: number;
 			created: number;
 			skippedAmbiguous: number;
+			skippedMissingDates?: number;
 			slugs: string[];
 		};
 		summaryUpgraded: boolean;
@@ -866,38 +868,45 @@ async function matchUpdateOrCreateDiscoveredEntity(
 	entity: DiscoveredEntity,
 	parentDetail: ProfileDetail,
 ): Promise<{
-	action: 'updated' | 'created' | 'skipped_ambiguous';
+	action: 'updated' | 'created' | 'skipped_ambiguous' | 'skipped_missing_dates';
 	slug: string | null;
 }> {
 	const db = getProfilesDb();
-	// Quick Wikipedia/Wikidata ID lookup for strong ID matching
+	// Collect verified start/end dates + Wikipedia/Wikidata IDs BEFORE merging or creating
 	let wikiHit: WikiHit | null = null;
+	let resolvedDates = {
+		startDate: null as string | null,
+		endDate: null as string | null,
+	};
 	try {
-		const search = (await fetchJsonSafe(
-			`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(entity.name)}&srlimit=2&format=json`,
-			8_000,
-		)) as { query?: { search?: Array<{ title?: string }> } } | null;
-		const normName = normalizeText(entity.name);
-		const strippedName = stripLegalSuffixes(entity.name);
-		for (const h of search?.query?.search || []) {
-			const t = String(h.title || '').trim();
-			if (!t || /^List of /i.test(t)) continue;
-			const tn = normalizeText(t.replace(/\s*\([^)]*\)\s*$/, ''));
-			const ts = stripLegalSuffixes(t.replace(/\s*\([^)]*\)\s*$/, ''));
-			if (tn === normName || ts === strippedName || tn.replace(/^the /, '') === normName.replace(/^the /, '')) {
-				const art = await fetchWikipediaByTitle(t, true);
-				if (art) {
-					if (entity.profileType === 'person') {
-						const hay = art.extract.toLowerCase();
-						const cues = [entity.affiliation, entity.role, entity.location]
-							.filter(Boolean)
-							.flatMap((c) => normalizeText(String(c)).split(' '))
-							.filter((w) => w.length >= 4 && !/^(?:president|director|vice|chief|staff|officer|member|senior|former)$/.test(w));
-						if (cues.length > 0 && !cues.some((w) => hay.includes(w))) continue;
-					}
-					wikiHit = art;
-					break;
-				}
+		const dateRes = await resolveEntityStartEndDates({
+			name: entity.name,
+			profileType: entity.profileType,
+			contextText: `${entity.role || ''} ${entity.affiliation || ''} ${entity.milestone || ''}`,
+			allowWebLookup: true,
+		});
+		resolvedDates = { startDate: dateRes.startDate, endDate: dateRes.endDate };
+		if (dateRes.wikiTitle && dateRes.wikiExtract) {
+			let acceptWiki = true;
+			if (entity.profileType === 'person') {
+				const hay = dateRes.wikiExtract.toLowerCase();
+				const cues = [entity.affiliation, entity.role, entity.location]
+					.filter(Boolean)
+					.flatMap((c) => normalizeText(String(c)).split(' '))
+					.filter((w) => w.length >= 4 && !/^(?:president|director|vice|chief|staff|officer|member|senior|former)$/.test(w));
+				if (cues.length > 0 && !cues.some((w) => hay.includes(w))) acceptWiki = false;
+			}
+			if (acceptWiki) {
+				wikiHit = {
+					title: dateRes.wikiTitle,
+					url: dateRes.wikiUrl || `https://en.wikipedia.org/wiki/${encodeURIComponent(dateRes.wikiTitle.replace(/ /g, '_'))}`,
+					qid: dateRes.qid,
+					extract: dateRes.wikiExtract,
+					inception: dateRes.startDate,
+					dissolved: dateRes.endDate,
+				};
+			} else {
+				resolvedDates = { startDate: null, endDate: null };
 			}
 		}
 	} catch {
@@ -1040,6 +1049,15 @@ async function matchUpdateOrCreateDiscoveredEntity(
 	if (bestMatch) {
 		const existing = bestMatch.detail.profile;
 		const allowLocationUpdate = hasStrongLocationAlignments(bestMatch.evalRes, 2);
+		// Fill missing start/end dates on the matched existing profile when verified dates were collected
+		const nextStart = !existing.startDate && resolvedDates.startDate ? normalizeIsoDate(resolvedDates.startDate).date : null;
+		const nextEnd = !existing.endDate && resolvedDates.endDate ? normalizeIsoDate(resolvedDates.endDate).date : null;
+		if (nextStart || nextEnd) {
+			updateProfileFields(existing.id, {
+				...(nextStart ? { startDate: nextStart } : {}),
+				...(nextEnd ? { endDate: nextEnd } : {}),
+			});
+		}
 		if (wikiHit?.qid && !bestMatch.detail.identifiers.some((i) => i.scheme === 'wikidata')) {
 			addIdentifier({ profileId: existing.id, scheme: 'wikidata', value: wikiHit.qid, sourceCorpus: PIPELINE_CORPUS });
 		}
@@ -1108,6 +1126,21 @@ async function matchUpdateOrCreateDiscoveredEntity(
 		}
 	}
 
+	// Gate: Do NOT auto-create a new profile until we have collected its verified start (and end, if applicable) dates.
+	const verifiedStartDate = resolvedDates.startDate
+		? normalizeIsoDate(resolvedDates.startDate).date
+		: wikiHit?.inception
+			? normalizeIsoDate(wikiHit.inception).date
+			: null;
+	const verifiedEndDate = resolvedDates.endDate
+		? normalizeIsoDate(resolvedDates.endDate).date
+		: wikiHit?.dissolved
+			? normalizeIsoDate(wikiHit.dissolved).date
+			: null;
+	if (!verifiedStartDate && entity.profileType !== 'region') {
+		return { action: 'skipped_missing_dates', slug: null };
+	}
+
 	// Build grounded lead + ## Timeline summary for newly discovered profile
 	const lead =
 		wikiHit?.extract
@@ -1115,13 +1148,17 @@ async function matchUpdateOrCreateDiscoveredEntity(
 			: `${entity.name}${entity.role ? ` — ${entity.role}` : ''}${entity.affiliation ? ` (${entity.affiliation})` : ''}${entity.location ? `, ${entity.location}` : ''}.`;
 	const bullets: string[] = [];
 	if (entity.milestone) {
-		bullets.push(`- **${eventDate || 'Undated'}** — ${entity.milestone}`);
+		bullets.push(`- **${eventDate || verifiedStartDate || 'Undated'}** — ${entity.milestone}`);
 	}
-	if (wikiHit?.inception) {
+	if (verifiedStartDate) {
 		const verb = entity.profileType === 'person' ? 'Born' : 'Founded / established';
-		bullets.push(`- **${wikiHit.inception}** — ${verb} (${wikiHit.title}).`);
+		bullets.push(`- **${verifiedStartDate}** — ${verb}${wikiHit?.title ? ` (${wikiHit.title})` : ''}.`);
 	}
-	const summaryLines = [lead, '', '## Timeline', ...(bullets.length ? bullets : [`- **${eventDate || 'Undated'}** — Associated with ${parentDetail.profile.name}.`])];
+	if (verifiedEndDate) {
+		const verb = entity.profileType === 'person' ? 'Died' : 'Dissolved / merged / ended';
+		bullets.push(`- **${verifiedEndDate}** — ${verb}${wikiHit?.title ? ` (${wikiHit.title})` : ''}.`);
+	}
+	const summaryLines = [lead, '', '## Timeline', ...(bullets.length ? bullets : [`- **${verifiedStartDate || eventDate || 'Undated'}** — Associated with ${parentDetail.profile.name}.`])];
 	if (wikiHit?.url) {
 		summaryLines.push('', '## Sources', `- ${wikiHit.url}`);
 	}
@@ -1133,7 +1170,8 @@ async function matchUpdateOrCreateDiscoveredEntity(
 		slug: customSlug,
 		status: 'active',
 		summary: newSummary,
-		startDate: wikiHit?.inception ? normalizeIsoDate(wikiHit.inception).date : null,
+		startDate: verifiedStartDate,
+		endDate: verifiedEndDate,
 		sourceCorpus: PIPELINE_CORPUS,
 		skipDuplicateCheck: Boolean(customSlug && entity.profileType === 'person'),
 		metadata: {
@@ -1441,6 +1479,9 @@ export async function runAutoProfileResearchPipeline(
 				} else if (res.action === 'created') {
 					status.stages.entitiesDiscovered.created += 1;
 					if (res.slug) status.stages.entitiesDiscovered.slugs.push(res.slug);
+				} else if (res.action === 'skipped_missing_dates') {
+					status.stages.entitiesDiscovered.skippedMissingDates =
+						(status.stages.entitiesDiscovered.skippedMissingDates || 0) + 1;
 				} else {
 					status.stages.entitiesDiscovered.skippedAmbiguous += 1;
 				}

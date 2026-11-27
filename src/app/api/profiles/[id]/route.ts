@@ -4,6 +4,7 @@ import {
 	runAutoProfileResearchPipeline,
 	shouldScheduleAutoResearch,
 } from '@/lib/research/profiles/autoResearchPipeline';
+import { extractDatesFromProse } from '@/lib/research/profiles/dateResolver';
 import {
 	addAlias,
 	addIdentifier,
@@ -143,13 +144,33 @@ export async function PATCH(request: Request, context: Ctx) {
 			}
 		}
 
+		let patchStartDate =
+			body.startDate !== undefined ? (body.startDate ? String(body.startDate) : null) : undefined;
+		let patchEndDate =
+			body.endDate !== undefined ? (body.endDate ? String(body.endDate) : null) : undefined;
+		if (body.summary != null) {
+			const effectiveStart =
+				patchStartDate !== undefined ? patchStartDate : existingBeforeUpdate.startDate;
+			const effectiveEnd =
+				patchEndDate !== undefined ? patchEndDate : existingBeforeUpdate.endDate;
+			if (!effectiveStart || !effectiveEnd) {
+				const extracted = extractDatesFromProse(
+					String(body.summary),
+					nextProfileType ?? existingBeforeUpdate.profileType,
+					body.name != null ? String(body.name) : existingBeforeUpdate.name,
+				);
+				if (!effectiveStart && extracted.startDate) patchStartDate = extracted.startDate;
+				if (!effectiveEnd && extracted.endDate) patchEndDate = extracted.endDate;
+			}
+		}
+
 		let updated = updateProfileFields(key, {
 			name: body.name != null ? String(body.name) : undefined,
 			profileType: nextProfileType,
 			status: body.status != null ? (String(body.status) as ProfileStatus) : undefined,
 			summary: body.summary != null ? String(body.summary) : undefined,
-			startDate: body.startDate !== undefined ? (body.startDate ? String(body.startDate) : null) : undefined,
-			endDate: body.endDate !== undefined ? (body.endDate ? String(body.endDate) : null) : undefined,
+			startDate: patchStartDate,
+			endDate: patchEndDate,
 			metadata: hasMetadataPatch ? metadataPatch : undefined,
 		});
 		if (!updated) {

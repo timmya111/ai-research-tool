@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getOllamaBaseUrl } from '@/lib/research/ollama';
 import { getOcrModelCandidates } from '@/lib/research/ollamaVision';
 import { getProfilesDb } from '@/lib/research/profiles/db';
+import { resolveEntityStartEndDates } from '@/lib/research/profiles/dateResolver';
 import { normalizeIsoDate, normalizeText, sha256Key, stripLegalSuffixes } from '@/lib/research/profiles/normalize';
 import {
 	findExistingProfileDuplicate,
@@ -1602,15 +1603,26 @@ export async function ingestLegalDocsForProfile(
 				name: edge.targetEntity,
 				profileType: targetProfileType,
 			});
-			const target =
-				existingHit?.profile ||
-				upsertProfile({
+			let target = existingHit?.profile || null;
+			if (!target) {
+				// Gate: collect verified start/end dates before auto-creating a new firm profile
+				const dateHit = await resolveEntityStartEndDates({
+					name: edge.targetEntity,
+					profileType: targetProfileType,
+					contextText: edge.evidenceSummary,
+					allowWebLookup: true,
+				});
+				if (!dateHit.startDate) continue;
+				target = upsertProfile({
 					profileType: targetProfileType,
 					name: edge.targetEntity,
 					status: 'active',
+					startDate: dateHit.startDate,
+					endDate: dateHit.endDate,
 					summary: `${edge.targetEntity} — counterparty documented in ${edge.courtOrSource} (${edge.caseOrRecordId || 'court record'}).`,
 					sourceCorpus: 'legal-api-ocr',
 				});
+			}
 			if (target.id === profile.id) continue;
 
 			const existingCurated = db
