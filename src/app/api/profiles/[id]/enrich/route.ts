@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
 import { enrichProfile } from '@/lib/research/profiles/enrich';
-import { getProfileDetail } from '@/lib/research/profiles/store';
+import { getProfileDetail, touchProfilesForUserAction } from '@/lib/research/profiles/store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,6 +37,7 @@ export async function POST(request: Request, context: Ctx) {
 			return NextResponse.json({ ok: false, error: 'Profile not found' }, { status: 404 });
 		}
 
+		touchProfilesForUserAction([report.profileId]);
 		const detail = getProfileDetail(report.profileId);
 		return NextResponse.json(
 			{ ok: true, report, detail },

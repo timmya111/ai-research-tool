@@ -3,6 +3,7 @@ import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
 import {
 	deleteProfileLink,
 	getProfile,
+	touchProfilesForUserAction,
 	updateProfileLink,
 	upsertProfileLink,
 } from '@/lib/research/profiles/store';
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
 			evidenceNote: body.evidenceNote ? String(body.evidenceNote) : '',
 		});
 
+		touchProfilesForUserAction([fromProf.id, toProf.id]);
 		return NextResponse.json(
 			{ ok: true, linkId },
 			{ status: 201, headers: { 'Cache-Control': 'no-store' } },
@@ -94,6 +96,7 @@ export async function PATCH(request: Request) {
 			const status = result.error.includes('not found') ? 404 : 409;
 			return NextResponse.json({ ok: false, error: result.error }, { status });
 		}
+		if (profileId) touchProfilesForUserAction([profileId]);
 		return NextResponse.json({ ok: true, linkId: result.id }, { headers: { 'Cache-Control': 'no-store' } });
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -124,6 +127,7 @@ export async function DELETE(request: Request) {
 				{ status: 404 },
 			);
 		}
+		if (profileId) touchProfilesForUserAction([profileId]);
 		return NextResponse.json({ ok: true, deleted: true }, { headers: { 'Cache-Control': 'no-store' } });
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);

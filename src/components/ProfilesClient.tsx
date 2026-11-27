@@ -3902,10 +3902,16 @@ export default function ProfilesClient({
 		return () => window.removeEventListener('popstate', onPop);
 	}, []);
 
-	const loadList = useCallback(async () => {
+	const loadList = useCallback(async (opts?: { resetOffset?: boolean }) => {
 		setLoadingList(true);
 		setError(null);
 		try {
+			const shouldResetOffset =
+				Boolean(opts?.resetOffset) &&
+				typeFilter !== HISTORY_FILTER &&
+				typeFilter !== 'historic_event';
+			const effectiveOffset = shouldResetOffset ? 0 : offset;
+			if (shouldResetOffset && offset !== 0) setOffset(0);
 			if (typeFilter === HISTORY_FILTER) {
 				const q = query.trim().toLowerCase();
 				let entries = viewHistoryRef.current;
@@ -3960,7 +3966,7 @@ export default function ProfilesClient({
 			if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
 			if (countryCode) params.set('country', countryCode);
 			params.set('limit', '60');
-			params.set('offset', String(offset));
+			params.set('offset', String(effectiveOffset));
 			params.set('stats', '1');
 
 			const res = await fetch(`/api/profiles?${params.toString()}`, { cache: 'no-store' });
@@ -4374,7 +4380,7 @@ export default function ProfilesClient({
 					await loadTimeline(pid, {
 						includeLinkedEvents: ptype === 'historic_event' ? false : undefined,
 					});
-					await loadList();
+					await loadList({ resetOffset: true });
 				}
 			} catch {
 				/* ignore transient poll error */
@@ -5211,6 +5217,7 @@ export default function ProfilesClient({
 			setObsUrl('');
 			await loadTimeline(selectedId);
 			await loadDetail(selectedId);
+			await loadList({ resetOffset: true });
 			setBanner('Added timeline observation.');
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -5482,7 +5489,7 @@ export default function ProfilesClient({
 			setEmpEnd('');
 			setEmpLocation('');
 			if (data.detail) setDetail(data.detail as ProfileDetail);
-			await loadList();
+			await loadList({ resetOffset: true });
 			setBanner('Added employment history record.');
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -5542,6 +5549,7 @@ export default function ProfilesClient({
 			setConnNote('');
 			setConnSearchOpen(false);
 			await loadDetail(selectedId || detail.profile.slug || detail.profile.id);
+			await loadList({ resetOffset: true });
 			setBanner(`Linked ${peerName} (${relLabel}).`);
 		} catch (err: unknown) {
 			setError(err instanceof Error ? err.message : String(err));
@@ -5909,7 +5917,7 @@ export default function ProfilesClient({
 			const report = data.report as EnrichProfileReport;
 			setLastEnrichReport(report);
 			if (data.detail) setDetail(data.detail as ProfileDetail);
-			await loadList();
+			await loadList({ resetOffset: true });
 			if (profileTab === 'timeline') await loadTimeline(selectedId);
 			const summaryMsg =
 				report.validatedSources > 0 ?

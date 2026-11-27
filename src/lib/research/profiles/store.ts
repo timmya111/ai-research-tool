@@ -218,6 +218,126 @@ function syncLifeDateMetadata(
 	return next;
 }
 
+const PAREN_ACRONYM_RE = /^(.{4,}?)\s*\(([A-Z][A-Z0-9&./-]{1,14})\)\s*$/;
+const ORG_DEDUPE_TYPES = new Set<ProfileType>([
+	'firm',
+	'education',
+	'nonprofit',
+	'medical_hospital',
+	'government',
+	'region',
+]);
+
+/**
+ * Extract base name + acronym from names like "Federal Emergency Management Agency (FEMA)".
+ */
+export function extractParenthesizedAcronymAndBase(
+	name: string,
+): { base: string; acronym: string } | null {
+	const m = String(name || '').trim().match(PAREN_ACRONYM_RE);
+	if (!m) return null;
+	const base = m[1]!.trim();
+	const acronym = m[2]!.trim();
+	if (base.length < 4 || acronym.length < 2) return null;
+	return { base, acronym };
+}
+
+/**
+ * Find an unambiguous existing active/pinned non-person org profile matching by
+ * normalized name, base name without parenthesized acronym, or exact alias/acronym.
+ * Prevents duplicates like creating "FEMA" when "Federal Emergency Management Agency (FEMA)" exists.
+ */
+export function findExistingOrgByNameOrAlias(
+	name: string,
+	profileType: ProfileType,
+	dbOverride?: DatabaseSync,
+): Profile | null {
+	if (!ORG_DEDUPE_TYPES.has(profileType)) return null;
+	const db = dbOverride ?? getProfilesDb();
+	const clean = String(name || '').trim();
+	if (!clean) return null;
+
+	const keys = new Set<string>();
+	const norm = normalizeText(clean);
+	if (norm.length >= 2) keys.add(norm);
+	const paren = extractParenthesizedAcronymAndBase(clean);
+	if (paren) {
+		const baseNorm = normalizeText(paren.base);
+		const acrNorm = normalizeText(paren.acronym);
+		if (baseNorm.length >= 4) keys.add(baseNorm);
+		if (acrNorm.length >= 2) keys.add(acrNorm);
+	}
+	if (!keys.size) return null;
+
+	const keyList = [...keys];
+	const placeholders = keyList.map(() => '?').join(',');
+	const rows = db
+		.prepare(
+			`SELECT DISTINCT p.*
+       FROM profiles p
+       LEFT JOIN profile_aliases pa ON pa.profile_id = p.id
+       WHERE p.status IN ('active', 'pinned')
+         AND p.profile_type IN ('firm','education','nonprofit','medical_hospital','government','region')
+         AND (
+           p.normalized_name IN (${placeholders})
+           OR pa.normalized_alias IN (${placeholders})
+         )
+       LIMIT 12`,
+		)
+		.all(...keyList, ...keyList) as Array<Record<string, unknown>>;
+
+	if (!rows.length) return null;
+	const matches = rows.map(rowToProfile);
+
+	// Prefer exact same category when unambiguous.
+	const sameType = matches.filter((m) => m.profileType === profileType);
+	if (sameType.length === 1) return sameType[0]!;
+	if (sameType.length > 1) {
+		// Tie-break on exact normalized_name match or pinned status.
+		const exactSame = sameType.filter((m) => m.normalizedName === norm);
+		if (exactSame.length === 1) return exactSame[0]!;
+		const pinnedSame = sameType.filter((m) => m.status === 'pinned');
+		if (pinnedSame.length === 1) return pinnedSame[0]!;
+		return null;
+	}
+
+	// Cross-category fallback only when unambiguous (single matching org profile).
+	if (matches.length === 1) return matches[0]!;
+	return null;
+}
+
+function indexParenthesizedAcronymAliases(
+	profileId: string,
+	profileType: ProfileType,
+	cleanName: string,
+	sourceCorpus: string | null,
+	db: DatabaseSync,
+): void {
+	if (profileType === 'person' || profileType === 'historic_event') return;
+	const paren = extractParenthesizedAcronymAndBase(cleanName);
+	if (!paren) return;
+	addAlias(
+		{
+			profileId,
+			alias: paren.acronym,
+			aliasKind: 'acronym',
+			confidence: 1.0,
+			sourceCorpus,
+		},
+		db,
+	);
+	addAlias(
+		{
+			profileId,
+			alias: paren.base,
+			aliasKind: 'name',
+			confidence: 1.0,
+			sourceCorpus,
+		},
+		db,
+	);
+}
+
 export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSync): Profile {
 	const db = dbOverride ?? getProfilesDb();
 	const cleanName = String(input.name || '').trim();
@@ -242,9 +362,17 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 				? null
 				: undefined;
 
-	const existing = db.prepare('SELECT * FROM profiles WHERE slug = ?').get(slug) as
+	let existing = db.prepare('SELECT * FROM profiles WHERE slug = ?').get(slug) as
 		| Record<string, unknown>
 		| undefined;
+	if (!existing && !input.slug && ORG_DEDUPE_TYPES.has(input.profileType)) {
+		const matchedOrg = findExistingOrgByNameOrAlias(cleanName, input.profileType, db);
+		if (matchedOrg) {
+			existing = db.prepare('SELECT * FROM profiles WHERE id = ?').get(matchedOrg.id) as
+				| Record<string, unknown>
+				| undefined;
+		}
+	}
 
 	if (existing) {
 		const prevMeta = safeJsonParse<Record<string, unknown>>(existing.metadata_json, {});
@@ -280,6 +408,7 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 		mergedMeta = syncLifeDateMetadata(input.profileType, mergedMeta, nextStart, nextEnd);
 		const displayName =
 			cleanName.length >= String(existing.name || '').length ? cleanName : String(existing.name);
+		const displayNormalized = normalizeText(displayName);
 		if (input.profileType === 'person') {
 			mergedMeta = withInferredPersonGender(displayName, mergedMeta);
 		}
@@ -291,7 +420,7 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
        WHERE id = ?`,
 		).run(
 			displayName,
-			normalizedName,
+			displayNormalized,
 			nextStatus,
 			nextSummary,
 			nextStart,
@@ -299,6 +428,27 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 			JSON.stringify(mergedMeta),
 			now,
 			String(existing.id),
+		);
+
+		if (normalizeText(cleanName) !== displayNormalized) {
+			const isShortAcronym = /^[A-Z][A-Z0-9&./-]{1,10}$/.test(cleanName);
+			addAlias(
+				{
+					profileId: String(existing.id),
+					alias: cleanName,
+					aliasKind: isShortAcronym ? 'acronym' : 'name',
+					confidence: 1.0,
+					sourceCorpus: input.sourceCorpus || null,
+				},
+				db,
+			);
+		}
+		indexParenthesizedAcronymAliases(
+			String(existing.id),
+			String(existing.profile_type) as ProfileType,
+			displayName,
+			input.sourceCorpus || null,
+			db,
 		);
 
 		const updated = db.prepare('SELECT * FROM profiles WHERE id = ?').get(String(existing.id)) as Record<
@@ -344,7 +494,7 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 		now,
 	);
 
-	// Always index canonical name as an alias too for uniform alias matching
+	// Always index canonical name (plus parenthesized acronym + base name for orgs)
 	addAlias(
 		{
 			profileId: id,
@@ -355,6 +505,7 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 		},
 		db,
 	);
+	indexParenthesizedAcronymAliases(id, input.profileType, cleanName, input.sourceCorpus || null, db);
 
 	const inserted = db.prepare('SELECT * FROM profiles WHERE id = ?').get(id) as Record<string, unknown>;
 	return rowToProfile(inserted);
@@ -1581,17 +1732,19 @@ export function listProfiles(filter: ListProfilesFilter = {}): {
 		.get(...params) as { c?: number } | undefined;
 	const total = Number(totalRow?.c || 0);
 
-	// Left-list browse: user Accept/Merge/Apply-edit touches (`metadata.userTouchedAt`) float above
-	// ingest churn (`updated_at` from FINRA sync). Then newest-changed, then name.
+	// Left-list browse (all columns except History): most recently refreshed/updated profile
+	// floats to the top (`MAX(updated_at, metadata.userTouchedAt)` DESC, then name).
 	// Text search: rank name/alias matches above FTS summary hits, then the same recency keys.
 	const orderParams: Array<string | number> = [];
 	let orderSql: string;
-	const updatedThenName = `CASE
-             WHEN json_extract(p.metadata_json, '$.userTouchedAt') IS NOT NULL THEN 0
-             ELSE 1
-           END ASC,
-           COALESCE(json_extract(p.metadata_json, '$.userTouchedAt'), '') DESC,
-           datetime(p.updated_at) DESC,
+	const updatedThenName = `MAX(
+             COALESCE(datetime(p.updated_at), ''),
+             COALESCE(datetime(json_extract(p.metadata_json, '$.userTouchedAt')), '')
+           ) DESC,
+           MAX(
+             COALESCE(p.updated_at, ''),
+             COALESCE(json_extract(p.metadata_json, '$.userTouchedAt'), '')
+           ) DESC,
            p.name ASC`;
 	if (q) {
 		// Closest name matches first (exact → prefix → contains). Prefer primary name over
@@ -2559,6 +2712,10 @@ export function addPersonEmployment(input: {
 	location?: string | null;
 	notes?: string | null;
 	sourceCorpus?: string;
+	/** When true, record branch in link notes without mutating person or org profile_locations. */
+	skipLocationUpdate?: boolean;
+	/** When true, do not mutate orgProfile's profile_locations (e.g. uncorroborated auto-discovery). */
+	skipOrgLocationUpdate?: boolean;
 }, dbOverride?: DatabaseSync): { linkId: string; orgProfile: Profile } | null {
 	const db = dbOverride ?? getProfilesDb();
 	const person = getProfile(input.personIdOrSlug, db);
@@ -2657,7 +2814,7 @@ export function addPersonEmployment(input: {
 
 	const locClean = input.location ? String(input.location).trim() : '';
 	let geoKey: string | null = null;
-	if (locClean) {
+	if (locClean && !input.skipLocationUpdate) {
 		geoKey = addLocation(
 			{
 				profileId: person.id,
@@ -2667,25 +2824,27 @@ export function addPersonEmployment(input: {
 			},
 			db,
 		);
-		// Prefer HQ on the org card when it has no HQ yet (full street addresses help employment + geo weighting)
-		const orgHasHq = Boolean(
-			db
-				.prepare(
-					`SELECT 1 AS ok FROM profile_locations
-           WHERE profile_id = ? AND role = 'hq' AND trim(raw) != ''
-           LIMIT 1`,
-				)
-				.get(orgProfile.id) as { ok?: number } | undefined,
-		);
-		addLocation(
-			{
-				profileId: orgProfile.id,
-				raw: locClean,
-				role: orgHasHq ? 'associated' : 'hq',
-				sourceCorpus: corpus,
-			},
-			db,
-		);
+		if (!input.skipOrgLocationUpdate) {
+			// Prefer HQ on the org card when it has no HQ yet (full street addresses help employment + geo weighting)
+			const orgHasHq = Boolean(
+				db
+					.prepare(
+						`SELECT 1 AS ok FROM profile_locations
+             WHERE profile_id = ? AND role = 'hq' AND trim(raw) != ''
+             LIMIT 1`,
+					)
+					.get(orgProfile.id) as { ok?: number } | undefined,
+			);
+			addLocation(
+				{
+					profileId: orgProfile.id,
+					raw: locClean,
+					role: orgHasHq ? 'associated' : 'hq',
+					sourceCorpus: corpus,
+				},
+				db,
+			);
+		}
 	}
 
 	const roleBase = input.role ? String(input.role).trim() : '';

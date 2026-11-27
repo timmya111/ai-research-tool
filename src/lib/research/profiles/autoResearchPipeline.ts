@@ -29,6 +29,7 @@ import { enrichProfile } from '@/lib/research/profiles/enrich';
 import {
 	buildProfileIdentityContext,
 	evaluateIdentityMatch,
+	hasStrongLocationAlignments,
 } from '@/lib/research/profiles/identity';
 import {
 	classifyOrgType,
@@ -43,6 +44,7 @@ import {
 	addIdentifier,
 	addLocation,
 	addPersonEmployment,
+	findExistingOrgByNameOrAlias,
 	getProfile,
 	getProfileDetail,
 	updateProfileFields,
@@ -942,7 +944,14 @@ async function matchUpdateOrCreateDiscoveredEntity(
 		.all(parentDetail.profile.id, norm, stripped) as Array<{ profile_id?: string }>;
 	for (const r of aliasRows) if (r.profile_id) candidateIds.add(String(r.profile_id));
 
-	const tokens = norm.split(' ').filter((t) => t.length >= 4);
+	if (entity.profileType !== 'person' && entity.profileType !== 'historic_event') {
+		const orgHit = findExistingOrgByNameOrAlias(entity.name, entity.profileType);
+		if (orgHit && orgHit.id !== parentDetail.profile.id) {
+			candidateIds.add(orgHit.id);
+		}
+	}
+
+	const tokens = norm.split(' ').filter((t) => t.length >= 3);
 	if (tokens.length > 0) {
 		const keyTok = entity.profileType === 'person' ? tokens[tokens.length - 1]! : tokens[0]!;
 		const fuzzyRows = (
@@ -975,7 +984,12 @@ async function matchUpdateOrCreateDiscoveredEntity(
 		candidateText: `${entity.name} ${entity.role || ''} ${entity.affiliation || ''} ${entity.location || ''} ${entity.milestone} ${wikiHit?.extract || ''} ${parentDetail.profile.name}`,
 	};
 
-	let bestMatch: { detail: ProfileDetail; score: number; hasSharedId: boolean } | null = null;
+	let bestMatch: {
+		detail: ProfileDetail;
+		score: number;
+		hasSharedId: boolean;
+		evalRes: ReturnType<typeof evaluateIdentityMatch>;
+	} | null = null;
 	let ambiguousDetail: ProfileDetail | null = null;
 
 	for (const pid of candidateIds) {
@@ -992,10 +1006,10 @@ async function matchUpdateOrCreateDiscoveredEntity(
 		const isStrong =
 			(hasSharedId && !evalRes.dateConflict) ||
 			evalRes.decision === 'validated_merge' ||
-			(entity.profileType !== 'person' && exactName && !evalRes.dateConflict);
+			(entity.profileType !== 'person' && (exactName || evalRes.nameMatch === 'exact_name') && !evalRes.dateConflict);
 		if (isStrong) {
 			if (!bestMatch || evalRes.score > bestMatch.score || (hasSharedId && !bestMatch.hasSharedId)) {
-				bestMatch = { detail, score: evalRes.score, hasSharedId };
+				bestMatch = { detail, score: evalRes.score, hasSharedId, evalRes };
 			}
 		} else if (evalRes.decision === 'name_only_note' || exactName) {
 			ambiguousDetail = detail;
@@ -1006,13 +1020,14 @@ async function matchUpdateOrCreateDiscoveredEntity(
 
 	if (bestMatch) {
 		const existing = bestMatch.detail.profile;
+		const allowLocationUpdate = hasStrongLocationAlignments(bestMatch.evalRes, 2);
 		if (wikiHit?.qid && !bestMatch.detail.identifiers.some((i) => i.scheme === 'wikidata')) {
 			addIdentifier({ profileId: existing.id, scheme: 'wikidata', value: wikiHit.qid, sourceCorpus: PIPELINE_CORPUS });
 		}
 		if (wikiHit?.url && !bestMatch.detail.identifiers.some((i) => i.scheme === 'url' && /wikipedia\.org/i.test(i.value))) {
 			addIdentifier({ profileId: existing.id, scheme: 'url', value: wikiHit.url, sourceCorpus: PIPELINE_CORPUS });
 		}
-		if (entity.location && bestMatch.detail.locations.length === 0) {
+		if (entity.location && allowLocationUpdate && bestMatch.detail.locations.length === 0) {
 			addLocation({ profileId: existing.id, raw: entity.location, role: 'associated', sourceCorpus: PIPELINE_CORPUS });
 		}
 		if (normalizeText(entity.name) !== normalizeText(existing.name)) {
@@ -1038,6 +1053,8 @@ async function matchUpdateOrCreateDiscoveredEntity(
 					location: entity.location,
 					notes: entity.milestone,
 					sourceCorpus: PIPELINE_CORPUS,
+					skipLocationUpdate: !allowLocationUpdate,
+					skipOrgLocationUpdate: true,
 				});
 			} catch {
 				/* non-fatal */
@@ -1131,6 +1148,7 @@ async function matchUpdateOrCreateDiscoveredEntity(
 				location: entity.location,
 				notes: entity.milestone,
 				sourceCorpus: PIPELINE_CORPUS,
+				skipOrgLocationUpdate: true,
 			});
 		} catch {
 			/* non-fatal */

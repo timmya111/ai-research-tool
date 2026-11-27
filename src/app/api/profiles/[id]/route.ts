@@ -12,6 +12,7 @@ import {
 	deleteIdentifier,
 	deleteLocation,
 	deleteProfile,
+	getProfile,
 	getProfileDetail,
 	replaceOtherNames,
 	touchProfilesForUserAction,
@@ -294,6 +295,7 @@ export async function PATCH(request: Request, context: Ctx) {
 			body.deleteIdentifier != null;
 		if (manualEdit) {
 			touchProfilesForUserAction([updated.id]);
+			updated = getProfile(updated.id) || updated;
 		}
 
 		/** Sync Overview ## Timeline dated bullets → Timeline tab (+ linked historic_event mirrors). */

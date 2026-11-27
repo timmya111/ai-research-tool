@@ -6,10 +6,16 @@
  * (~15–20s). Never block interactive create on this — call scheduleYahooFirmEnrich.
  */
 import {
+	buildProfileIdentityContext,
+	evaluateIdentityMatch,
+	hasStrongLocationAlignments,
+} from '@/lib/research/profiles/identity';
+import {
 	addAlias,
 	addIdentifier,
 	addLocation,
 	getProfile,
+	getProfileDetail,
 	upsertProfile,
 } from '@/lib/research/profiles/store';
 
@@ -181,6 +187,9 @@ export function applyYahooFirmProfile(
 	if (!existing || existing.profileType !== 'firm') {
 		throw new Error('Yahoo enrich requires an existing firm profile');
 	}
+	// Snapshot identity context BEFORE writing Yahoo's identifiers/summary so location
+	// authorization cannot self-corroborate against freshly added Yahoo fields.
+	const preDetailForLoc = getProfileDetail(profileId);
 
 	const summaryParts: string[] = [];
 	if (yahoo.description) summaryParts.push(yahoo.description);
@@ -255,15 +264,41 @@ export function applyYahooFirmProfile(
 		]
 			.filter(Boolean)
 			.join(', ');
-		addLocation({
-			profileId,
-			raw,
-			city: yahoo.city,
-			state: yahoo.state,
-			country: yahoo.country === 'United States' ? 'US' : yahoo.country,
-			role: 'hq',
-			sourceCorpus: CORPUS,
-		});
+		const yahooEval = preDetailForLoc
+			? evaluateIdentityMatch(buildProfileIdentityContext(preDetailForLoc), {
+					candidateName: yahoo.legalName || existing.name,
+					candidateAliases: yahoo.legalName ? [yahoo.legalName] : [],
+					candidateIdentifiers: [
+						{ scheme: 'ticker', value: yahoo.ticker },
+						...(yahoo.website ? [{ scheme: 'url', value: yahoo.website }] : []),
+					],
+					candidateExchange: opts?.exchange || (existing.metadata?.exchange ? String(existing.metadata.exchange) : 'NYSE'),
+					candidateLocations: [raw],
+					candidateFirms: yahoo.officers.map((o) => o.name).filter(Boolean),
+					candidateText: [
+						yahoo.legalName || existing.name,
+						yahoo.ticker,
+						yahoo.sector || '',
+						yahoo.industry || '',
+						yahoo.website || '',
+						raw,
+						yahoo.description || '',
+					]
+						.filter(Boolean)
+						.join(' '),
+				})
+			: null;
+		if (hasStrongLocationAlignments(yahooEval, 2)) {
+			addLocation({
+				profileId,
+				raw,
+				city: yahoo.city,
+				state: yahoo.state,
+				country: yahoo.country === 'United States' ? 'US' : yahoo.country,
+				role: 'hq',
+				sourceCorpus: CORPUS,
+			});
+		}
 	}
 }
 

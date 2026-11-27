@@ -18,10 +18,12 @@ import { getProfilesDb, withProfilesTransaction } from '@/lib/research/profiles/
 import {
 	buildProfileIdentityContext,
 	buildSearchPhrasesForProfile,
+	countStrongLocationAlignments,
 	demoteBareCountyNameOnlyScore,
 	evaluateIdentityMatch,
 	extractIdentifyingKeywords,
 	extractMilitarySignals,
+	hasStrongLocationAlignments,
 	type CandidateIdentityInput,
 	type ProfileIdentityContext,
 } from '@/lib/research/profiles/identity';
@@ -758,11 +760,12 @@ function applyValidatedWikipediaEnrichment(
 	profileType: ProfileType,
 	profileName: string,
 	article: ParsedWikiArticle,
-): { fieldsUpdated: string[]; countsAdded: ReturnType<typeof emptyCounts> } {
+	allowLocationUpdate = false,
+): { fieldsUpdated: string[]; countsAdded: ReturnType<typeof emptyCounts>; locationsWithheld: boolean } {
 	const counts = emptyCounts();
 	const fieldsUpdated: string[] = [];
 	const detail = getProfileDetail(profileId);
-	if (!detail) return { fieldsUpdated, countsAdded: counts };
+	if (!detail) return { fieldsUpdated, countsAdded: counts, locationsWithheld: false };
 
 	const existingMeta = detail.profile.metadata || {};
 	const prevCorpora = Array.isArray(existingMeta.corpora) ? existingMeta.corpora.map(String) : [];
@@ -896,6 +899,8 @@ function applyValidatedWikipediaEnrichment(
 		setDetailField('causes', article.infobox.cause?.text || article.infobox.causes?.text, 'causes', 260);
 	}
 
+	let locationsWithheld = false;
+
 	withProfilesTransaction((tx) => {
 		updateProfileFields(profileId, {
 			summary: nextSummary,
@@ -1002,24 +1007,28 @@ function applyValidatedWikipediaEnrichment(
 			if (clean) locEntries.push({ raw: clean, role: 'hq' });
 		}
 
-		for (const le of locEntries) {
-			const parts = parseAddressParts(le.raw);
-			addLocation(
-				{
-					profileId,
-					raw: le.raw,
-					city: parts.city,
-					county: parts.county,
-					state: parts.state,
-					country: parts.country,
-					role: le.role,
-					sourceCorpus: 'wikipedia-local',
-				},
-				tx,
-			);
-			counts.locations += 1;
+		if (allowLocationUpdate) {
+			for (const le of locEntries) {
+				const parts = parseAddressParts(le.raw);
+				addLocation(
+					{
+						profileId,
+						raw: le.raw,
+						city: parts.city,
+						county: parts.county,
+						state: parts.state,
+						country: parts.country,
+						role: le.role,
+						sourceCorpus: 'wikipedia-local',
+					},
+					tx,
+				);
+				counts.locations += 1;
+			}
+			if (counts.locations > 0) fieldsUpdated.push('locations');
+		} else if (locEntries.length > 0) {
+			locationsWithheld = true;
 		}
-		if (counts.locations > 0) fieldsUpdated.push('locations');
 
 		// Person-specific enrichments: Education, Employment / Title orgs, Military service
 		if (profileType === 'person') {
@@ -1305,7 +1314,7 @@ function applyValidatedWikipediaEnrichment(
 		if (counts.timelineEntries > 0) fieldsUpdated.push('timeline');
 	});
 
-	return { fieldsUpdated: [...new Set(fieldsUpdated)], countsAdded: counts };
+	return { fieldsUpdated: [...new Set(fieldsUpdated)], countsAdded: counts, locationsWithheld };
 }
 
 async function enrichFromLocalWikipedia(
@@ -1374,12 +1383,18 @@ async function enrichFromLocalWikipedia(
 	}
 
 	if (bestValidated) {
+		const allowLocationUpdate = hasStrongLocationAlignments(bestValidated.evalRes, 2);
 		const applied = applyValidatedWikipediaEnrichment(
 			ctx.profileId,
 			ctx.profileType,
 			ctx.name,
 			bestValidated.article,
+			allowLocationUpdate,
 		);
+		const strongCount = countStrongLocationAlignments(bestValidated.evalRes);
+		const locNote = applied.locationsWithheld
+			? ` Location update skipped (${strongCount}/2 strong alignments required).`
+			: '';
 		return {
 			source: 'wikipedia_local',
 			status: 'merged',
@@ -1388,7 +1403,7 @@ async function enrichFromLocalWikipedia(
 			evaluation: bestValidated.evalRes,
 			fieldsUpdated: applied.fieldsUpdated,
 			countsAdded: applied.countsAdded,
-			note: bestValidated.evalRes.rationale,
+			note: `${bestValidated.evalRes.rationale}${locNote}`.trim(),
 		};
 	}
 
@@ -1475,12 +1490,30 @@ async function enrichFromBrokercheck(ctx: ProfileIdentityContext): Promise<Enric
 	const bcName = String(bc.name || ctx.name);
 	const brokercheckUrl = String(bc.brokercheckUrl || `https://brokercheck.finra.org/individual/summary/${crdIdent.value}`);
 
+	const allEmployments: BrokercheckEmployment[] = [
+		...(Array.isArray(bc.employments) ? (bc.employments as BrokercheckEmployment[]) : []),
+		...(ia && Array.isArray(ia.employments) ? (ia.employments as BrokercheckEmployment[]) : []),
+	];
+	const allExams: BrokercheckExam[] = [
+		...(Array.isArray(bc.exams) ? (bc.exams as BrokercheckExam[]) : []),
+	];
+	const otherNames = [
+		...(Array.isArray(bc.otherNames) ? bc.otherNames.map(String) : []),
+		...(ia && Array.isArray(ia.otherNames) ? ia.otherNames.map(String) : []),
+	];
+	const empFirms = [...new Set(allEmployments.map((e) => String(e.firmName || '').trim()).filter(Boolean))];
+	const empLocs = [
+		...new Set(allEmployments.map((e) => [e.city, e.state].filter(Boolean).join(', ')).filter(Boolean)),
+	];
+
 	// Validate via evaluateIdentityMatch (auto-validates via shared_identifier finra_crd!)
 	const evalRes = evaluateIdentityMatch(ctx, {
 		candidateName: bcName,
-		candidateAliases: Array.isArray(bc.otherNames) ? bc.otherNames.map(String) : [],
+		candidateAliases: otherNames,
 		candidateIdentifiers: [{ scheme: 'finra_crd', value: crdIdent.value }],
-		candidateText: `FINRA CRD ${crdIdent.value} ${bcName}`,
+		candidateFirms: empFirms,
+		candidateLocations: empLocs,
+		candidateText: `FINRA CRD ${crdIdent.value} ${bcName} ${empFirms.join(' ')} ${empLocs.join(' ')}`,
 	});
 
 	if (evalRes.decision !== 'validated_merge') {
@@ -1495,18 +1528,8 @@ async function enrichFromBrokercheck(ctx: ProfileIdentityContext): Promise<Enric
 		};
 	}
 
+	const allowLocationUpdate = hasStrongLocationAlignments(evalRes, 2);
 	const fieldsUpdated: string[] = [];
-	const allEmployments: BrokercheckEmployment[] = [
-		...(Array.isArray(bc.employments) ? (bc.employments as BrokercheckEmployment[]) : []),
-		...(ia && Array.isArray(ia.employments) ? (ia.employments as BrokercheckEmployment[]) : []),
-	];
-	const allExams: BrokercheckExam[] = [
-		...(Array.isArray(bc.exams) ? (bc.exams as BrokercheckExam[]) : []),
-	];
-	const otherNames = [
-		...(Array.isArray(bc.otherNames) ? bc.otherNames.map(String) : []),
-		...(ia && Array.isArray(ia.otherNames) ? ia.otherNames.map(String) : []),
-	];
 
 	withProfilesTransaction((tx) => {
 		const detail = getProfileDetail(ctx.profileId);
@@ -1631,11 +1654,13 @@ async function enrichFromBrokercheck(ctx: ProfileIdentityContext): Promise<Enric
 					location: loc || null,
 					sourceCorpus: 'finra-brokercheck',
 					notes: `BrokerCheck CRD# ${crdIdent.value}${emp.firmId ? ` · Firm CRD# ${emp.firmId}` : ''}`,
+					skipLocationUpdate: !allowLocationUpdate,
+					skipOrgLocationUpdate: true,
 				},
 				tx,
 			);
 			counts.employments += 1;
-			if (loc) counts.locations += 1;
+			if (loc && allowLocationUpdate) counts.locations += 1;
 			if (added && emp.firmId) {
 				addIdentifier(
 					{
@@ -1838,6 +1863,7 @@ async function enrichFirmFromFinraConnections(ctx: ProfileIdentityContext): Prom
 					},
 					tx,
 				);
+				const prePersonDetail = getProfileDetail(personProf.id);
 				addIdentifier(
 					{
 						profileId: personProf.id,
@@ -1848,20 +1874,31 @@ async function enrichFirmFromFinraConnections(ctx: ProfileIdentityContext): Prom
 					tx,
 				);
 				if (address) {
-					const parts = parseAddressParts(address);
-					addLocation(
-						{
-							profileId: personProf.id,
-							raw: address,
-							city: parts.city,
-							county: parts.county,
-							state: parts.state,
-							country: parts.country,
-							role: 'branch',
-							sourceCorpus: CORPUS,
-						},
-						tx,
-					);
+					const personEval = prePersonDetail
+						? evaluateIdentityMatch(buildProfileIdentityContext(prePersonDetail), {
+								candidateName: name,
+								candidateIdentifiers: [{ scheme: 'finra_crd', value: indCrd }],
+								candidateFirms: [ctx.name],
+								candidateLocations: [address],
+								candidateText: `FINRA CRD ${indCrd} ${name} ${ctx.name} ${address}`,
+							})
+						: null;
+					if (hasStrongLocationAlignments(personEval, 2)) {
+						const parts = parseAddressParts(address);
+						addLocation(
+							{
+								profileId: personProf.id,
+								raw: address,
+								city: parts.city,
+								county: parts.county,
+								state: parts.state,
+								country: parts.country,
+								role: 'branch',
+								sourceCorpus: CORPUS,
+							},
+							tx,
+						);
+					}
 				}
 				const noteParts = [
 					`status=${isCurrent ? 'current' : 'previous'}`,
@@ -2287,6 +2324,7 @@ function enrichFromBryanUcc(ctx: ProfileIdentityContext): EnrichSourceOutcome {
 	}
 
 	const fieldsUpdated: string[] = [];
+
 	withProfilesTransaction((tx) => {
 		for (const v of validated.slice(0, 4)) {
 			const recDate = normalizeIsoDate(v.row.recorded).date;
@@ -2445,25 +2483,54 @@ async function enrichFromFreeOrgSources(
 			};
 		}
 
+		const candidateIdents: Array<{ scheme: string; value: string }> = [];
+		if (hit.wikidataQid) candidateIdents.push({ scheme: 'wikidata', value: hit.wikidataQid });
+		if (hit.ein) candidateIdents.push({ scheme: 'irs_ein', value: hit.ein });
+		const freeOrgEval = evaluateIdentityMatch(ctx, {
+			candidateName: ctx.name,
+			candidateIdentifiers: candidateIdents,
+			candidateLocations: hit.address?.raw ? [hit.address.raw] : [],
+			candidateStartDate: hit.startDate || null,
+			candidateEndDate: hit.endDate || null,
+			candidateText: [
+				ctx.name,
+				hit.address?.raw || '',
+				hit.address?.city || '',
+				hit.address?.state || '',
+				hit.address?.country || '',
+				hit.wikidataQid || '',
+				hit.ein || '',
+				...hit.evidence.map((ev) => `${ev.source} ${ev.field} ${ev.value}`),
+			]
+				.filter(Boolean)
+				.join(' '),
+		});
+		const allowLocationUpdate = hasStrongLocationAlignments(freeOrgEval, 2);
+		let locationWithheld = false;
+
 		withProfilesTransaction((tx) => {
 			if (!hasStreet && hit.address && isPlausibleStreetHq(hit.address.raw)) {
-				const parts = parseAddressParts(hit.address.raw);
-				addLocation(
-					{
-						profileId: ctx.profileId,
-						raw: hit.address.raw,
-						city: hit.address.city ?? parts.city,
-						state: hit.address.state ?? parts.state,
-						country: hit.address.country ?? parts.country,
-						lat: hit.address.lat ?? null,
-						lon: hit.address.lon ?? null,
-						role: 'hq',
-						sourceCorpus: `free-${hit.address.source}`,
-					},
-					tx,
-				);
-				counts.locations += 1;
-				fieldsUpdated.push('locations');
+				if (allowLocationUpdate) {
+					const parts = parseAddressParts(hit.address.raw);
+					addLocation(
+						{
+							profileId: ctx.profileId,
+							raw: hit.address.raw,
+							city: hit.address.city ?? parts.city,
+							state: hit.address.state ?? parts.state,
+							country: hit.address.country ?? parts.country,
+							lat: hit.address.lat ?? null,
+							lon: hit.address.lon ?? null,
+							role: 'hq',
+							sourceCorpus: `free-${hit.address.source}`,
+						},
+						tx,
+					);
+					counts.locations += 1;
+					fieldsUpdated.push('locations');
+				} else {
+					locationWithheld = true;
+				}
 			}
 
 			const patch: {
@@ -2519,6 +2586,11 @@ async function enrichFromFreeOrgSources(
 			}
 		});
 
+		const evNote = hit.evidence.map((e) => `${e.field}:${e.source}`).join(', ');
+		const strongCount = countStrongLocationAlignments(freeOrgEval);
+		const locNote = locationWithheld
+			? `Location update skipped (${strongCount}/2 strong alignments required)`
+			: '';
 		return {
 			source: 'free_org_enrich',
 			status: 'merged',
@@ -2526,9 +2598,10 @@ async function enrichFromFreeOrgSources(
 			candidateUrl: hit.wikidataQid
 				? `https://www.wikidata.org/wiki/${hit.wikidataQid}`
 				: hit.address?.sourceUrl || null,
+			evaluation: freeOrgEval,
 			fieldsUpdated: [...new Set(fieldsUpdated)],
 			countsAdded: counts,
-			note: hit.evidence.map((e) => `${e.field}:${e.source}`).join(', '),
+			note: [evNote, locNote].filter(Boolean).join(' · '),
 		};
 	} catch (e) {
 		return {

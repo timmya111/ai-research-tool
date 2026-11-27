@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
-import { addPersonEmployment, getProfileDetail } from '@/lib/research/profiles/store';
+import {
+	addPersonEmployment,
+	getProfileDetail,
+	touchProfilesForUserAction,
+} from '@/lib/research/profiles/store';
 import type { ProfileType } from '@/lib/research/profiles/types';
 
 export const dynamic = 'force-dynamic';
@@ -42,6 +46,9 @@ export async function POST(request: Request, context: Ctx) {
 		}
 
 		const detail = getProfileDetail(key);
+		if (detail?.profile?.id) {
+			touchProfilesForUserAction([detail.profile.id, created.orgProfile.id]);
+		}
 		return NextResponse.json(
 			{ ok: true, linkId: created.linkId, orgProfile: created.orgProfile, detail },
 			{ status: 201, headers: { 'Cache-Control': 'no-store' } },

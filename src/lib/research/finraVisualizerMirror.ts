@@ -3,11 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { finraApiUrl } from '@/lib/research/finraApp';
 import { getProfilesDb, withProfilesTransaction } from '@/lib/research/profiles/db';
+import {
+	buildProfileIdentityContext,
+	evaluateIdentityMatch,
+	hasStrongLocationAlignments,
+} from '@/lib/research/profiles/identity';
 import { normalizeIsoDate, parseAddressParts } from '@/lib/research/profiles/normalize';
 import {
 	addAlias,
 	addIdentifier,
 	addLocation,
+	getProfileDetail,
 	updateProfileFields,
 	upsertProfile,
 	upsertProfileLink,
@@ -560,6 +566,25 @@ export async function ingestIndividualFromVisualizer(
 			profileId = created.id;
 		}
 
+		// Snapshot pre-existing identity context BEFORE adding FINRA IDs/links so location updates
+		// require ≥2 genuine prior alignments (no circular self-corroboration).
+		const prePersonDetail = getProfileDetail(profileId);
+		const prePersonOtherNames = Array.isArray(bi.otherNames) ? bi.otherNames.map(String) : [];
+		const prePersonBranches = emps.flatMap((e) => e.branchAddresses).filter(Boolean);
+		const allowPersonLocationUpdate = prePersonDetail
+			? hasStrongLocationAlignments(
+					evaluateIdentityMatch(buildProfileIdentityContext(prePersonDetail), {
+						candidateName: fullName,
+						candidateAliases: prePersonOtherNames,
+						candidateIdentifiers: [{ scheme: 'finra_crd', value: clean }],
+						candidateFirms: emps.map((e) => e.firmName).filter(Boolean),
+						candidateLocations: prePersonBranches,
+						candidateText: `FINRA CRD ${clean} ${fullName} ${emps.map((e) => e.firmName).join(' ')} ${prePersonBranches.join(' ')}`,
+					}),
+					2,
+				)
+			: false;
+
 		// Update rich metadata on person profile
 		const curRow = tx.prepare('SELECT metadata_json, summary FROM profiles WHERE id = ?').get(profileId) as
 			| { metadata_json?: string; summary?: string }
@@ -798,23 +823,25 @@ export async function ingestIndividualFromVisualizer(
 				linksUpdated += 1;
 			}
 
-			// Add branch locations on the person profile (limit 2 per employment)
-			for (const addr of emp.branchAddresses.slice(0, 2)) {
-				const parts = parseAddressParts(addr);
-				addLocation(
-					{
-						profileId,
-						raw: addr,
-						city: parts.city,
-						county: parts.county,
-						state: parts.state,
-						country: parts.country,
-						role: 'branch',
-						sourceCorpus: CORPUS,
-					},
-					tx,
-				);
-				locationsAdded += 1;
+			// Add branch locations on the person profile only when ≥2 strong alignments match
+			if (allowPersonLocationUpdate) {
+				for (const addr of emp.branchAddresses.slice(0, 2)) {
+					const parts = parseAddressParts(addr);
+					addLocation(
+						{
+							profileId,
+							raw: addr,
+							city: parts.city,
+							county: parts.county,
+							state: parts.state,
+							country: parts.country,
+							role: 'branch',
+							sourceCorpus: CORPUS,
+						},
+						tx,
+					);
+					locationsAdded += 1;
+				}
 			}
 		}
 
@@ -1046,6 +1073,37 @@ export function ingestFirmDetailPayloadIntoDb(
 			profileId = created.id;
 		}
 
+		// Snapshot pre-existing firm identity context BEFORE writing FINRA identifiers/aliases.
+		const preFirmDetail = getProfileDetail(profileId);
+		const preFirmOtherNames = [
+			...(Array.isArray(bi.otherNames) ? bi.otherNames.map(String) : []),
+			typeof bi.iaFirmName === 'string' ? bi.iaFirmName : '',
+		].filter(Boolean);
+		const allowFirmLocationUpdate = preFirmDetail
+			? hasStrongLocationAlignments(
+					evaluateIdentityMatch(buildProfileIdentityContext(preFirmDetail), {
+						candidateName: firmName,
+						candidateAliases: preFirmOtherNames,
+						candidateIdentifiers: [{ scheme: 'finra_crd', value: clean }],
+						candidateFirms: directOwners.map((o) => String(o.name || '').trim()).filter(Boolean),
+						candidateLocations: [officeAddr, iaOfficeAddr, mailingAddr].filter((x): x is string => Boolean(x)),
+						candidateStartDate: approvedDate,
+						candidateText: [
+							firmName,
+							`CRD ${clean}`,
+							bi.formedState ? String(bi.formedState) : '',
+							officeAddr || '',
+							iaOfficeAddr || '',
+							mailingAddr || '',
+							...directOwners.map((o) => String(o.name || '')),
+						]
+							.filter(Boolean)
+							.join(' '),
+					}),
+					2,
+				)
+			: false;
+
 		addIdentifier({ profileId, scheme: 'finra_crd', value: clean, sourceCorpus: CORPUS }, tx);
 
 		const curRow = tx.prepare('SELECT metadata_json, summary, start_date FROM profiles WHERE id = ?').get(profileId) as
@@ -1129,9 +1187,9 @@ export function ingestFirmDetailPayloadIntoDb(
 			}
 		}
 
-		// Locations (HQ + Mailing + IA office)
+		// Locations (HQ + Mailing + IA office) — gated by pre-mutation ≥2 strong alignments check
 		const addLoc = (raw: string | null, role: 'hq' | 'branch') => {
-			if (!raw) return;
+			if (!raw || !allowFirmLocationUpdate) return;
 			const parts = parseAddressParts(raw);
 			addLocation(
 				{

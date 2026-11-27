@@ -2,7 +2,12 @@ import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
 import { syncEmploymentSpansToTimeline } from '@/lib/research/profiles/employmentTimeline';
 import { normalizeGeoKey } from '@/lib/research/profiles/normalize';
-import { getProfile, upsertSourceRecord, upsertTimelineEntry } from '@/lib/research/profiles/store';
+import {
+	getProfile,
+	touchProfilesForUserAction,
+	upsertSourceRecord,
+	upsertTimelineEntry,
+} from '@/lib/research/profiles/store';
 import { getProfileTimeline } from '@/lib/research/profiles/timeline';
 import type { TimelineAngle, TimelineEntryKind } from '@/lib/research/profiles/types';
 
@@ -107,6 +112,7 @@ export async function POST(request: Request, context: Ctx) {
 			sourceRecordId,
 		});
 
+		touchProfilesForUserAction([profile.id]);
 		return NextResponse.json(
 			{ ok: true, entryId },
 			{ status: 201, headers: { 'Cache-Control': 'no-store' } },

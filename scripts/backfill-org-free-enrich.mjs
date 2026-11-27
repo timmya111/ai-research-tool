@@ -38,9 +38,14 @@ registerHooks({
 	},
 });
 
-const { addLocation, addIdentifier, updateProfileFields, getProfile } = await import(
+const { addLocation, addIdentifier, updateProfileFields, getProfile, getProfileDetail } = await import(
 	'../src/lib/research/profiles/store.ts'
 );
+const {
+	buildProfileIdentityContext,
+	evaluateIdentityMatch,
+	hasStrongLocationAlignments,
+} = await import('../src/lib/research/profiles/identity.ts');
 const { parseAddressParts } = await import('../src/lib/research/profiles/normalize.ts');
 const {
 	lookupOrgFreeEnrich,
@@ -186,9 +191,35 @@ for (let i = 0; i < queue.length; i++) {
 		}
 
 		const parts = [];
+		const preDetail = getProfileDetail(row.id);
+		const candIdents = [];
+		if (hit.wikidataQid) candIdents.push({ scheme: 'wikidata', value: hit.wikidataQid });
+		if (hit.ein) candIdents.push({ scheme: 'irs_ein', value: hit.ein });
+		const locEval = preDetail
+			? evaluateIdentityMatch(buildProfileIdentityContext(preDetail), {
+					candidateName: row.name,
+					candidateIdentifiers: candIdents,
+					candidateLocations: hit.address?.raw ? [hit.address.raw] : [],
+					candidateStartDate: hit.startDate || null,
+					candidateEndDate: hit.endDate || null,
+					candidateText: [
+						row.name,
+						hit.address?.raw || '',
+						hit.address?.city || '',
+						hit.address?.state || '',
+						hit.address?.country || '',
+						hit.wikidataQid || '',
+						hit.ein || '',
+						...(hit.evidence || []).map((ev) => `${ev.source} ${ev.field} ${ev.value}`),
+					]
+						.filter(Boolean)
+						.join(' '),
+				})
+			: null;
 		if (
 			row.needAddr &&
 			hit.address &&
+			hasStrongLocationAlignments(locEval, 2) &&
 			isPlausibleStreetHq(hit.address.raw) &&
 			!isContaminantFreeOrgAddress(hit.address.raw) &&
 			!(row.profileType === 'nonprofit' && looksLikeForeignNonprofitName(row.name) && hit.address.source === 'irs-eo-bmf')

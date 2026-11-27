@@ -6,12 +6,53 @@ import {
 import { tickerListingKey, resolveTickerListing } from '@/lib/research/profiles/tickerListing';
 import type {
 	CorroborationHit,
+	CorroborationKind,
 	IdentityDecision,
 	IdentityEvaluation,
 	NameMatchKind,
 	ProfileDetail,
 	ProfileType,
 } from '@/lib/research/profiles/types';
+
+/** Corroboration kinds considered strong alignments for authorizing city/location updates. */
+const STRONG_LOCATION_ALIGNMENT_KINDS = new Set<CorroborationKind>([
+	'shared_identifier',
+	'address_or_geo',
+	'employer_or_firm',
+	'military_base_or_unit',
+	'education_or_institution',
+	'graph_neighbor',
+	'description_keyword_match',
+]);
+
+/**
+ * Count distinct strong corroborations from an identity evaluation against new content.
+ * Returns 0 when the match was rejected, had a date conflict, or was name-only.
+ */
+export function countStrongLocationAlignments(
+	evalRes: IdentityEvaluation | null | undefined,
+): number {
+	if (!evalRes) return 0;
+	if (evalRes.decision !== 'validated_merge' || evalRes.dateConflict) return 0;
+	const seen = new Set<string>();
+	for (const c of evalRes.corroborations || []) {
+		if (!STRONG_LOCATION_ALIGNMENT_KINDS.has(c.kind)) continue;
+		const key = `${c.kind}:${normalizeText(c.value)}`;
+		if (!seen.has(key)) seen.add(key);
+	}
+	return seen.size;
+}
+
+/**
+ * Require at least `minStrong` (default 2) distinct strong alignments with new content
+ * before adding or updating a profile's city/location during automated checks.
+ */
+export function hasStrongLocationAlignments(
+	evalRes: IdentityEvaluation | null | undefined,
+	minStrong = 2,
+): boolean {
+	return countStrongLocationAlignments(evalRes) >= minStrong;
+}
 
 export type ProfileIdentityContext = {
 	profileId: string;
@@ -621,9 +662,29 @@ export function compareSingleNamePair(
 		return { kind: 'exact_name', similarity: 0.96 };
 	}
 
+	// Trailing parenthesized acronym: e.g. "Federal Emergency Management Agency (FEMA)" ↔ "FEMA" or "Federal Emergency Management Agency"
+	const parenAcronymRe = /^(.{4,}?)\s*\(([A-Z][A-Z0-9&./-]{1,14})\)\s*$/;
+	const aParen = aRaw.trim().match(parenAcronymRe);
+	const bParen = bRaw.trim().match(parenAcronymRe);
+	const aBaseStripped = aParen ? stripLegalSuffixes(aParen[1]!) : aStripped;
+	const bBaseStripped = bParen ? stripLegalSuffixes(bParen[1]!) : bStripped;
+	if (aBaseStripped.length >= 4 && bBaseStripped.length >= 4 && aBaseStripped === bBaseStripped) {
+		return { kind: 'exact_name', similarity: 0.97 };
+	}
+	const aParenAcr = aParen ? normalizeText(aParen[2]!) : '';
+	const bParenAcr = bParen ? normalizeText(bParen[2]!) : '';
+	if (
+		(aParenAcr.length >= 2 && (aParenAcr === bNorm || (bParenAcr && aParenAcr === bParenAcr))) ||
+		(bParenAcr.length >= 2 && bParenAcr === aNorm)
+	) {
+		return { kind: 'exact_name', similarity: 0.95 };
+	}
+
 	// Check acronym match if one is short uppercase-style acronym of the other (e.g. "UTD" vs "University of Texas at Dallas")
-	const aTokens = aNorm.split(' ').filter((t) => t.length >= 2 && !['of', 'the', 'and', 'for', 'at', 'in'].includes(t));
-	const bTokens = bNorm.split(' ').filter((t) => t.length >= 2 && !['of', 'the', 'and', 'for', 'at', 'in'].includes(t));
+	const aBaseNorm = aParen ? normalizeText(aParen[1]!) : aNorm;
+	const bBaseNorm = bParen ? normalizeText(bParen[1]!) : bNorm;
+	const aTokens = aBaseNorm.split(' ').filter((t) => t.length >= 2 && !['of', 'the', 'and', 'for', 'at', 'in'].includes(t));
+	const bTokens = bBaseNorm.split(' ').filter((t) => t.length >= 2 && !['of', 'the', 'and', 'for', 'at', 'in'].includes(t));
 	const aAcronym = aTokens.map((t) => t[0]).join('');
 	const bAcronym = bTokens.map((t) => t[0]).join('');
 	if ((aNorm.length >= 3 && aNorm.length <= 6 && aNorm === bAcronym) || (bNorm.length >= 3 && bNorm.length <= 6 && bNorm === aAcronym)) {
