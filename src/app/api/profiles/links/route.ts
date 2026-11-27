@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
-import { getProfile, upsertProfileLink } from '@/lib/research/profiles/store';
+import {
+	deleteProfileLink,
+	getProfile,
+	updateProfileLink,
+	upsertProfileLink,
+} from '@/lib/research/profiles/store';
 import type { LinkStatus, ProfileRelationType, TimelineAngle } from '@/lib/research/profiles/types';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +48,83 @@ export async function POST(request: Request) {
 			{ ok: true, linkId },
 			{ status: 201, headers: { 'Cache-Control': 'no-store' } },
 		);
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return NextResponse.json({ ok: false, error: message }, { status: 500 });
+	}
+}
+
+/** Body: { linkId, profileId?, relationType?, roleLabel?, startDate?, endDate?, evidenceNote?, status? } */
+export async function PATCH(request: Request) {
+	const blocked = rejectUnlessLocalKnowledge(request);
+	if (blocked) return blocked;
+
+	try {
+		const body = (await request.json()) as Record<string, unknown>;
+		const linkId = String(body.linkId || body.id || '').trim();
+		if (!linkId) {
+			return NextResponse.json({ ok: false, error: 'linkId is required' }, { status: 400 });
+		}
+		let profileId: string | null = body.profileId ? String(body.profileId).trim() : null;
+		if (profileId) {
+			const prof = getProfile(profileId);
+			profileId = prof?.id || profileId;
+		}
+		const result = updateProfileLink({
+			id: linkId,
+			profileId,
+			...(body.relationType != null ?
+				{ relationType: String(body.relationType) as ProfileRelationType }
+			:	{}),
+			...(Object.prototype.hasOwnProperty.call(body, 'roleLabel') ?
+				{ roleLabel: body.roleLabel == null ? null : String(body.roleLabel) }
+			:	{}),
+			...(Object.prototype.hasOwnProperty.call(body, 'startDate') ?
+				{ startDate: body.startDate == null || body.startDate === '' ? null : String(body.startDate) }
+			:	{}),
+			...(Object.prototype.hasOwnProperty.call(body, 'endDate') ?
+				{ endDate: body.endDate == null || body.endDate === '' ? null : String(body.endDate) }
+			:	{}),
+			...(Object.prototype.hasOwnProperty.call(body, 'evidenceNote') ?
+				{ evidenceNote: body.evidenceNote == null ? '' : String(body.evidenceNote) }
+			:	{}),
+			...(body.status != null ? { status: String(body.status) as LinkStatus } : {}),
+		});
+		if (!result.ok) {
+			const status = result.error.includes('not found') ? 404 : 409;
+			return NextResponse.json({ ok: false, error: result.error }, { status });
+		}
+		return NextResponse.json({ ok: true, linkId: result.id }, { headers: { 'Cache-Control': 'no-store' } });
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return NextResponse.json({ ok: false, error: message }, { status: 500 });
+	}
+}
+
+/** Body: { linkId, profileId? } — profileId scopes delete to links touching that card. */
+export async function DELETE(request: Request) {
+	const blocked = rejectUnlessLocalKnowledge(request);
+	if (blocked) return blocked;
+
+	try {
+		const body = (await request.json()) as Record<string, unknown>;
+		const linkId = String(body.linkId || body.id || '').trim();
+		if (!linkId) {
+			return NextResponse.json({ ok: false, error: 'linkId is required' }, { status: 400 });
+		}
+		let profileId: string | null = body.profileId ? String(body.profileId).trim() : null;
+		if (profileId) {
+			const prof = getProfile(profileId);
+			profileId = prof?.id || profileId;
+		}
+		const deleted = deleteProfileLink({ id: linkId, profileId });
+		if (!deleted) {
+			return NextResponse.json(
+				{ ok: false, error: 'Link not found or does not belong to this profile' },
+				{ status: 404 },
+			);
+		}
+		return NextResponse.json({ ok: true, deleted: true }, { headers: { 'Cache-Control': 'no-store' } });
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		return NextResponse.json({ ok: false, error: message }, { status: 500 });

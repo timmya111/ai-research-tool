@@ -28,6 +28,7 @@ import type {
 	LocationRole,
 	Profile,
 	ProfileDetail,
+	ProfileRelationType,
 	ProfileStats,
 	ProfileTimelineResult,
 	ProfileType,
@@ -453,6 +454,54 @@ function isFullWidthDetailCard(key: string, text: string): boolean {
 }
 
 const OCCUPATION_LINK_RELATIONS = new Set(['employed_by', 'affiliated_with', 'business_tie', 'owned_by', 'registered_at', 'alumni_or_faculty', 'funded_by']);
+
+/** Relations offered in Connected Profiles “+ Add connection” (family stays in Family / Relatives). */
+const CONNECTED_ADD_RELATIONS: ProfileRelationType[] = [
+	'employed_by',
+	'affiliated_with',
+	'business_tie',
+	'owned_by',
+	'registered_at',
+	'alumni_or_faculty',
+	'funded_by',
+	'participated_in',
+	'authored_or_spoke',
+	'part_of_subject',
+	'mentioned_in',
+	'regulator_of',
+	'location_overlap',
+];
+
+type ConnSearchHit = {
+	id: string;
+	slug: string;
+	name: string;
+	profileType: ProfileType;
+};
+
+/**
+ * Pick link endpoints for manual Connected Profiles adds.
+ * employed_by / registered_at / alumni_or_faculty are always person → org.
+ */
+function resolveConnectedLinkEndpoints(
+	subject: { id: string; profileType: ProfileType },
+	peer: { id: string; profileType: ProfileType },
+	relationType: ProfileRelationType,
+): { fromProfileId: string; toProfileId: string } {
+	const personToOrg =
+		relationType === 'employed_by' ||
+		relationType === 'registered_at' ||
+		relationType === 'alumni_or_faculty';
+	if (personToOrg) {
+		if (subject.profileType === 'person' && peer.profileType !== 'person') {
+			return { fromProfileId: subject.id, toProfileId: peer.id };
+		}
+		if (peer.profileType === 'person' && subject.profileType !== 'person') {
+			return { fromProfileId: peer.id, toProfileId: subject.id };
+		}
+	}
+	return { fromProfileId: subject.id, toProfileId: peer.id };
+}
 
 type OccupationOrgPeer = { id: string; name: string };
 
@@ -3366,6 +3415,9 @@ export default function ProfilesClient({
 	const [altNamesDraft, setAltNamesDraft] = useState('');
 	const [summaryDraft, setSummaryDraft] = useState('');
 	const [savingCore, setSavingCore] = useState(false);
+	const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+	const [deleteConfirmName, setDeleteConfirmName] = useState('');
+	const [deletingProfile, setDeletingProfile] = useState(false);
 	const [aliasRowsDraft, setAliasRowsDraft] = useState<
 		Array<{
 			key: string;
@@ -3425,6 +3477,33 @@ export default function ProfilesClient({
 	const [savingEmp, setSavingEmp] = useState(false);
 	const [connStatusFilter, setConnStatusFilter] = useState<'all' | 'current' | 'old'>('all');
 	const [hydratingDates, setHydratingDates] = useState(false);
+	/** Connected-profile drafts while Edit is open (relation/role/dates/note + pending remove). */
+	const [connLinkDrafts, setConnLinkDrafts] = useState<
+		Array<{
+			id: string;
+			relationType: ProfileRelationType;
+			roleLabel: string;
+			startDate: string;
+			endDate: string;
+			evidenceNote: string;
+			deleted: boolean;
+			origRelationType: ProfileRelationType;
+			origRoleLabel: string;
+			origStartDate: string;
+			origEndDate: string;
+			origEvidenceNote: string;
+		}>
+	>([]);
+	const [connSearch, setConnSearch] = useState('');
+	const [connHits, setConnHits] = useState<ConnSearchHit[]>([]);
+	const [connPeer, setConnPeer] = useState<ConnSearchHit | null>(null);
+	const [connRelation, setConnRelation] = useState<ProfileRelationType>('affiliated_with');
+	const [connRole, setConnRole] = useState('');
+	const [connStart, setConnStart] = useState('');
+	const [connEnd, setConnEnd] = useState('');
+	const [connNote, setConnNote] = useState('');
+	const [savingConn, setSavingConn] = useState(false);
+	const [connSearchOpen, setConnSearchOpen] = useState(false);
 
 	const syncUrl = useCallback((next: { profile?: string | null; view?: 'profile' | 'alignments' }, mode: 'push' | 'replace' = 'push') => {
 		if (typeof window === 'undefined') return;
@@ -3566,6 +3645,7 @@ export default function ProfilesClient({
 				setEditingLocationId(null);
 				setEditingAliasId(null);
 				setPendingDeleteIdentIds([]);
+				setConnLinkDrafts([]);
 				setPendingNewIdents([]);
 				// Keep URL canonicalized to the readable slug (e.g. /profiles?profile=person:alex-karp)
 				const mode = skipNextPushRef.current ? 'replace' : 'push';
@@ -3598,6 +3678,61 @@ export default function ProfilesClient({
 			setLoadingTimeline(false);
 		}
 	}, []);
+
+	// Reset Connected Profiles add/remove drafts when navigating to another card.
+	useEffect(() => {
+		setConnSearch('');
+		setConnHits([]);
+		setConnPeer(null);
+		setConnRelation('affiliated_with');
+		setConnRole('');
+		setConnStart('');
+		setConnEnd('');
+		setConnNote('');
+		setConnSearchOpen(false);
+		setConnLinkDrafts([]);
+	}, [selectedId]);
+
+	// Typeahead for Connected Profiles “+ Add connection”.
+	useEffect(() => {
+		const q = connSearch.trim();
+		if (connPeer && q === connPeer.name) {
+			setConnHits([]);
+			return;
+		}
+		if (q.length < 2) {
+			setConnHits([]);
+			return;
+		}
+		const subjectId = detail?.profile?.id;
+		const handle = window.setTimeout(() => {
+			void (async () => {
+				try {
+					const params = new URLSearchParams();
+					params.set('q', q);
+					params.set('limit', '12');
+					const res = await fetch(`/api/profiles?${params.toString()}`, { cache: 'no-store' });
+					const data = await res.json();
+					if (!res.ok || !data?.ok) return;
+					const hits: ConnSearchHit[] = (Array.isArray(data.profiles) ? data.profiles : [])
+						.map((p: { id?: string; slug?: string; name?: string; profileType?: string }) => ({
+							id: String(p.id || ''),
+							slug: String(p.slug || ''),
+							name: String(p.name || ''),
+							profileType: (String(p.profileType || 'firm') in TYPE_META ?
+								(p.profileType as ProfileType)
+							:	'firm'),
+						}))
+						.filter((h: ConnSearchHit) => h.id && h.name && h.id !== subjectId);
+					setConnHits(hits);
+					setConnSearchOpen(true);
+				} catch {
+					/* ignore search errors */
+				}
+			})();
+		}, 220);
+		return () => window.clearTimeout(handle);
+	}, [connSearch, connPeer, detail?.profile?.id]);
 
 	const loadGlobalAlignments = useCallback(async () => {
 		setLoadingGlobalAlign(true);
@@ -4127,6 +4262,44 @@ export default function ProfilesClient({
 		setLocationDraft('');
 		setEditingAliasId(null);
 		setEditingLocationId(null);
+		setDeleteConfirmOpen(false);
+		setDeleteConfirmName('');
+		const empPeerIds = new Set(
+			detail.profile.profileType === 'person' ?
+				detail.employmentHistory.map((e) => e.orgProfileId).filter((x): x is string => Boolean(x))
+			:	[],
+		);
+		setConnLinkDrafts(
+			detail.links
+				.filter((l) => {
+					if (l.relationType === 'family_or_associate') return false;
+					const peerId = l.fromProfileId === detail.profile.id ? l.toProfileId : l.fromProfileId;
+					const peerType = (l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
+					if (peerType === 'historic_event') return false;
+					if (empPeerIds.has(peerId)) return false;
+					return true;
+				})
+				.map((l) => {
+					const role = l.roleLabel || '';
+					const start = formatDateDraftOnBlur(l.startDate || '');
+					const end = formatDateDraftOnBlur(l.endDate || '');
+					const note = scrubEvidenceNoteSourceTags(l.evidenceNote || '');
+					return {
+						id: l.id,
+						relationType: l.relationType,
+						roleLabel: role,
+						startDate: start,
+						endDate: end,
+						evidenceNote: note,
+						deleted: false,
+						origRelationType: l.relationType,
+						origRoleLabel: role,
+						origStartDate: start,
+						origEndDate: end,
+						origEvidenceNote: note,
+					};
+				}),
+		);
 		setProfileEditing(true);
 	}
 
@@ -4135,10 +4308,46 @@ export default function ProfilesClient({
 		setEditingAliasId(null);
 		setEditingLocationId(null);
 		setPendingDeleteIdentIds([]);
+		setConnLinkDrafts([]);
 		setPendingNewIdents([]);
 		setAliasDraft('');
 		setIdentValueDraft('');
 		setLocationDraft('');
+		setDeleteConfirmOpen(false);
+		setDeleteConfirmName('');
+	}
+
+	async function handleDeleteProfile() {
+		if (!detail?.profile) return;
+		const expected = detail.profile.name.trim();
+		if (deleteConfirmName.trim().toLowerCase() !== expected.toLowerCase()) {
+			setError(`Type the full profile name exactly to confirm delete: “${expected}”`);
+			return;
+		}
+		const profileKey = detail.profile.slug || detail.profile.id;
+		const deletedName = detail.profile.name;
+		setDeletingProfile(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(profileKey)}`, { method: 'DELETE' });
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to delete profile');
+			setProfileEditing(false);
+			setDeleteConfirmOpen(false);
+			setDeleteConfirmName('');
+			setConnLinkDrafts([]);
+			setDetail(null);
+			setSelectedId(null);
+			setTimeline(null);
+			skipNextPushRef.current = true;
+			syncUrl({ profile: null, view: 'profile' }, 'replace');
+			await loadList();
+			setBanner(`Deleted “${deletedName}”.`);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setDeletingProfile(false);
+		}
 	}
 
 	async function patchProfile(profileKey: string, body: Record<string, unknown>): Promise<ProfileDetail> {
@@ -4291,6 +4500,66 @@ export default function ProfilesClient({
 				profileKey = latest.profile.slug || latest.profile.id;
 			}
 
+			const subjectId = latest.profile.id;
+			let linksMutated = false;
+			for (const row of connLinkDrafts) {
+				if (row.deleted) {
+					const delRes = await fetch('/api/profiles/links', {
+						method: 'DELETE',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ linkId: row.id, profileId: subjectId }),
+					});
+					const delData = await delRes.json();
+					if (!delRes.ok || !delData?.ok) {
+						throw new Error(delData?.error || `Failed to remove connection ${row.id}`);
+					}
+					linksMutated = true;
+					continue;
+				}
+				const nextStart = row.startDate.trim()
+					? normalizeIsoDate(row.startDate.trim()).date || row.startDate.trim()
+					: '';
+				const nextEnd = row.endDate.trim()
+					? normalizeIsoDate(row.endDate.trim()).date || row.endDate.trim()
+					: '';
+				const nextRole = row.roleLabel.trim();
+				const nextNote = row.evidenceNote.trim();
+				const changed =
+					row.relationType !== row.origRelationType ||
+					nextRole !== row.origRoleLabel.trim() ||
+					nextStart !== (normalizeIsoDate(row.origStartDate.trim()).date || row.origStartDate.trim()) ||
+					nextEnd !== (normalizeIsoDate(row.origEndDate.trim()).date || row.origEndDate.trim()) ||
+					nextNote !== row.origEvidenceNote.trim();
+				if (!changed) continue;
+				const patchRes = await fetch('/api/profiles/links', {
+					method: 'PATCH',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						linkId: row.id,
+						profileId: subjectId,
+						relationType: row.relationType,
+						roleLabel: nextRole || null,
+						startDate: nextStart || null,
+						endDate: nextEnd || null,
+						evidenceNote: nextNote,
+					}),
+				});
+				const patchData = await patchRes.json();
+				if (!patchRes.ok || !patchData?.ok) {
+					throw new Error(patchData?.error || `Failed to update connection ${row.id}`);
+				}
+				linksMutated = true;
+			}
+			if (linksMutated) {
+				const reloadRes = await fetch(`/api/profiles/${encodeURIComponent(profileKey)}`, { cache: 'no-store' });
+				const reloadData = await reloadRes.json();
+				if (!reloadRes.ok || !reloadData?.ok) {
+					throw new Error(reloadData?.error || 'Failed to reload after updating connections');
+				}
+				latest = reloadData as ProfileDetail;
+				profileKey = latest.profile.slug || latest.profile.id;
+			}
+
 			// Ensure userTouchedAt is bumped even if only drafts matched with no field PATCH.
 			latest = await patchProfile(profileKey, { userTouch: true });
 			profileKey = latest.profile.slug || latest.profile.id;
@@ -4298,6 +4567,7 @@ export default function ProfilesClient({
 			setDetail(latest);
 			setProfileEditing(false);
 			setPendingDeleteIdentIds([]);
+			setConnLinkDrafts([]);
 			setPendingNewIdents([]);
 			if (summaryChanged) {
 				await loadTimeline(profileKey, {
@@ -4666,6 +4936,65 @@ export default function ProfilesClient({
 			setError(e instanceof Error ? e.message : String(e));
 		} finally {
 			setSavingEmp(false);
+		}
+	}
+
+	async function handleAddConnection(e: React.FormEvent) {
+		e.preventDefault();
+		if (!detail?.profile?.id || !connPeer) {
+			setError('Pick an existing profile from search results before adding a connection.');
+			return;
+		}
+		if (connPeer.id === detail.profile.id) {
+			setError('Cannot link a profile to itself.');
+			return;
+		}
+		setSavingConn(true);
+		setError(null);
+		const peerName = connPeer.name;
+		const relLabel = connRelation.replace(/_/g, ' ');
+		try {
+			const { fromProfileId, toProfileId } = resolveConnectedLinkEndpoints(
+				{ id: detail.profile.id, profileType: detail.profile.profileType },
+				{ id: connPeer.id, profileType: connPeer.profileType },
+				connRelation,
+			);
+			const res = await fetch('/api/profiles/links', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					fromProfileId,
+					toProfileId,
+					relationType: connRelation,
+					roleLabel: connRole.trim() || null,
+					startDate: connStart.trim()
+						? normalizeIsoDate(connStart.trim()).date || connStart.trim()
+						: null,
+					endDate: connEnd.trim()
+						? normalizeIsoDate(connEnd.trim()).date || connEnd.trim()
+						: null,
+					evidenceNote: connNote.trim() || '',
+					sourceCorpus: 'manual-ui',
+					status: 'verified',
+					confidence: 0.95,
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to add connection');
+			setConnSearch('');
+			setConnHits([]);
+			setConnPeer(null);
+			setConnRole('');
+			setConnStart('');
+			setConnEnd('');
+			setConnNote('');
+			setConnSearchOpen(false);
+			await loadDetail(selectedId || detail.profile.slug || detail.profile.id);
+			setBanner(`Linked ${peerName} (${relLabel}).`);
+		} catch (err: unknown) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setSavingConn(false);
 		}
 	}
 
@@ -6250,24 +6579,36 @@ export default function ProfilesClient({
 												<>
 													<button
 														type='button'
-														disabled={savingCore || !nameDraft.trim()}
+														disabled={savingCore || deletingProfile || !nameDraft.trim()}
 														onClick={() => void handleApplyProfileEdit()}
 														className='cursor-pointer rounded-md border border-emerald-500/50 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-500/25 disabled:opacity-50 dark:text-emerald-200'>
 														{savingCore ? 'Applying…' : 'Apply'}
 													</button>
 													<button
 														type='button'
-														disabled={savingCore}
+														disabled={savingCore || deletingProfile}
 														onClick={cancelProfileEdit}
 														className='cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50'>
 														Cancel
+													</button>
+													<button
+														type='button'
+														disabled={savingCore || deletingProfile}
+														onClick={() => {
+															setDeleteConfirmOpen((open) => !open);
+															setDeleteConfirmName('');
+															setError(null);
+														}}
+														className='cursor-pointer rounded-md border border-rose-500/50 bg-rose-500/10 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-500/20 disabled:opacity-50 dark:text-rose-300'
+														title='Permanently delete this profile and its linked rows'>
+														Delete…
 													</button>
 												</>
 											:	<button
 													type='button'
 													onClick={beginProfileEdit}
 													className='cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs font-semibold hover:bg-[var(--app-surface-hover)]'
-													title='Edit name, other names, summary, dates, aliases, identifiers, and locations'>
+													title='Edit name, other names, summary, dates, aliases, identifiers, locations, and connected profiles'>
 													Edit
 												</button>
 											}
@@ -6280,6 +6621,47 @@ export default function ProfilesClient({
 												{enriching ? 'Researching…' : 'Research & Fill Details'}
 											</button>
 										</div>
+										{profileEditing && deleteConfirmOpen ?
+											<div className='mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs'>
+												<p className='m-0 mb-1.5 font-semibold text-rose-800 dark:text-rose-200'>
+													Delete “{detail.profile.name}”? This cannot be undone.
+												</p>
+												<p className='m-0 mb-2 opacity-80'>
+													Removes the card and cascaded aliases, identifiers, locations, links, timeline rows, and
+													alignments. Type the full name to confirm.
+												</p>
+												<div className='flex flex-wrap items-center gap-2'>
+													<input
+														value={deleteConfirmName}
+														onChange={(e) => setDeleteConfirmName(e.target.value)}
+														placeholder={detail.profile.name}
+														autoComplete='off'
+														disabled={deletingProfile}
+														className='min-w-[14rem] flex-1 rounded border border-rose-500/40 bg-[var(--app-bg)] px-2 py-1.5 text-xs'
+													/>
+													<button
+														type='button'
+														disabled={
+															deletingProfile ||
+															deleteConfirmName.trim().toLowerCase() !== detail.profile.name.trim().toLowerCase()
+														}
+														onClick={() => void handleDeleteProfile()}
+														className='cursor-pointer rounded-md border-none bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-50'>
+														{deletingProfile ? 'Deleting…' : 'Delete permanently'}
+													</button>
+													<button
+														type='button'
+														disabled={deletingProfile}
+														onClick={() => {
+															setDeleteConfirmOpen(false);
+															setDeleteConfirmName('');
+														}}
+														className='cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50'>
+														Keep
+													</button>
+												</div>
+											</div>
+										:	null}
 									</div>
 									{(detail.profile.profileType === 'person' || detail.profile.profileType === 'firm') &&
 									resolveProfileFinraCrd(detail.profile.profileType, detail.profile.metadata, detail.identifiers) ?
@@ -7506,6 +7888,7 @@ export default function ProfilesClient({
 
 												const connectedLinks = nonEmpLinks
 													.filter((l) => {
+														if (l.relationType === 'family_or_associate') return false;
 														const peerType = (l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
 														return peerType !== 'historic_event';
 													})
@@ -7528,15 +7911,26 @@ export default function ProfilesClient({
 														return na.localeCompare(nb);
 													});
 
-												const currentCount = connectedLinks.filter((x) => x.connStatus === 'current').length;
-												const oldCount = connectedLinks.filter((x) => x.connStatus === 'old').length;
+												const draftById = new Map(connLinkDrafts.map((d) => [d.id, d]));
+												const pendingLinkDelete = new Set(connLinkDrafts.filter((d) => d.deleted).map((d) => d.id));
+												const activeConnectedCount = connectedLinks.filter((x) => !pendingLinkDelete.has(x.link.id)).length;
+												const currentCount = connectedLinks.filter(
+													(x) => x.connStatus === 'current' && !pendingLinkDelete.has(x.link.id),
+												).length;
+												const oldCount = connectedLinks.filter(
+													(x) => x.connStatus === 'old' && !pendingLinkDelete.has(x.link.id),
+												).length;
 												const undatedFinraCount =
-													detail.profile.profileType === 'firm' ? connectedLinks.filter((x) => x.link.relationType === 'registered_at' && !x.link.startDate).length : 0;
-												const filteredLinks = connStatusFilter === 'all' ? connectedLinks : connectedLinks.filter((x) => x.connStatus === connStatusFilter);
-
-												if (historicEventLinks.length === 0 && connectedLinks.length === 0) {
-													return null;
-												}
+													detail.profile.profileType === 'firm'
+														? connectedLinks.filter(
+																(x) =>
+																	x.link.relationType === 'registered_at' &&
+																	!x.link.startDate &&
+																	!pendingLinkDelete.has(x.link.id),
+															).length
+														: 0;
+												const filteredLinks =
+													connStatusFilter === 'all' ? connectedLinks : connectedLinks.filter((x) => x.connStatus === connStatusFilter);
 
 												return (
 													<div className='space-y-4'>
@@ -7582,162 +7976,393 @@ export default function ProfilesClient({
 															</div>
 														:	null}
 
-														{connectedLinks.length > 0 ?
-															<div>
-																<div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
-																	<h3 className='m-0 text-xs font-semibold uppercase opacity-75'>
-																		Connected Profiles (
-																		{detail.counts.links > detail.links.length ?
-																			`showing ${connectedLinks.length.toLocaleString()} of ${detail.counts.links.toLocaleString()}`
-																		:	connectedLinks.length.toLocaleString()}
-																		)
-																	</h3>
-																	<div className='flex flex-wrap items-center gap-1.5'>
-																		{currentCount > 0 || oldCount > 0 ?
-																			<div className='flex items-center gap-1'>
-																				{(
-																					[
-																						{
-																							id: 'all' as const,
-																							label: `All (${connectedLinks.length.toLocaleString()})`,
-																							show: true,
-																						},
-																						{
-																							id: 'current' as const,
-																							label: `Current (${currentCount.toLocaleString()})`,
-																							show: currentCount > 0,
-																						},
-																						{
-																							id: 'old' as const,
-																							label: `Old (${oldCount.toLocaleString()})`,
-																							show: oldCount > 0,
-																						},
-																					] as const
-																				)
-																					.filter((tab) => tab.show)
-																					.map((tab) => (
-																						<button
-																							key={tab.id}
-																							type='button'
-																							onClick={() => setConnStatusFilter(tab.id)}
-																							className={`cursor-pointer rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
-																								connStatusFilter === tab.id ?
-																									'border-[#F97316] bg-[#F97316] text-white'
-																								:	'border-[var(--app-border)] bg-[var(--app-bg)] hover:bg-[var(--app-surface-hover)]'
-																							}`}>
-																							{tab.label}
-																						</button>
-																					))}
-																			</div>
-																		:	null}
-																		{undatedFinraCount > 0 ?
-																			<button
-																				type='button'
-																				disabled={hydratingDates}
-																				onClick={() => void handleHydrateFirmDates()}
-																				className='cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/12 px-2 py-0.5 text-[10px] font-semibold text-[#F97316] hover:bg-[#F97316]/20 disabled:opacity-50'
-																				title='Fetch FINRA BrokerCheck & SEC IAPD employment start/end dates for connected people'>
-																				{hydratingDates ? 'Fetching Hire Dates…' : `Fetch Hire Dates (${undatedFinraCount.toLocaleString()})`}
-																			</button>
-																		:	null}
-																	</div>
+														<div className='rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3'>
+															<div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
+																<h3 className='m-0 text-xs font-semibold uppercase opacity-75'>
+																	Connected Profiles (
+																	{detail.counts.links > detail.links.length ?
+																		`showing ${activeConnectedCount.toLocaleString()} of ${detail.counts.links.toLocaleString()}`
+																	:	activeConnectedCount.toLocaleString()}
+																	{profileEditing && pendingLinkDelete.size > 0 ?
+																		` · ${pendingLinkDelete.size} pending remove`
+																	:	''}
+																	)
+																</h3>
+																<div className='flex flex-wrap items-center gap-1.5'>
+																	{currentCount > 0 || oldCount > 0 ?
+																		<div className='flex items-center gap-1'>
+																			{(
+																				[
+																					{
+																						id: 'all' as const,
+																						label: `All (${activeConnectedCount.toLocaleString()})`,
+																						show: true,
+																					},
+																					{
+																						id: 'current' as const,
+																						label: `Current (${currentCount.toLocaleString()})`,
+																						show: currentCount > 0,
+																					},
+																					{
+																						id: 'old' as const,
+																						label: `Old (${oldCount.toLocaleString()})`,
+																						show: oldCount > 0,
+																					},
+																				] as const
+																			)
+																				.filter((tab) => tab.show)
+																				.map((tab) => (
+																					<button
+																						key={tab.id}
+																						type='button'
+																						onClick={() => setConnStatusFilter(tab.id)}
+																						className={`cursor-pointer rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+																							connStatusFilter === tab.id ?
+																								'border-[#F97316] bg-[#F97316] text-white'
+																							:	'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]'
+																						}`}>
+																						{tab.label}
+																					</button>
+																				))}
+																		</div>
+																	:	null}
+																	{undatedFinraCount > 0 ?
+																		<button
+																			type='button'
+																			disabled={hydratingDates}
+																			onClick={() => void handleHydrateFirmDates()}
+																			className='cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/12 px-2 py-0.5 text-[10px] font-semibold text-[#F97316] hover:bg-[#F97316]/20 disabled:opacity-50'
+																			title='Fetch FINRA BrokerCheck & SEC IAPD employment start/end dates for connected people'>
+																			{hydratingDates ? 'Fetching Hire Dates…' : `Fetch Hire Dates (${undatedFinraCount.toLocaleString()})`}
+																		</button>
+																	:	null}
 																</div>
-																{filteredLinks.length === 0 ?
-																	<p className='text-xs opacity-70'>
-																		{connectedLinks.length > 0 ?
-																			`No ${connStatusFilter} connections recorded.`
-																		: detail.profile.profileType === 'person' && detail.employmentHistory.length > 0 ?
-																			'All connected organizations and schools are listed in Employment History & Education above.'
-																		:	'No typed links recorded yet.'}
-																	</p>
-																:	<div className='space-y-1.5'>
-																		{filteredLinks.map(({ link: l, connStatus }) => {
-																			const isOut = l.fromProfileId === detail.profile.id;
-																			const peerId = isOut ? l.toProfileId : l.fromProfileId;
-																			const peerName = isOut ? l.toName : l.fromName;
-																			const peerType = (isOut ? l.toType : l.fromType) || 'firm';
-																			const connIsCurrent =
-																				connStatus === 'current' ? true
-																				: connStatus === 'old' ? false
-																				: null;
-																			const hasConnDateSpan = Boolean(
-																				formatDateSpan(
-																					l.startDate,
-																					l.endDate,
-																					connIsCurrent,
-																					peerType === 'education',
-																				),
+															</div>
+															<p className='m-0 mb-2 text-[10px] leading-snug opacity-65'>
+																Family members stay under Family / Relatives above. Link people, firms, schools, and events here with a typed
+																relationship.
+																{profileEditing ?
+																	' Edit relation, role, dates, and note on each row — or Remove — then Apply.'
+																:	''}
+															</p>
+															{filteredLinks.length === 0 ?
+																<p className='text-xs opacity-70'>
+																	{activeConnectedCount > 0 ?
+																		`No ${connStatusFilter} connections recorded.`
+																	: detail.profile.profileType === 'person' && detail.employmentHistory.length > 0 ?
+																		'No extra connections yet — employment and schools are listed above. Add other links below.'
+																	:	'No connected profiles yet. Search an existing profile below to link it.'}
+																</p>
+															:	<div className='mb-3 space-y-1.5'>
+																	{filteredLinks.map(({ link: l, connStatus }) => {
+																		const isOut = l.fromProfileId === detail.profile.id;
+																		const peerId = isOut ? l.toProfileId : l.fromProfileId;
+																		const peerName = isOut ? l.toName : l.fromName;
+																		const peerType = (isOut ? l.toType : l.fromType) || 'firm';
+																		const draft = draftById.get(l.id);
+																		const markedRemove = Boolean(draft?.deleted);
+																		const showRow = profileEditing || !markedRemove;
+																		if (!showRow) return null;
+																		const displayRelation = draft?.relationType || l.relationType;
+																		const displayRole = draft ? draft.roleLabel : l.roleLabel || '';
+																		const displayStart = draft ? draft.startDate : l.startDate || '';
+																		const displayEnd = draft ? draft.endDate : l.endDate || '';
+																		const displayNote = draft ? draft.evidenceNote : scrubEvidenceNoteSourceTags(l.evidenceNote);
+																		const connIsCurrent =
+																			connStatus === 'current' ? true
+																			: connStatus === 'old' ? false
+																			: null;
+																		const spanStart =
+																			draft ?
+																				normalizeIsoDate(displayStart.trim()).date || displayStart.trim() || null
+																			:	l.startDate;
+																		const spanEnd =
+																			draft ?
+																				normalizeIsoDate(displayEnd.trim()).date || displayEnd.trim() || null
+																			:	l.endDate;
+																		const hasConnDateSpan = Boolean(
+																			formatDateSpan(
+																				spanStart,
+																				spanEnd,
+																				connIsCurrent,
+																				peerType === 'education',
+																			),
+																		);
+																		const roleClean =
+																			displayRole && !/^(?:current|previous)\s+registration$/i.test(displayRole.trim()) ?
+																				displayRole.trim()
+																			:	null;
+																		const showRelNote =
+																			!profileEditing &&
+																			Boolean(displayNote) &&
+																			(!roleClean || displayNote.toLowerCase() !== roleClean.toLowerCase()) &&
+																			!/^seed relatedslugs$/i.test(displayNote) &&
+																			!/^role:/i.test(displayNote) &&
+																			!isRedundantConnectedEvidenceNote(displayNote, roleClean);
+																		const patchDraft = (
+																			patch: Partial<{
+																				relationType: ProfileRelationType;
+																				roleLabel: string;
+																				startDate: string;
+																				endDate: string;
+																				evidenceNote: string;
+																				deleted: boolean;
+																			}>,
+																		) => {
+																			setConnLinkDrafts((rows) =>
+																				rows.map((r) => (r.id === l.id ? { ...r, ...patch } : r)),
 																			);
-																			const roleClean = l.roleLabel && !/^(?:current|previous)\s+registration$/i.test(l.roleLabel.trim()) ? l.roleLabel.trim() : null;
-																			const relNote = scrubEvidenceNoteSourceTags(l.evidenceNote);
-																			const showRelNote =
-																				Boolean(relNote) &&
-																				(!roleClean || relNote.toLowerCase() !== roleClean.toLowerCase()) &&
-																				!/^seed relatedslugs$/i.test(relNote) &&
-																				!/^role:/i.test(relNote) &&
-																				!isRedundantConnectedEvidenceNote(relNote, roleClean);
-																			return (
-																				<div
-																					key={l.id}
-																					className={
+																		};
+																		return (
+																			<div
+																				key={l.id}
+																				className={
+																					`${
+																						markedRemove ? 'opacity-50 '
+																						: ''
+																					}${
 																						connStatus === 'current' ? EMP_CARD_CURRENT
 																						: connStatus === 'old' ?
 																							EMP_CARD_PREVIOUS
-																						:	'rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-xs'
-																					}>
-																					<div className='flex flex-wrap items-center justify-between gap-2'>
-																						<div className='flex flex-wrap items-center gap-1.5'>
-																							{hasConnDateSpan ?
-																								<span
-																									className={
-																										connStatus === 'current' ? EMP_CHIP_CURRENT
-																										: connStatus === 'old' ?
-																											EMP_CHIP_PREVIOUS
-																										:	'shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 font-mono text-[10px] font-semibold'
-																									}>
-																									<ProfileDateSpanText
-																										startDate={l.startDate}
-																										endDate={l.endDate}
-																										isCurrent={connIsCurrent}
-																										isEducation={peerType === 'education'}
-																									/>
-																								</span>
-																							:	null}
-																							{connStatus === 'old' ?
-																								<span className='shrink-0 rounded bg-zinc-500/20 px-1.5 py-0.5 text-[10px] font-semibold opacity-80'>Old</span>
-																							:	null}
-																							<span className='text-[10px] opacity-60'>
-																								{isOut ? '→' : '←'} {l.relationType.replace(/_/g, ' ')}
+																						:	'rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs'
+																					}`
+																				}>
+																				<div className='flex flex-wrap items-center justify-between gap-2'>
+																					<div className={`flex min-w-0 flex-wrap items-center gap-1.5 ${markedRemove ? 'line-through' : ''}`}>
+																						{!profileEditing && hasConnDateSpan ?
+																							<span
+																								className={
+																									connStatus === 'current' ? EMP_CHIP_CURRENT
+																									: connStatus === 'old' ?
+																										EMP_CHIP_PREVIOUS
+																									:	'shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold'
+																								}>
+																								<ProfileDateSpanText
+																									startDate={spanStart}
+																									endDate={spanEnd}
+																									isCurrent={connIsCurrent}
+																									isEducation={peerType === 'education'}
+																								/>
 																							</span>
-																							<button
-																								type='button'
-																								onClick={() => jumpToProfile(peerId)}
-																								className='cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline'>
-																								{peerName}
-																							</button>
-																							<CountryFlags
-																								codes={l.peerCountryCodes}
-																								size='sm'
-																							/>
-																							<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}>{TYPE_META[peerType].label}</span>
-																							{roleClean ?
-																								<span className='text-[11px] opacity-75'>({roleClean})</span>
-																							:	null}
-																							{l.peerPrimaryLocation ?
-																								<span className='text-[11px] opacity-70'>📍 {l.peerPrimaryLocation}</span>
-																							:	null}
-																						</div>
+																						:	null}
+																						{!profileEditing && connStatus === 'old' ?
+																							<span className='shrink-0 rounded bg-zinc-500/20 px-1.5 py-0.5 text-[10px] font-semibold opacity-80'>Old</span>
+																						:	null}
+																						{!profileEditing ?
+																							<span className='text-[10px] opacity-60'>
+																								{isOut ? '→' : '←'} {displayRelation.replace(/_/g, ' ')}
+																							</span>
+																						:	null}
+																						<button
+																							type='button'
+																							onClick={() => jumpToProfile(peerId)}
+																							className='cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline'>
+																							{peerName}
+																						</button>
+																						<CountryFlags
+																							codes={l.peerCountryCodes}
+																							size='sm'
+																						/>
+																						<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}>{TYPE_META[peerType].label}</span>
+																						{!profileEditing && roleClean ?
+																							<span className='text-[11px] opacity-75'>({roleClean})</span>
+																						:	null}
+																						{l.peerPrimaryLocation ?
+																							<span className='text-[11px] opacity-70'>📍 {l.peerPrimaryLocation}</span>
+																						:	null}
 																					</div>
-																					{showRelNote ?
-																						<p className='m-0 mt-1.5 text-[11px] leading-snug opacity-70'>{relNote}</p>
+																					{profileEditing ?
+																						<button
+																							type='button'
+																							onClick={() => patchDraft({ deleted: !markedRemove })}
+																							className='shrink-0 cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px] font-semibold opacity-80 hover:opacity-100'>
+																							{markedRemove ? 'Undo' : 'Remove'}
+																						</button>
 																					:	null}
 																				</div>
-																			);
-																		})}
-																	</div>
-																}
-															</div>
-														:	null}
+																				{profileEditing && draft && !markedRemove ?
+																					<div className='mt-2 grid gap-1.5 sm:grid-cols-6'>
+																						<select
+																							value={draft.relationType}
+																							onChange={(e) =>
+																								patchDraft({ relationType: e.target.value as ProfileRelationType })
+																							}
+																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-2'>
+																							{(
+																								CONNECTED_ADD_RELATIONS.includes(draft.relationType) ?
+																									CONNECTED_ADD_RELATIONS
+																								:	([draft.relationType, ...CONNECTED_ADD_RELATIONS] as ProfileRelationType[])
+																							).map((rel) => (
+																								<option
+																									key={rel}
+																									value={rel}>
+																									{rel.replace(/_/g, ' ')}
+																								</option>
+																							))}
+																						</select>
+																						<input
+																							value={draft.roleLabel}
+																							onChange={(e) => patchDraft({ roleLabel: e.target.value })}
+																							placeholder='Role / title'
+																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-2'
+																						/>
+																						<input
+																							value={draft.startDate}
+																							onChange={(e) => patchDraft({ startDate: e.target.value })}
+																							onBlur={(e) =>
+																								patchDraft({ startDate: formatDateDraftOnBlur(e.target.value) })
+																							}
+																							placeholder={DATE_INPUT_PLACEHOLDER}
+																							title={DATE_INPUT_TITLE}
+																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]'
+																						/>
+																						<input
+																							value={draft.endDate}
+																							onChange={(e) => patchDraft({ endDate: e.target.value })}
+																							onBlur={(e) =>
+																								patchDraft({ endDate: formatDateDraftOnBlur(e.target.value) })
+																							}
+																							placeholder={DATE_INPUT_PLACEHOLDER}
+																							title={DATE_INPUT_TITLE}
+																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]'
+																						/>
+																						<input
+																							value={draft.evidenceNote}
+																							onChange={(e) => patchDraft({ evidenceNote: e.target.value })}
+																							placeholder='Note'
+																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-6'
+																						/>
+																					</div>
+																				:	null}
+																				{showRelNote ?
+																					<p className='m-0 mt-1.5 text-[11px] leading-snug opacity-70'>{displayNote}</p>
+																				:	null}
+																			</div>
+																		);
+																	})}
+																</div>}
+
+															<form
+																onSubmit={(e) => void handleAddConnection(e)}
+																className='grid gap-2 border-t border-[var(--app-border)] pt-2.5 sm:grid-cols-6'>
+																<div className='relative sm:col-span-2'>
+																	<input
+																		required
+																		value={connPeer ? connPeer.name : connSearch}
+																		onChange={(e) => {
+																			setConnPeer(null);
+																			setConnSearch(e.target.value);
+																			setConnSearchOpen(true);
+																		}}
+																		onFocus={() => {
+																			if (connHits.length > 0) setConnSearchOpen(true);
+																		}}
+																		placeholder='Search existing profile *'
+																		className='w-full rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs'
+																		autoComplete='off'
+																	/>
+																	{connSearchOpen && !connPeer && connHits.length > 0 ?
+																		<ul className='absolute z-20 m-0 mt-0.5 max-h-48 w-full list-none overflow-auto rounded border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-lg'>
+																			{connHits.map((hit) => (
+																				<li key={hit.id}>
+																					<button
+																						type='button'
+																						onClick={() => {
+																							setConnPeer(hit);
+																							setConnSearch(hit.name);
+																							setConnHits([]);
+																							setConnSearchOpen(false);
+																							if (
+																								hit.profileType === 'person' &&
+																								(detail.profile.profileType === 'firm' ||
+																									detail.profile.profileType === 'government' ||
+																									detail.profile.profileType === 'nonprofit' ||
+																									detail.profile.profileType === 'education' ||
+																									detail.profile.profileType === 'medical_hospital')
+																							) {
+																								setConnRelation('employed_by');
+																							}
+																						}}
+																						className='flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2 py-1.5 text-left text-xs hover:bg-[var(--app-surface-hover)]'>
+																						<span className='min-w-0 flex-1 truncate font-medium'>{hit.name}</span>
+																						<span className={`shrink-0 rounded border px-1 py-0.5 text-[9px] ${TYPE_META[hit.profileType].badge}`}>
+																							{TYPE_META[hit.profileType].label}
+																						</span>
+																					</button>
+																				</li>
+																			))}
+																		</ul>
+																	:	null}
+																	{connPeer ?
+																		<p className='m-0 mt-0.5 text-[10px] opacity-70'>
+																			Selected: {connPeer.name}{' '}
+																			<span className={`rounded border px-1 py-0.5 ${TYPE_META[connPeer.profileType].badge}`}>
+																				{TYPE_META[connPeer.profileType].label}
+																			</span>{' '}
+																			<button
+																				type='button'
+																				className='cursor-pointer border-0 bg-transparent p-0 text-[10px] text-[#F97316] underline'
+																				onClick={() => {
+																					setConnPeer(null);
+																					setConnSearch('');
+																				}}>
+																				Clear
+																			</button>
+																		</p>
+																	:	null}
+																</div>
+																<select
+																	value={connRelation}
+																	onChange={(e) => setConnRelation(e.target.value as ProfileRelationType)}
+																	className='rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs'>
+																	{CONNECTED_ADD_RELATIONS.map((rel) => (
+																		<option
+																			key={rel}
+																			value={rel}>
+																			{rel.replace(/_/g, ' ')}
+																		</option>
+																	))}
+																</select>
+																<input
+																	value={connRole}
+																	onChange={(e) => setConnRole(e.target.value)}
+																	placeholder='Role / title'
+																	className='rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs'
+																/>
+																<div className='flex gap-1'>
+																	<input
+																		value={connStart}
+																		onChange={(e) => setConnStart(e.target.value)}
+																		onBlur={() => setConnStart((v) => formatDateDraftOnBlur(v))}
+																		placeholder={DATE_INPUT_PLACEHOLDER}
+																		title={DATE_INPUT_TITLE}
+																		className='w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs'
+																	/>
+																	<input
+																		value={connEnd}
+																		onChange={(e) => setConnEnd(e.target.value)}
+																		onBlur={() => setConnEnd((v) => formatDateDraftOnBlur(v))}
+																		placeholder={DATE_INPUT_PLACEHOLDER}
+																		title={DATE_INPUT_TITLE}
+																		className='w-1/2 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-1 text-xs'
+																	/>
+																</div>
+																<input
+																	value={connNote}
+																	onChange={(e) => setConnNote(e.target.value)}
+																	placeholder='Note (optional)'
+																	className='rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs sm:col-span-5'
+																/>
+																<div className='flex justify-end sm:col-span-1'>
+																	<button
+																		type='submit'
+																		disabled={savingConn || !connPeer}
+																		className='cursor-pointer rounded border-none bg-[#F97316] px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50'>
+																		{savingConn ? 'Linking…' : '+ Add'}
+																	</button>
+																</div>
+															</form>
+														</div>
 													</div>
 												);
 											})()}

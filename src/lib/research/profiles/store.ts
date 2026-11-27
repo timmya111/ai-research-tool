@@ -1133,6 +1133,128 @@ export function upsertProfileLink(
 	return id;
 }
 
+/** Delete a profile_links row. When profileId is set, require the link touch that profile. */
+export function deleteProfileLink(
+	input: { id: string; profileId?: string | null },
+	dbOverride?: DatabaseSync,
+): boolean {
+	const db = dbOverride ?? getProfilesDb();
+	const linkId = String(input.id || '').trim();
+	if (!linkId) return false;
+	const profileId = input.profileId ? String(input.profileId).trim() : '';
+	if (profileId) {
+		const result = db
+			.prepare(
+				`DELETE FROM profile_links
+         WHERE id = ?
+           AND (from_profile_id = ? OR to_profile_id = ?)`,
+			)
+			.run(linkId, profileId, profileId);
+		return Number(result.changes || 0) > 0;
+	}
+	const result = db.prepare('DELETE FROM profile_links WHERE id = ?').run(linkId);
+	return Number(result.changes || 0) > 0;
+}
+
+/**
+ * Patch an existing link by id (relation, role, dates, note).
+ * Recomputes dedupe_key. When profileId is set, require the link touch that profile.
+ */
+export function updateProfileLink(
+	input: {
+		id: string;
+		profileId?: string | null;
+		relationType?: ProfileRelationType;
+		roleLabel?: string | null;
+		startDate?: string | null;
+		endDate?: string | null;
+		evidenceNote?: string | null;
+		status?: LinkStatus;
+	},
+	dbOverride?: DatabaseSync,
+): { ok: true; id: string } | { ok: false; error: string } {
+	const db = dbOverride ?? getProfilesDb();
+	const linkId = String(input.id || '').trim();
+	if (!linkId) return { ok: false, error: 'link id is required' };
+
+	const profileId = input.profileId ? String(input.profileId).trim() : '';
+	const row = (
+		profileId ?
+			db
+				.prepare(
+					`SELECT id, from_profile_id, to_profile_id, relation_type, role_label,
+                  start_date, end_date, status, evidence_note, source_corpus
+           FROM profile_links
+           WHERE id = ? AND (from_profile_id = ? OR to_profile_id = ?)`,
+				)
+				.get(linkId, profileId, profileId)
+		:	db
+				.prepare(
+					`SELECT id, from_profile_id, to_profile_id, relation_type, role_label,
+                  start_date, end_date, status, evidence_note, source_corpus
+           FROM profile_links WHERE id = ?`,
+				)
+				.get(linkId)
+	) as
+		| {
+				id: string;
+				from_profile_id: string;
+				to_profile_id: string;
+				relation_type: string;
+				role_label: string | null;
+				start_date: string | null;
+				end_date: string | null;
+				status: string;
+				evidence_note: string;
+				source_corpus: string;
+		  }
+		| undefined;
+
+	if (!row) return { ok: false, error: 'Link not found or does not belong to this profile' };
+
+	const relationType = (input.relationType ?? row.relation_type) as ProfileRelationType;
+	const roleLabel =
+		input.roleLabel !== undefined ? (input.roleLabel ? String(input.roleLabel).trim() || null : null) : row.role_label;
+	const startDate =
+		input.startDate !== undefined ? (input.startDate ? String(input.startDate).trim() || null : null) : row.start_date;
+	const endDate =
+		input.endDate !== undefined ? (input.endDate ? String(input.endDate).trim() || null : null) : row.end_date;
+	const evidenceNote =
+		input.evidenceNote !== undefined ? String(input.evidenceNote || '').slice(0, 800) : String(row.evidence_note || '');
+	const status = (input.status ?? row.status) as LinkStatus;
+
+	const dedupeKey = sha256Key([
+		row.from_profile_id,
+		row.to_profile_id,
+		relationType,
+		row.source_corpus,
+		roleLabel || '',
+	]);
+
+	const clash = db.prepare('SELECT id FROM profile_links WHERE dedupe_key = ? AND id != ?').get(dedupeKey, linkId) as
+		| { id?: string }
+		| undefined;
+	if (clash?.id) {
+		return { ok: false, error: 'Another link already has this relation/role between these profiles' };
+	}
+
+	const now = new Date().toISOString();
+	db.prepare(
+		`UPDATE profile_links
+     SET dedupe_key = ?,
+         relation_type = ?,
+         role_label = ?,
+         start_date = ?,
+         end_date = ?,
+         evidence_note = ?,
+         status = ?,
+         updated_at = ?
+     WHERE id = ?`,
+	).run(dedupeKey, relationType, roleLabel, startDate, endDate, evidenceNote, status, now, linkId);
+
+	return { ok: true, id: linkId };
+}
+
 export function upsertAlignmentCandidate(
 	input: {
 		dedupeKey: string;

@@ -640,14 +640,36 @@ export function getProfileTimeline(
 		)
 		.all(...params) as Array<Record<string, unknown>>;
 
-	// Deduplicate identical entries (same date + corpus + normalized title) when merged from child events
+	// Deduplicate when merged from child historic_events. Prefer this profile's own
+	// rows over summary-timeline-mirror copies that restate the same fact with a
+	// "Name: …" title prefix (Bruce King Timeline was showing every bullet twice).
+	const normalizeDedupeTitle = (title: string) =>
+		String(title || '')
+			.toLowerCase()
+			.replace(/^[^:]{2,80}:\s+/, '')
+			.replace(/\s+/g, ' ')
+			.trim()
+			.slice(0, 100);
+	const contentKey = (entry: TimelineEntry) =>
+		`${entry.eventDate || ''}|${entry.endDate || ''}|${normalizeDedupeTitle(entry.title)}`;
+	const mapped = rows.map((r) => rowToTimeline(r));
+	mapped.sort((a, b) => {
+		const aOwn = a.originProfileId === profile.id ? 0 : 1;
+		const bOwn = b.originProfileId === profile.id ? 0 : 1;
+		if (aOwn !== bOwn) return aOwn - bOwn;
+		const aMirror = a.sourceCorpus === 'summary-timeline-mirror' ? 1 : 0;
+		const bMirror = b.sourceCorpus === 'summary-timeline-mirror' ? 1 : 0;
+		if (aMirror !== bMirror) return aMirror - bMirror;
+		return 0;
+	});
 	const deduped: TimelineEntry[] = [];
 	const seen = new Set<string>();
-	for (const r of rows) {
-		const entry = rowToTimeline(r);
-		const key = `${entry.sourceCorpus}|${entry.eventDate || ''}|${entry.title.toLowerCase().slice(0, 90)}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
+	for (const entry of mapped) {
+		const exact = `${entry.sourceCorpus}|${entry.eventDate || ''}|${entry.title.toLowerCase().slice(0, 90)}`;
+		const soft = contentKey(entry);
+		if (seen.has(exact) || seen.has(soft)) continue;
+		seen.add(exact);
+		seen.add(soft);
 		deduped.push(entry);
 	}
 

@@ -220,11 +220,12 @@ export function nestTimelineIntoCareerChapters<T extends NestableTimelineEntry>(
 		})
 		.filter(Boolean) as ChapterDef<T>[];
 
-	// Parent = smallest qualifying span that strictly contains this one.
-	// Require a meaningful duration gap so peer political stints (House vs party
-	// chair vs convention) stay siblings under a long background career (ranching),
-	// instead of nesting three levels deep on tiny date overlaps.
-	const MIN_PARENT_EXTRA_DAYS = 3650; // ~10 years
+	// Parent = shortest span that strictly contains this one.
+	// Any longer range that fully covers a shorter stint encapsulate it so the
+	// chronological stream never lists a 1969 convention after a 1959–1970 House
+	// chapter that already covered that year. Lifelong careers (ranching) still
+	// wrap political terms; House wraps overlapping party/convention stints.
+	const MIN_PARENT_EXTRA_DAYS = 14; // ignore near-duplicate equal-length spans
 	for (const child of chapterDefs) {
 		let best: ChapterDef<T> | null = null;
 		for (const cand of chapterDefs) {
@@ -241,7 +242,8 @@ export function nestTimelineIntoCareerChapters<T extends NestableTimelineEntry>(
 
 	const roots = chapterDefs.filter((c) => !c.parent);
 
-	// Assign each point to the tightest (shortest) containing span.
+	// Assign each point to the tightest (shortest) containing span so a date that
+	// falls inside a chapter never appears as a sibling after that chapter.
 	const assignTargets = [...chapterDefs].sort((a, b) => {
 		if (a.duration !== b.duration) return a.duration - b.duration;
 		return b.start.localeCompare(a.start);

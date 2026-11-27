@@ -1,0 +1,735 @@
+- generic [active] [ref=f79e1]:
+  - main [ref=f79e3]:
+    - generic [ref=f79e4]:
+      - generic [ref=f79e5]:
+        - generic [ref=f79e6]:
+          - link "← Research Chat" [ref=f79e7] [cursor=pointer]:
+            - /url: /
+          - generic [ref=f79e8]: local SQLite · cross-source entity & timeline alignment
+        - heading "Entity Profiles & Cross-Source Alignment" [level=1] [ref=f79e9]
+        - paragraph [ref=f79e10]:
+          - text: Unified canonical profiles for
+          - strong [ref=f79e11]: People
+          - text: ","
+          - strong [ref=f79e12]: Firms
+          - text: ","
+          - strong [ref=f79e13]: Education
+          - text: ","
+          - strong [ref=f79e14]: Non-Profits
+          - text: ","
+          - strong [ref=f79e15]: Hospitals
+          - text: ","
+          - strong [ref=f79e16]: Government
+          - text: ", and"
+          - strong [ref=f79e17]: Historic Events
+          - text: — combining all local corpora to fill timeline gaps, compare angles, and surface possible alignments.
+      - generic [ref=f79e18]:
+        - button "Alignment Triage (140)" [ref=f79e51] [cursor=pointer]
+        - button "+ New Profile" [ref=f79e20] [cursor=pointer]
+        - button "Sync & Align All Data" [ref=f79e21] [cursor=pointer]
+        - generic [ref=f79e22]:
+          - textbox "Profile search" [ref=f79e23]:
+            - /placeholder: Search name, alias, CRD, ticker…
+          - button "Search" [ref=f79e24] [cursor=pointer]
+        - textbox "Filter by country" [ref=f79e26]:
+          - /placeholder: Flag / country…
+        - button "Switch to light mode" [ref=f79e52] [cursor=pointer]
+    - generic [ref=f79e909]:
+      - generic [ref=f79e910]: Applied profile edits.
+      - button "✕" [ref=f79e911] [cursor=pointer]
+    - generic [ref=f79e56]:
+      - button "All Profiles 235,543" [ref=f79e57] [cursor=pointer]:
+        - generic [ref=f79e58]: All Profiles
+        - generic [ref=f79e59]: 235,543
+      - button "Historic Events 2,648" [ref=f79e60] [cursor=pointer]:
+        - generic [ref=f79e61]: Historic Events
+        - generic [ref=f79e62]: 2,648
+      - button "Regions 31" [ref=f79e63] [cursor=pointer]:
+        - generic [ref=f79e64]: Regions
+        - generic [ref=f79e65]: "31"
+      - button "People 198,852" [ref=f79e66] [cursor=pointer]:
+        - generic [ref=f79e67]: People
+        - generic [ref=f79e68]: 198,852
+      - button "Firms 30,748" [ref=f79e69] [cursor=pointer]:
+        - generic [ref=f79e70]: Firms
+        - generic [ref=f79e71]: 30,748
+      - button "Education 1,062" [ref=f79e72] [cursor=pointer]:
+        - generic [ref=f79e73]: Education
+        - generic [ref=f79e74]: 1,062
+      - button "Non-Profits 389" [ref=f79e75] [cursor=pointer]:
+        - generic [ref=f79e76]: Non-Profits
+        - generic [ref=f79e77]: "389"
+      - button "Hospitals 533" [ref=f79e78] [cursor=pointer]:
+        - generic [ref=f79e79]: Hospitals
+        - generic [ref=f79e80]: "533"
+      - button "Government 1,280" [ref=f79e81] [cursor=pointer]:
+        - generic [ref=f79e82]: Government
+        - generic [ref=f79e83]: 1,280
+      - button "History 540" [ref=f79e84] [cursor=pointer]:
+        - generic [ref=f79e85]: History
+        - generic [ref=f79e86]: "540"
+    - generic [ref=f79e29]:
+      - complementary [ref=f79e30]:
+        - generic [ref=f79e31]:
+          - generic [ref=f79e32]: 30,748 matching
+          - generic [ref=f79e33]:
+            - button "Prev" [disabled] [ref=f79e34] [cursor=pointer]
+            - button "Next" [ref=f79e35] [cursor=pointer]
+        - generic [ref=f79e36]:
+          - button "Snap Shots, Inc. United States" [ref=f79e87] [cursor=pointer]:
+            - generic [ref=f79e88]:
+              - generic [ref=f79e89]: Snap Shots, Inc.
+              - generic "United States" [ref=f79e90]:
+                - img "United States" [ref=f79e91]
+          - button "Raymond S. Rutherford Law Office United States Houston, TX" [ref=f79e92] [cursor=pointer]:
+            - generic [ref=f79e93]:
+              - generic [ref=f79e94]: Raymond S. Rutherford Law Office
+              - generic "United States" [ref=f79e95]:
+                - img "United States" [ref=f79e96]
+            - generic [ref=f79e97]: Houston, TX
+          - button "Brown, Moore & Lee United States Dallas, TX" [ref=f79e99] [cursor=pointer]:
+            - generic [ref=f79e100]:
+              - generic [ref=f79e101]: Brown, Moore & Lee
+              - generic "United States" [ref=f79e102]:
+                - img "United States" [ref=f79e103]
+            - generic [ref=f79e104]: Dallas, TX
+          - button "HCL Technologies Limited India HCL Technologies Ltd" [ref=f79e106] [cursor=pointer]:
+            - generic [ref=f79e107]:
+              - generic [ref=f79e108]: HCL Technologies Limited
+              - generic "India" [ref=f79e109]:
+                - img "India" [ref=f79e110]
+            - generic [ref=f79e111]: HCL Technologies Ltd
+          - button "BERKELEY INTERNATIONAL SECURITIES CORPORATION United States CRD 14346 · BERKELEY FINANCIAL SERVICES LIMITED · GOVETT FINANCIAL SERVICES LIMITED" [ref=f79e113] [cursor=pointer]:
+            - generic [ref=f79e114]:
+              - generic [ref=f79e115]: BERKELEY INTERNATIONAL SECURITIES CORPORATION
+              - generic "United States" [ref=f79e116]:
+                - img "United States" [ref=f79e117]
+            - generic [ref=f79e118]:
+              - generic [ref=f79e119]: CRD 14346
+              - generic [ref=f79e121]: · BERKELEY FINANCIAL SERVICES LIMITED · GOVETT FINANCIAL SERVICES LIMITED
+          - button "MOELIS & COMPANY GROUP LP United States CRD 145115 · MOELIS & COMPANY LLC · MOELIS & COMPANY" [ref=f79e122] [cursor=pointer]:
+            - generic [ref=f79e123]:
+              - generic [ref=f79e124]: MOELIS & COMPANY GROUP LP
+              - generic "United States" [ref=f79e125]:
+                - img "United States" [ref=f79e126]
+            - generic [ref=f79e127]:
+              - generic [ref=f79e128]: CRD 145115
+              - generic [ref=f79e130]: · MOELIS & COMPANY LLC · MOELIS & COMPANY
+          - button "PERELLA WEINBERG PARTNERS GROUP LP United States CRD 138618 · TPH&CO. - THE ENERGY BUSINESS OF PERELLA WEINBERG PARTNERS · TPH&CO. THE ENERGY BUSINESS OF PERELLA WEINBERG" [ref=f79e131] [cursor=pointer]:
+            - generic [ref=f79e132]:
+              - generic [ref=f79e133]: PERELLA WEINBERG PARTNERS GROUP LP
+              - generic "United States" [ref=f79e134]:
+                - img "United States" [ref=f79e135]
+            - generic [ref=f79e136]:
+              - generic [ref=f79e137]: CRD 138618
+              - generic [ref=f79e139]: · TPH&CO. - THE ENERGY BUSINESS OF PERELLA WEINBERG PARTNERS · TPH&CO. THE ENERGY BUSINESS OF PERELLA WEINBERG
+          - button "FREEDOM HOLDING GROUP, LLC United States FREEDOM HOLDING CORP." [ref=f79e140] [cursor=pointer]:
+            - generic [ref=f79e141]:
+              - generic [ref=f79e142]: FREEDOM HOLDING GROUP, LLC
+              - generic "United States" [ref=f79e143]:
+                - img "United States" [ref=f79e144]
+            - generic [ref=f79e145]: FREEDOM HOLDING CORP.
+          - button "JACKSON FINANCIAL GROUP, INC. United States CRD 124258 · Lansing, MI" [ref=f79e147] [cursor=pointer]:
+            - generic [ref=f79e148]:
+              - generic [ref=f79e149]: JACKSON FINANCIAL GROUP, INC.
+              - generic "United States" [ref=f79e150]:
+                - img "United States" [ref=f79e151]
+            - generic [ref=f79e152]:
+              - generic [ref=f79e153]: CRD 124258
+              - generic [ref=f79e155]: · Lansing, MI
+          - button "MARKETAXESS HOLDINGS INC. United States CRD 44542 · MARKETAXESS CORPORATION · TRADING EDGE, INC." [ref=f79e156] [cursor=pointer]:
+            - generic [ref=f79e157]:
+              - generic [ref=f79e158]: MARKETAXESS HOLDINGS INC.
+              - generic "United States" [ref=f79e159]:
+                - img "United States" [ref=f79e160]
+            - generic [ref=f79e161]:
+              - generic [ref=f79e162]: CRD 44542
+              - generic [ref=f79e164]: · MARKETAXESS CORPORATION · TRADING EDGE, INC.
+          - button "MDB CAPITAL HOLDINGS, LLC United States CRD 42677 · MARSHALL MERCHANT GROUP, LLC · MDB CAPITAL GROUP LLC" [ref=f79e165] [cursor=pointer]:
+            - generic [ref=f79e166]:
+              - generic [ref=f79e167]: MDB CAPITAL HOLDINGS, LLC
+              - generic "United States" [ref=f79e168]:
+                - img "United States" [ref=f79e169]
+            - generic [ref=f79e170]:
+              - generic [ref=f79e171]: CRD 42677
+              - generic [ref=f79e173]: · MARSHALL MERCHANT GROUP, LLC · MDB CAPITAL GROUP LLC
+          - button "AT&T Inc. United States AT&T" [ref=f79e174] [cursor=pointer]:
+            - generic [ref=f79e175]:
+              - generic [ref=f79e176]: AT&T Inc.
+              - generic "United States" [ref=f79e177]:
+                - img "United States" [ref=f79e178]
+            - generic [ref=f79e179]: AT&T
+          - button "HSBC Holdings Plc United States" [ref=f79e181] [cursor=pointer]:
+            - generic [ref=f79e182]:
+              - generic [ref=f79e183]: HSBC Holdings Plc
+              - generic "United States" [ref=f79e184]:
+                - img "United States" [ref=f79e185]
+          - button "UBS Group AG United States UBS AG" [ref=f79e186] [cursor=pointer]:
+            - generic [ref=f79e187]:
+              - generic [ref=f79e188]: UBS Group AG
+              - generic "United States" [ref=f79e189]:
+                - img "United States" [ref=f79e190]
+            - generic [ref=f79e191]: UBS AG
+          - button "PRINCETON AMERICAN EQUITIES CORPORATION United States CRD 14491 · HUTCHINSON FINANCIAL CORPORATION · HUTCHISON FINANCIAL CORPORATION" [ref=f79e193] [cursor=pointer]:
+            - generic [ref=f79e194]:
+              - generic [ref=f79e195]: PRINCETON AMERICAN EQUITIES CORPORATION
+              - generic "United States" [ref=f79e196]:
+                - img "United States" [ref=f79e197]
+            - generic [ref=f79e198]:
+              - generic [ref=f79e199]: CRD 14491
+              - generic [ref=f79e201]: · HUTCHINSON FINANCIAL CORPORATION · HUTCHISON FINANCIAL CORPORATION
+          - button "THE GOLDMAN SACHS GROUP, INC. United States CRD 361 · MARCUS INVEST OFFERING OF GOLDMAN SACHS & CO. LLC · GOLDMAN SACHS ASSET MANAGEMENT (\"GSAM\")" [ref=f79e202] [cursor=pointer]:
+            - generic [ref=f79e203]:
+              - generic [ref=f79e204]: THE GOLDMAN SACHS GROUP, INC.
+              - generic "United States" [ref=f79e205]:
+                - img "United States" [ref=f79e206]
+            - generic [ref=f79e207]:
+              - generic [ref=f79e208]: CRD 361
+              - generic [ref=f79e210]: · MARCUS INVEST OFFERING OF GOLDMAN SACHS & CO. LLC · GOLDMAN SACHS ASSET MANAGEMENT ("GSAM")
+          - button "JPMorgan Chase & Co. Hong Kong JPMorgan Chase" [ref=f79e211] [cursor=pointer]:
+            - generic [ref=f79e212]:
+              - generic [ref=f79e213]: JPMorgan Chase & Co.
+              - generic "Hong Kong" [ref=f79e214]:
+                - img "Hong Kong" [ref=f79e215]
+            - generic [ref=f79e216]: JPMorgan Chase
+          - button "Tyson Foods, Inc. United States Tyson Feed and Hatchery, Inc. · Tyson's Foods, Inc." [ref=f79e218] [cursor=pointer]:
+            - generic [ref=f79e219]:
+              - generic [ref=f79e220]: Tyson Foods, Inc.
+              - generic "United States" [ref=f79e221]:
+                - img "United States" [ref=f79e222]
+            - generic [ref=f79e223]: Tyson Feed and Hatchery, Inc. · Tyson's Foods, Inc.
+          - button "Reliance Industries Limited India China Reliance Industries Ltd · Reliance Industries" [ref=f79e225] [cursor=pointer]:
+            - generic [ref=f79e226]:
+              - generic [ref=f79e227]: Reliance Industries Limited
+              - generic "India · China" [ref=f79e228]:
+                - img "India" [ref=f79e229]
+                - img "China" [ref=f79e230]
+            - generic [ref=f79e231]: Reliance Industries Ltd · Reliance Industries
+          - button "Johnson Controls Inc. Ireland Johnson Controls" [ref=f79e233] [cursor=pointer]:
+            - generic [ref=f79e234]:
+              - generic [ref=f79e235]: Johnson Controls Inc.
+              - generic "Ireland" [ref=f79e236]:
+                - img "Ireland" [ref=f79e237]
+            - generic [ref=f79e238]: Johnson Controls
+          - button "Ruder Finn Asia Limited China Hong Kong Ruder Finn Asia" [ref=f79e240] [cursor=pointer]:
+            - generic [ref=f79e241]:
+              - generic [ref=f79e242]: Ruder Finn Asia Limited
+              - generic "China · Hong Kong" [ref=f79e243]:
+                - img "China" [ref=f79e244]
+                - img "Hong Kong" [ref=f79e245]
+            - generic [ref=f79e246]: Ruder Finn Asia
+          - button "Transport Corporation of India Ltd India Transport Corporation of India" [ref=f79e248] [cursor=pointer]:
+            - generic [ref=f79e249]:
+              - generic [ref=f79e250]: Transport Corporation of India Ltd
+              - generic "India" [ref=f79e251]:
+                - img "India" [ref=f79e252]
+            - generic [ref=f79e253]: Transport Corporation of India
+          - button "Forbes Marshall Private Limited India Forbes Marshall Private" [ref=f79e255] [cursor=pointer]:
+            - generic [ref=f79e256]:
+              - generic [ref=f79e257]: Forbes Marshall Private Limited
+              - generic "India" [ref=f79e258]:
+                - img "India" [ref=f79e259]
+            - generic [ref=f79e260]: Forbes Marshall Private
+          - button "Knewton Inc. United Kingdom Knewton" [ref=f79e262] [cursor=pointer]:
+            - generic [ref=f79e263]:
+              - generic [ref=f79e264]: Knewton Inc.
+              - generic "United Kingdom" [ref=f79e265]:
+                - img "United Kingdom" [ref=f79e266]
+            - generic [ref=f79e267]: Knewton
+          - button "Takeda Pharmaceuticals International Inc. Switzerland Takeda Pharmaceuticals International GmbH" [ref=f79e269] [cursor=pointer]:
+            - generic [ref=f79e270]:
+              - generic [ref=f79e271]: Takeda Pharmaceuticals International Inc.
+              - generic "Switzerland" [ref=f79e272]:
+                - img "Switzerland" [ref=f79e273]
+            - generic [ref=f79e274]: Takeda Pharmaceuticals International GmbH
+          - button "Tech Mahindra Limited India Tech Mahindra Ltd" [ref=f79e276] [cursor=pointer]:
+            - generic [ref=f79e277]:
+              - generic [ref=f79e278]: Tech Mahindra Limited
+              - generic "India" [ref=f79e279]:
+                - img "India" [ref=f79e280]
+            - generic [ref=f79e281]: Tech Mahindra Ltd
+          - button "WI Harper Group Inc. China WI Harper Group" [ref=f79e283] [cursor=pointer]:
+            - generic [ref=f79e284]:
+              - generic [ref=f79e285]: WI Harper Group Inc.
+              - generic "China" [ref=f79e286]:
+                - img "China" [ref=f79e287]
+            - generic [ref=f79e288]: WI Harper Group
+          - button "Cargill Incorporated United States Cargill Inc." [ref=f79e290] [cursor=pointer]:
+            - generic [ref=f79e291]:
+              - generic [ref=f79e292]: Cargill Incorporated
+              - generic "United States" [ref=f79e293]:
+                - img "United States" [ref=f79e294]
+            - generic [ref=f79e295]: Cargill Inc.
+          - button "Fortis Healthcare Limited India Fortis Healthcare Ltd" [ref=f79e297] [cursor=pointer]:
+            - generic [ref=f79e298]:
+              - generic [ref=f79e299]: Fortis Healthcare Limited
+              - generic "India" [ref=f79e300]:
+                - img "India" [ref=f79e301]
+            - generic [ref=f79e302]: Fortis Healthcare Ltd
+          - button "Himalayan Infrastructure Fund Ltd Nepal Himalayan Infrastructure Fund" [ref=f79e304] [cursor=pointer]:
+            - generic [ref=f79e305]:
+              - generic [ref=f79e306]: Himalayan Infrastructure Fund Ltd
+              - generic "Nepal" [ref=f79e307]:
+                - img "Nepal" [ref=f79e308]
+            - generic [ref=f79e309]: Himalayan Infrastructure Fund
+          - button "Reuters Breakingviews Ltd China Hong Kong Reuters Breakingviews" [ref=f79e311] [cursor=pointer]:
+            - generic [ref=f79e312]:
+              - generic [ref=f79e313]: Reuters Breakingviews Ltd
+              - generic "China · Hong Kong" [ref=f79e314]:
+                - img "China" [ref=f79e315]
+                - img "Hong Kong" [ref=f79e316]
+            - generic [ref=f79e317]: Reuters Breakingviews
+          - button "ThoughtWorks Inc. Australia United Kingdom ThoughtWorks Ltd · ThoughtWorks" [ref=f79e319] [cursor=pointer]:
+            - generic [ref=f79e320]:
+              - generic [ref=f79e321]: ThoughtWorks Inc.
+              - generic "Australia · United Kingdom" [ref=f79e322]:
+                - img "Australia" [ref=f79e323]
+                - img "United Kingdom" [ref=f79e324]
+            - generic [ref=f79e325]: ThoughtWorks Ltd · ThoughtWorks
+          - button "Salesforce.com Inc. Salesforce.com" [ref=f79e327] [cursor=pointer]:
+            - generic [ref=f79e328]: Salesforce.com Inc.
+            - generic [ref=f79e330]: Salesforce.com
+          - button "AlixPartners LLP United Kingdom AlixPartners" [ref=f79e332] [cursor=pointer]:
+            - generic [ref=f79e333]:
+              - generic [ref=f79e334]: AlixPartners LLP
+              - generic "United Kingdom" [ref=f79e335]:
+                - img "United Kingdom" [ref=f79e336]
+            - generic [ref=f79e337]: AlixPartners
+          - button "African Rainbow Minerals Limited South Africa African Rainbow Minerals" [ref=f79e339] [cursor=pointer]:
+            - generic [ref=f79e340]:
+              - generic [ref=f79e341]: African Rainbow Minerals Limited
+              - generic "South Africa" [ref=f79e342]:
+                - img "South Africa" [ref=f79e343]
+            - generic [ref=f79e344]: African Rainbow Minerals
+          - button "DigitalGlobe Inc. Singapore DigitalGlobe" [ref=f79e346] [cursor=pointer]:
+            - generic [ref=f79e347]:
+              - generic [ref=f79e348]: DigitalGlobe Inc.
+              - generic "Singapore" [ref=f79e349]:
+                - img "Singapore" [ref=f79e350]
+            - generic [ref=f79e351]: DigitalGlobe
+          - button "Allcargo Logistics Limited India Singapore Allcargo Logistics" [ref=f79e353] [cursor=pointer]:
+            - generic [ref=f79e354]:
+              - generic [ref=f79e355]: Allcargo Logistics Limited
+              - generic "India · Singapore" [ref=f79e356]:
+                - img "India" [ref=f79e357]
+                - img "Singapore" [ref=f79e358]
+            - generic [ref=f79e359]: Allcargo Logistics
+          - button "Banyan Tree Holdings Limited Singapore China Banyan Tree Holdings" [ref=f79e361] [cursor=pointer]:
+            - generic [ref=f79e362]:
+              - generic [ref=f79e363]: Banyan Tree Holdings Limited
+              - generic "Singapore · China" [ref=f79e364]:
+                - img "Singapore" [ref=f79e365]
+                - img "China" [ref=f79e366]
+            - generic [ref=f79e367]: Banyan Tree Holdings
+          - button "Clifford Chance LLP China Hong Kong United Kingdom Clifford Chance" [ref=f79e369] [cursor=pointer]:
+            - generic [ref=f79e370]:
+              - generic [ref=f79e371]: Clifford Chance LLP
+              - generic "China · Hong Kong · United Kingdom" [ref=f79e372]:
+                - img "China" [ref=f79e373]
+                - img "Hong Kong" [ref=f79e374]
+                - img "United Kingdom" [ref=f79e375]
+            - generic [ref=f79e376]: Clifford Chance
+          - button "InterContinental Hotels Group Plc United Kingdom China InterContinental Hotels Group" [ref=f79e378] [cursor=pointer]:
+            - generic [ref=f79e379]:
+              - generic [ref=f79e380]: InterContinental Hotels Group Plc
+              - generic "United Kingdom · China" [ref=f79e381]:
+                - img "United Kingdom" [ref=f79e382]
+                - img "China" [ref=f79e383]
+            - generic [ref=f79e384]: InterContinental Hotels Group
+          - button "APCO Worldwide Inc. United States China APCO Worldwide" [ref=f79e386] [cursor=pointer]:
+            - generic [ref=f79e387]:
+              - generic [ref=f79e388]: APCO Worldwide Inc.
+              - generic "United States · China" [ref=f79e389]:
+                - img "United States" [ref=f79e390]
+                - img "China" [ref=f79e391]
+            - generic [ref=f79e392]: APCO Worldwide
+          - button "Tata Consultancy Services Ltd India China Tata Consultancy Services · TCS" [ref=f79e394] [cursor=pointer]:
+            - generic [ref=f79e395]:
+              - generic [ref=f79e396]: Tata Consultancy Services Ltd
+              - generic "India · China" [ref=f79e397]:
+                - img "India" [ref=f79e398]
+                - img "China" [ref=f79e399]
+            - generic [ref=f79e400]: Tata Consultancy Services · TCS
+          - button "A.T. Kearney Limited United States Germany India Indonesia A.T. Kearney Inc. · A.T. Kearney GmbH" [ref=f79e402] [cursor=pointer]:
+            - generic [ref=f79e403]:
+              - generic [ref=f79e404]: A.T. Kearney Limited
+              - generic "United States · Germany · India · Indonesia" [ref=f79e405]:
+                - img "United States" [ref=f79e406]
+                - img "Germany" [ref=f79e407]
+                - img "India" [ref=f79e408]
+                - img "Indonesia" [ref=f79e409]
+            - generic [ref=f79e410]: A.T. Kearney Inc. · A.T. Kearney GmbH
+          - button "Halliburton Company United States Halliburton Oil Well Cementing Company · New Method Oil Well Cementing Company" [ref=f79e412] [cursor=pointer]:
+            - generic [ref=f79e413]:
+              - generic [ref=f79e414]: Halliburton Company
+              - generic "United States" [ref=f79e415]:
+                - img "United States" [ref=f79e416]
+            - generic [ref=f79e417]: Halliburton Oil Well Cementing Company · New Method Oil Well Cementing Company
+          - button "Palantir Technologies Inc. United States Palantir Technologies · Palantir" [ref=f79e419] [cursor=pointer]:
+            - generic [ref=f79e420]:
+              - generic [ref=f79e421]: Palantir Technologies Inc.
+              - generic "United States" [ref=f79e422]:
+                - img "United States" [ref=f79e423]
+            - generic [ref=f79e424]: Palantir Technologies · Palantir
+          - button "Walmart United States Wal-Mart Stores Inc. · Sam's Club parent" [ref=f79e426] [cursor=pointer]:
+            - generic [ref=f79e427]:
+              - generic [ref=f79e428]: Walmart
+              - generic "United States" [ref=f79e429]:
+                - img "United States" [ref=f79e430]
+            - generic [ref=f79e431]: Wal-Mart Stores Inc. · Sam's Club parent
+          - button "Fluor Corporation United States Fluor" [ref=f79e433] [cursor=pointer]:
+            - generic [ref=f79e434]:
+              - generic [ref=f79e435]: Fluor Corporation
+              - generic "United States" [ref=f79e436]:
+                - img "United States" [ref=f79e437]
+            - generic [ref=f79e438]: Fluor
+          - button "BANK OF AMERICA, NATIONAL ASSOCIATION United States BANK OF AMERICA, N.A." [ref=f79e440] [cursor=pointer]:
+            - generic [ref=f79e441]:
+              - generic [ref=f79e442]: BANK OF AMERICA, NATIONAL ASSOCIATION
+              - generic "United States" [ref=f79e443]:
+                - img "United States" [ref=f79e444]
+            - generic [ref=f79e445]: BANK OF AMERICA, N.A.
+          - button "TD BANK, NATIONAL ASSOCIATION United States" [ref=f79e447] [cursor=pointer]:
+            - generic [ref=f79e448]:
+              - generic [ref=f79e449]: TD BANK, NATIONAL ASSOCIATION
+              - generic "United States" [ref=f79e450]:
+                - img "United States" [ref=f79e451]
+          - button "ADVANTAGE PARTNERS Japan United States Singapore CRD 324136 · ADVANTAGE PARTNERS PTE. LTD. · Advantage Partners Inc." [ref=f79e452] [cursor=pointer]:
+            - generic [ref=f79e453]:
+              - generic [ref=f79e454]: ADVANTAGE PARTNERS
+              - generic "Japan · United States · Singapore" [ref=f79e455]:
+                - img "Japan" [ref=f79e456]
+                - img "United States" [ref=f79e457]
+                - img "Singapore" [ref=f79e458]
+            - generic [ref=f79e459]:
+              - generic [ref=f79e460]: CRD 324136
+              - generic [ref=f79e462]: · ADVANTAGE PARTNERS PTE. LTD. · Advantage Partners Inc.
+          - button "RBC CAPITAL MARKETS, LLC United States CRD 31194 · RBC DOMINION SECURITIES CORPORATION · DOMINION SECURITIES PITFIELD INC." [ref=f79e463] [cursor=pointer]:
+            - generic [ref=f79e464]:
+              - generic [ref=f79e465]: RBC CAPITAL MARKETS, LLC
+              - generic "United States" [ref=f79e466]:
+                - img "United States" [ref=f79e467]
+            - generic [ref=f79e468]:
+              - generic [ref=f79e469]: CRD 31194
+              - generic [ref=f79e471]: · RBC DOMINION SECURITIES CORPORATION · DOMINION SECURITIES PITFIELD INC.
+          - button "BMI FINANCIAL GROUP United States CRD 7926" [ref=f79e472] [cursor=pointer]:
+            - generic [ref=f79e473]:
+              - generic [ref=f79e474]: BMI FINANCIAL GROUP
+              - generic "United States" [ref=f79e475]:
+                - img "United States" [ref=f79e476]
+            - generic [ref=f79e477]: CRD 7926
+          - button "Google Inc. United States Google" [ref=f79e480] [cursor=pointer]:
+            - generic [ref=f79e481]:
+              - generic [ref=f79e482]: Google Inc.
+              - generic "United States" [ref=f79e483]:
+                - img "United States" [ref=f79e484]
+            - generic [ref=f79e485]: Google
+          - button "Lenddo Limited Singapore Philippines Lenddo" [ref=f79e487] [cursor=pointer]:
+            - generic [ref=f79e488]:
+              - generic [ref=f79e489]: Lenddo Limited
+              - generic "Singapore · Philippines" [ref=f79e490]:
+                - img "Singapore" [ref=f79e491]
+                - img "Philippines" [ref=f79e492]
+            - generic [ref=f79e493]: Lenddo
+          - button "Rio Tinto United States Rio Tinto Plc" [ref=f79e495] [cursor=pointer]:
+            - generic [ref=f79e496]:
+              - generic [ref=f79e497]: Rio Tinto
+              - generic "United States" [ref=f79e498]:
+                - img "United States" [ref=f79e499]
+            - generic [ref=f79e500]: Rio Tinto Plc
+          - button "Cloudflare, Inc. United States Cloudflare Inc. · CloudFlare" [ref=f79e502] [cursor=pointer]:
+            - generic [ref=f79e503]:
+              - generic [ref=f79e504]: Cloudflare, Inc.
+              - generic "United States" [ref=f79e505]:
+                - img "United States" [ref=f79e506]
+            - generic [ref=f79e507]: Cloudflare Inc. · CloudFlare
+          - button "Infosys Ltd India United Kingdom United States Infosys Limited" [ref=f79e509] [cursor=pointer]:
+            - generic [ref=f79e510]:
+              - generic [ref=f79e511]: Infosys Ltd
+              - generic "India · United Kingdom · United States" [ref=f79e512]:
+                - img "India" [ref=f79e513]
+                - img "United Kingdom" [ref=f79e514]
+                - img "United States" [ref=f79e515]
+            - generic [ref=f79e516]: Infosys Limited
+          - button "Gilead Sciences United States Gilead Sciences Inc." [ref=f79e518] [cursor=pointer]:
+            - generic [ref=f79e519]:
+              - generic [ref=f79e520]: Gilead Sciences
+              - generic "United States" [ref=f79e521]:
+                - img "United States" [ref=f79e522]
+            - generic [ref=f79e523]: Gilead Sciences Inc.
+          - button "Pfizer United States Pfizer Inc." [ref=f79e525] [cursor=pointer]:
+            - generic [ref=f79e526]:
+              - generic [ref=f79e527]: Pfizer
+              - generic "United States" [ref=f79e528]:
+                - img "United States" [ref=f79e529]
+            - generic [ref=f79e530]: Pfizer Inc.
+          - button "PayPal United States PayPal Inc." [ref=f79e532] [cursor=pointer]:
+            - generic [ref=f79e533]:
+              - generic [ref=f79e534]: PayPal
+              - generic "United States" [ref=f79e535]:
+                - img "United States" [ref=f79e536]
+            - generic [ref=f79e537]: PayPal Inc.
+      - generic [ref=f79e539]:
+        - generic [ref=f79e540]:
+          - generic [ref=f79e541]:
+            - generic [ref=f79e542]:
+              - generic [ref=f79e543]: Firm
+              - code [ref=f79e544]: firm:snap-shots-inc
+              - generic "Inactive / ended firm — no start/end dates set" [ref=f79e912]: Firm
+            - heading "Snap Shots, Inc. United States" [level=2] [ref=f79e547]:
+              - generic [ref=f79e913]:
+                - generic [ref=f79e914]: Snap Shots, Inc.
+                - generic "United States" [ref=f79e915]:
+                  - img "United States" [ref=f79e916]
+            - generic [ref=f79e553]: No other names
+            - generic [ref=f79e555]:
+              - generic [ref=f79e556]:
+                - text: 📍
+                - strong [ref=f79e557]: 1555 W. Mockingbird Ln
+                - text: (+2 more locations)
+              - generic [ref=f79e558]: branch
+            - generic [ref=f79e919]:
+              - paragraph [ref=f79e921]: Dallas-area photography / photo-finishing company.
+              - paragraph [ref=f79e923]:
+                - text: Public historical records and directories show
+                - strong [ref=f79e924]: Snap Shots, Inc.
+                - text: operating in the Dallas / North Texas photography and photo-finishing business from the late 1940s through at least the early 1980s, including locations at
+                - strong [ref=f79e925]: 1621 Oak Lawn Ave
+                - text: ","
+                - strong [ref=f79e926]: 1555 W. Mockingbird Ln
+                - text: ", and"
+                - strong [ref=f79e927]: 1460 Prudential Dr
+                - text: in Dallas.
+              - heading "Timeline History & Listed Roles (Most Recent First)" [level=3] [ref=f79e928]
+              - generic [ref=f79e929]:
+                - generic [ref=f79e930]:
+                  - generic [ref=f79e931]:
+                    - heading "1981" [level=4] [ref=f79e932]
+                    - generic [ref=f79e933]: 1 entry
+                  - article [ref=f79e935]:
+                    - generic [ref=f79e937]: APRIL
+                    - generic [ref=f79e941]:
+                      - text: Listed in the
+                      - emphasis [ref=f79e942]: Greater Dallas White Pages
+                      - text: at
+                      - strong [ref=f79e943]: 1460 Prudential
+                      - text: (phone
+                      - code [ref=f79e944]: 638-6150
+                      - text: ).
+                - generic [ref=f79e945]:
+                  - generic [ref=f79e946]:
+                    - heading "1978" [level=4] [ref=f79e947]
+                    - generic [ref=f79e948]: 2 entries
+                  - generic [ref=f79e949]:
+                    - article [ref=f79e950]:
+                      - generic [ref=f79e952]: OCTOBER
+                      - generic [ref=f79e956]:
+                        - text: Listed in the
+                        - emphasis [ref=f79e957]: Greater Dallas Yellow Pages
+                        - text: under wholesale photo finishing with an office at
+                        - strong [ref=f79e958]: 1460 Prudential
+                        - text: (
+                        - code [ref=f79e959]: 638-6150
+                        - text: ).
+                    - article [ref=f79e960]:
+                      - generic [ref=f79e962]: AUGUST 10
+                      - generic [ref=f79e966]:
+                        - text: employment reference letter, president
+                        - strong [ref=f79e967]: N. L. Williams
+                        - text: stated that
+                        - strong [ref=f79e968]: Connie Adams
+                        - text: had worked for Snap Shots, Inc. since
+                - generic [ref=f79e969]:
+                  - generic [ref=f79e970]:
+                    - heading "1974" [level=4] [ref=f79e971]
+                    - generic [ref=f79e972]: 1 entry
+                  - article [ref=f79e974]:
+                    - generic [ref=f79e978]:
+                      - text: Listed in the
+                      - emphasis [ref=f79e979]: Greater Dallas White Pages
+                      - text: with its office at 1460 Prudential (
+                      - code [ref=f79e980]: 638-6150
+                      - text: ) and retail stores including Store No. 1 at 1621 Oak Lawn (
+                      - code [ref=f79e981]: 747-6691
+                      - text: ) and Store No. 3 at 1555 W. Mockingbird Ln (
+                      - code [ref=f79e982]: 638-4661
+                      - text: ).
+                - generic [ref=f79e983]:
+                  - generic [ref=f79e984]:
+                    - heading "1973" [level=4] [ref=f79e985]
+                    - generic [ref=f79e986]: 1 entry
+                  - article [ref=f79e988]:
+                    - generic [ref=f79e990]: DECEMBER
+                    - generic [ref=f79e992]: progressing from worker to supervisory management administration.
+                - generic [ref=f79e995]:
+                  - generic [ref=f79e996]:
+                    - heading "1961" [level=4] [ref=f79e997]
+                    - generic [ref=f79e998]: 1 entry
+                  - article [ref=f79e1000]:
+                    - generic [ref=f79e1004]:
+                      - text: Listed in the
+                      - emphasis [ref=f79e1005]: Dallas City Directory
+                      - text: with employees such as Dorothy J. (salesman) and Lauretta J. (cutter).
+                - generic [ref=f79e1006]:
+                  - generic [ref=f79e1007]:
+                    - heading "1957" [level=4] [ref=f79e1008]
+                    - generic [ref=f79e1009]: 1 entry
+                  - article [ref=f79e1011]:
+                    - generic [ref=f79e1015]:
+                      - text: Listed in the
+                      - emphasis [ref=f79e1016]: Dallas City Directory
+                      - text: with employees/staff including A. W. Nygard (supervisor), Ellen J. Kirbie (printer), and Bobby L. (clerk).
+                - generic [ref=f79e1017]:
+                  - generic [ref=f79e1018]:
+                    - heading "1956" [level=4] [ref=f79e1019]
+                    - generic [ref=f79e1020]: 1 entry
+                  - article [ref=f79e1022]:
+                    - generic [ref=f79e1026]:
+                      - text: Listed in the
+                      - emphasis [ref=f79e1027]: Dallas City Directory
+                      - text: with staff including Helen (clerk) and Benorr Macoadden (press).
+                - generic [ref=f79e1028]:
+                  - generic [ref=f79e1029]:
+                    - heading "1955" [level=4] [ref=f79e1030]
+                    - generic [ref=f79e1031]: 1 entry
+                  - article [ref=f79e1033]:
+                    - generic [ref=f79e1037]:
+                      - text: Listed in the
+                      - emphasis [ref=f79e1038]: Dallas City Directory
+                      - text: under photo finishing/services at 1621 Oak Lawn Ave.
+                - generic [ref=f79e1039]:
+                  - generic [ref=f79e1040]:
+                    - heading "1947" [level=4] [ref=f79e1041]
+                    - generic [ref=f79e1042]: 1 entry
+                  - article [ref=f79e1044]:
+                    - generic [ref=f79e1046]: Founded in Dallas, Texas, as a photography and photo-finishing business (also appearing in 1947-dated copyright entries out of Dallas, Texas). If you have specific directory pages, corporate filings, or newspaper clippings naming a chair or officer, share them and I can extract and organize those names into the list.
+              - heading "Note on Board / Chair Members" [level=3] [ref=f79e1049]
+              - paragraph [ref=f79e1051]:
+                - text: Available historical directories and public search results do
+                - strong [ref=f79e1052]: not
+                - text: identify specific board chair members or a full board of directors roster for
+                - strong [ref=f79e1053]: Snap Shots, Inc.
+                - text: in Dallas. A September 1980 Tarleton alumni publication notes that the company's founder—who attended Tarleton, the University of Georgia, and the Navy/Air Force Academy—founded Snap Shots Inc. of Dallas in 1947 and served as its president and chief executive, though the snippet does not print the individual's name.
+          - generic [ref=f79e696]:
+            - button "Edit" [ref=f79e1054] [cursor=pointer]
+            - button "Research & Fill Details" [ref=f79e698] [cursor=pointer]
+        - generic [ref=f79e699]:
+          - button "Overview & Links (5)" [ref=f79e700] [cursor=pointer]
+          - button "Timeline (10)" [ref=f79e701] [cursor=pointer]
+          - button "Possible Alignments (1)" [ref=f79e702] [cursor=pointer]
+        - generic [ref=f79e703]:
+          - generic [ref=f79e704]:
+            - generic [ref=f79e705]:
+              - heading "Aliases / other names (1)" [level=3] [ref=f79e706]
+              - list [ref=f79e707]:
+                - listitem [ref=f79e708]:
+                  - generic [ref=f79e1055]:
+                    - text: Snap Shots, Inc.
+                    - generic [ref=f79e1056]: · alias
+            - generic [ref=f79e711]:
+              - heading "Sources & Identifiers" [level=3] [ref=f79e712]
+              - paragraph [ref=f79e713]: No public identifiers yet.
+            - generic [ref=f79e714]:
+              - heading "Locations (3)" [level=3] [ref=f79e715]
+              - list [ref=f79e716]:
+                - listitem [ref=f79e717]:
+                  - generic [ref=f79e718]:
+                    - text: 📍 1555 W. Mockingbird Ln
+                    - generic [ref=f79e1057]: (branch)
+                - listitem [ref=f79e720]:
+                  - generic [ref=f79e721]:
+                    - text: 📍 1460 Prudential Dr
+                    - generic [ref=f79e1058]: (branch)
+                - listitem [ref=f79e723]:
+                  - generic [ref=f79e724]:
+                    - text: 📍 1621 Oak Lawn Ave
+                    - generic [ref=f79e1059]: (branch)
+          - generic [ref=f79e727]:
+            - generic [ref=f79e728]:
+              - heading "Connected Profiles (5)" [level=3] [ref=f79e729]
+              - generic [ref=f79e731]:
+                - button "All (5)" [ref=f79e732] [cursor=pointer]
+                - button "Current (2)" [ref=f79e733] [cursor=pointer]
+                - button "Old (3)" [ref=f79e734] [cursor=pointer]
+            - paragraph [ref=f79e735]: Family members stay under Family / Relatives above. Link people, firms, schools, and events here with a typed relationship.
+            - generic [ref=f79e736]:
+              - generic [ref=f79e737]:
+                - generic [ref=f79e739]:
+                  - generic [ref=f79e1060]: August 10, 1978 → Present
+                  - generic [ref=f79e1062]: ← employed by
+                  - button "N. L. Williams" [ref=f79e743] [cursor=pointer]
+                  - generic "United States" [ref=f79e744]:
+                    - img "United States" [ref=f79e745]
+                  - generic [ref=f79e746]: Person
+                  - generic [ref=f79e1063]: (President / CEO)
+                - paragraph [ref=f79e1064]: Signed Snap Shots reference letter as President
+              - generic [ref=f79e749]:
+                - generic [ref=f79e751]:
+                  - generic [ref=f79e1065]: December 1973 → Present
+                  - generic [ref=f79e1067]: ← employed by
+                  - button "Connie Gale Adams" [ref=f79e755] [cursor=pointer]
+                  - generic "United States" [ref=f79e756]:
+                    - img "United States" [ref=f79e757]
+                  - generic [ref=f79e758]: Person
+                  - generic [ref=f79e1068]: (employee)
+                  - generic [ref=f79e760]: 📍 Bokchito, OK
+                - paragraph [ref=f79e1069]: Snap Shots reference letter 1978-08-10; employed since 1973-12
+              - generic [ref=f79e762]:
+                - generic [ref=f79e764]:
+                  - generic [ref=f79e1070]: "1957"
+                  - generic [ref=f79e1071]: Old
+                  - generic [ref=f79e1072]: ← employed by
+                  - button "A. W. Nygard" [ref=f79e768] [cursor=pointer]
+                  - generic [ref=f79e769]: Person
+                  - generic [ref=f79e1073]: (Supervisor)
+                - paragraph [ref=f79e1074]: Listed in the Dallas City Directory with employees/staff
+              - generic [ref=f79e772]:
+                - generic [ref=f79e774]:
+                  - generic [ref=f79e1075]: "1957"
+                  - generic [ref=f79e1076]: Old
+                  - generic [ref=f79e1077]: ← employed by
+                  - button "Bobby L." [ref=f79e778] [cursor=pointer]
+                  - generic [ref=f79e779]: Person
+                  - generic [ref=f79e1078]: (clerk)
+                - paragraph [ref=f79e1079]: Listed in the Dallas City Directory
+              - generic [ref=f79e782]:
+                - generic [ref=f79e784]:
+                  - generic [ref=f79e1080]: "1957"
+                  - generic [ref=f79e1081]: Old
+                  - generic [ref=f79e1082]: ← employed by
+                  - button "Ellen J. Kirbie" [ref=f79e788] [cursor=pointer]
+                  - generic [ref=f79e789]: Person
+                  - generic [ref=f79e1083]: (print tech)
+                - paragraph [ref=f79e1084]: Listed in the Dallas City Directory
+            - generic [ref=f79e792]:
+              - textbox "Search existing profile *" [ref=f79e794]
+              - combobox [ref=f79e795]:
+                - option "employed by"
+                - option "affiliated with" [selected]
+                - option "business tie"
+                - option "owned by"
+                - option "registered at"
+                - option "alumni or faculty"
+                - option "funded by"
+                - option "participated in"
+                - option "authored or spoke"
+                - option "part of subject"
+                - option "mentioned in"
+                - option "regulator of"
+                - option "location overlap"
+              - textbox "Role / title" [ref=f79e796]
+              - generic [ref=f79e797]:
+                - 'textbox "Accepted: 11-26-2026, 11262026, or November 26, 2026" [ref=f79e798]':
+                  - /placeholder: MM-DD-YYYY or MMDDYYYY
+                - 'textbox "Accepted: 11-26-2026, 11262026, or November 26, 2026" [ref=f79e799]':
+                  - /placeholder: MM-DD-YYYY or MMDDYYYY
+              - textbox "Note (optional)" [ref=f79e800]
+              - button "+ Add" [disabled] [ref=f79e802] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=f79e1085] [cursor=pointer]:
+    - generic [ref=f79e1088]:
+      - text: Compiling
+      - generic [ref=f79e1089]:
+        - generic [ref=f79e1090]: .
+        - generic [ref=f79e1091]: .
+        - generic [ref=f79e1092]: .
+  - alert [ref=f79e50]
