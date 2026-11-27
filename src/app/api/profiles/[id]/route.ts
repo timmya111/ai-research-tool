@@ -74,9 +74,18 @@ export async function PATCH(request: Request, context: Ctx) {
 		}
 		const hasMetadataPatch = Object.keys(metadataPatch).length > 0;
 
+		const nextProfileType =
+			body.profileType != null ? (String(body.profileType).trim() as ProfileType) : undefined;
+		if (nextProfileType !== undefined && !PROFILE_TYPES.includes(nextProfileType)) {
+			return NextResponse.json(
+				{ ok: false, error: `Invalid profileType: ${String(body.profileType)}` },
+				{ status: 400 },
+			);
+		}
+
 		let updated = updateProfileFields(key, {
 			name: body.name != null ? String(body.name) : undefined,
-			profileType: body.profileType != null ? (String(body.profileType) as ProfileType) : undefined,
+			profileType: nextProfileType,
 			status: body.status != null ? (String(body.status) as ProfileStatus) : undefined,
 			summary: body.summary != null ? String(body.summary) : undefined,
 			startDate: body.startDate !== undefined ? (body.startDate ? String(body.startDate) : null) : undefined,
@@ -270,6 +279,7 @@ export async function PATCH(request: Request, context: Ctx) {
 		const manualEdit =
 			userTouch ||
 			body.name != null ||
+			body.profileType != null ||
 			body.summary != null ||
 			body.startDate !== undefined ||
 			body.endDate !== undefined ||

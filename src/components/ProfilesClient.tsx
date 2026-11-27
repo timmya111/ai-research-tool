@@ -3767,6 +3767,8 @@ export default function ProfilesClient({
 	const [newEmployerRole, setNewEmployerRole] = useState('');
 	const [creating, setCreating] = useState(false);
 	const [profileEditing, setProfileEditing] = useState(false);
+	const [typeDraft, setTypeDraft] = useState<ProfileType>('firm');
+	const [savingCategory, setSavingCategory] = useState(false);
 	const [lifeStartDraft, setLifeStartDraft] = useState('');
 	const [lifeEndDraft, setLifeEndDraft] = useState('');
 	const [nameDraft, setNameDraft] = useState('');
@@ -4729,6 +4731,7 @@ export default function ProfilesClient({
 
 	function beginProfileEdit() {
 		if (!detail) return;
+		setTypeDraft(detail.profile.profileType);
 		setNameDraft(detail.profile.name);
 		setAltNamesDraft(collectAltNamesForEdit(detail).join(' · '));
 		setSummaryDraft(detail.profile.summary || '');
@@ -4862,6 +4865,42 @@ export default function ProfilesClient({
 		return data as ProfileDetail;
 	}
 
+	async function handleQuickChangeProfileType(nextType: ProfileType) {
+		if (!detail || !selectedId || nextType === detail.profile.profileType) return;
+		const prevType = detail.profile.profileType;
+		const prevSlug = detail.profile.slug || selectedId;
+		const prevLabel = TYPE_META[prevType]?.label || prevType;
+		const nextLabel = TYPE_META[nextType]?.label || nextType;
+		setSavingCategory(true);
+		setError(null);
+		try {
+			const latest = await patchProfile(prevSlug, {
+				profileType: nextType,
+				userTouch: true,
+				skipAutoResearch: true,
+			});
+			const nextSlug = latest.profile.slug || latest.profile.id;
+			setDetail(latest);
+			setTypeDraft(latest.profile.profileType);
+			setSelectedId(nextSlug);
+			syncUrl({ profile: nextSlug, view: 'profile' }, 'replace');
+			await refreshLeftListForProfile({
+				profileKey: nextSlug,
+				profileType: latest.profile.profileType,
+				keepTab: true,
+			});
+			setBanner(
+				`Moved “${latest.profile.name}” from ${prevLabel} to ${nextLabel}${
+					nextSlug !== prevSlug ? ` — URL is now /profiles/${nextSlug.replace(':', '/')}` : ''
+				}.`,
+			);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSavingCategory(false);
+		}
+	}
+
 	async function handleApplyProfileEdit() {
 		if (!selectedId || !detail) return;
 		if (!nameDraft.trim()) {
@@ -4882,12 +4921,14 @@ export default function ProfilesClient({
 			} | null = null;
 
 			const nameChanged = nameDraft.trim() !== detail.profile.name;
+			const typeChanged = typeDraft !== detail.profile.profileType;
 			const summaryChanged = summaryDraft !== (detail.profile.summary || '');
 			const startChanged = !sameProfileDate(lifeStartDraft, detail.profile.startDate);
 			const endChanged = !sameProfileDate(lifeEndDraft, detail.profile.endDate);
-			if (nameChanged || summaryChanged || startChanged || endChanged) {
+			if (nameChanged || typeChanged || summaryChanged || startChanged || endChanged) {
 				latest = await patchProfile(profileKey, {
 					...(nameChanged ? { name: nameDraft.trim() } : {}),
+					...(typeChanged ? { profileType: typeDraft } : {}),
 					...(summaryChanged ? { summary: summaryDraft } : {}),
 					...(startChanged || endChanged ?
 						{
@@ -5105,25 +5146,33 @@ export default function ProfilesClient({
 				setBanner(`Applied profile edits.${autoResearchNote}`);
 			}
 			// Float edited profile to the top of the left cards (userTouchedAt sort).
-			setOffset(0);
-			const listParams = new URLSearchParams();
-			if (typeFilter === HISTORY_FILTER) listParams.set('type', 'historic_event');
-			else if (typeFilter && typeFilter !== 'all') listParams.set('type', typeFilter);
-			if (query.trim()) listParams.set('q', query.trim());
-			if (countryCode) listParams.set('country', countryCode);
-			listParams.set('limit', '60');
-			listParams.set('offset', '0');
-			listParams.set('stats', '1');
-			const listRes = await fetch(`/api/profiles?${listParams.toString()}`, {
-				cache: 'no-store',
-			});
-			const listData = await listRes.json();
-			if (listRes.ok && listData?.ok) {
-				setProfiles(Array.isArray(listData.profiles) ? listData.profiles : []);
-				setTotalProfiles(Number(listData.total || 0));
-				if (listData.stats) setStats(listData.stats as ProfileStats);
+			if (typeChanged) {
+				await refreshLeftListForProfile({
+					profileKey: latest.profile.slug || latest.profile.id,
+					profileType: latest.profile.profileType,
+					keepTab: true,
+				});
 			} else {
-				await loadList();
+				setOffset(0);
+				const listParams = new URLSearchParams();
+				if (typeFilter === HISTORY_FILTER) listParams.set('type', 'historic_event');
+				else if (typeFilter && typeFilter !== 'all') listParams.set('type', typeFilter);
+				if (query.trim()) listParams.set('q', query.trim());
+				if (countryCode) listParams.set('country', countryCode);
+				listParams.set('limit', '60');
+				listParams.set('offset', '0');
+				listParams.set('stats', '1');
+				const listRes = await fetch(`/api/profiles?${listParams.toString()}`, {
+					cache: 'no-store',
+				});
+				const listData = await listRes.json();
+				if (listRes.ok && listData?.ok) {
+					setProfiles(Array.isArray(listData.profiles) ? listData.profiles : []);
+					setTotalProfiles(Number(listData.total || 0));
+					if (listData.stats) setStats(listData.stats as ProfileStats);
+				} else {
+					await loadList();
+				}
 			}
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -5501,7 +5550,7 @@ export default function ProfilesClient({
 		}
 	}
 
-	async function refreshLeftListForProfile(opts: { profileKey: string; profileType?: string | null }) {
+	async function refreshLeftListForProfile(opts: { profileKey: string; profileType?: string | null; keepTab?: boolean }) {
 		const keepType = String(opts.profileType || '');
 		const nextTypeFilter =
 			keepType === 'historic_event' ? HISTORY_FILTER
@@ -5517,7 +5566,7 @@ export default function ProfilesClient({
 		setTypeFilter(nextTypeFilter);
 		setSelectedId(opts.profileKey);
 		setMainView('profile');
-		setProfileTab('overview');
+		if (!opts.keepTab) setProfileTab('overview');
 		const listParams = new URLSearchParams();
 		if (nextTypeFilter === HISTORY_FILTER) listParams.set('type', 'historic_event');
 		else if (nextTypeFilter && nextTypeFilter !== 'all') listParams.set('type', nextTypeFilter);
@@ -6789,14 +6838,40 @@ export default function ProfilesClient({
 										<div>
 											<div className='flex flex-wrap items-center gap-1.5'>
 												{(() => {
-													const detailCurrent = isCurrentPersonOrFirm(detail.profile, detail.identifiers);
+													const activeType = profileEditing ? typeDraft : detail.profile.profileType;
+													const detailCurrent = isCurrentPersonOrFirm(
+														{ ...detail.profile, profileType: activeType },
+														detail.identifiers,
+													);
 													const typeBadgeClass =
-														detail.profile.profileType === 'firm' ? firmTypeBadgeClass(detail.profile, detail.identifiers)
+														activeType === 'firm' ? firmTypeBadgeClass(detail.profile, detail.identifiers)
 														: detailCurrent ? CURRENT_ACTOR_BADGE
-														: TYPE_META[detail.profile.profileType].badge;
-													const typeLabel =
-														detail.profile.profileType === 'firm' ? firmTypeBadgeLabel(detail.profile, detail.identifiers) : TYPE_META[detail.profile.profileType].label;
-													return <span className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${typeBadgeClass}`}>{typeLabel}</span>;
+														: TYPE_META[activeType].badge;
+													return (
+														<select
+															aria-label='Profile category'
+															title='Change profile category'
+															value={activeType}
+															disabled={savingCategory || savingCore}
+															onChange={(e) => {
+																const nextType = e.target.value as ProfileType;
+																if (profileEditing) {
+																	setTypeDraft(nextType);
+																} else {
+																	void handleQuickChangeProfileType(nextType);
+																}
+															}}
+															className={`cursor-pointer rounded border px-2 py-0.5 text-[11px] font-semibold focus:outline-none focus:ring-1 focus:ring-[#F97316] disabled:cursor-wait disabled:opacity-60 ${typeBadgeClass}`}>
+															{ALL_TYPES.map((t) => (
+																<option
+																	key={t}
+																	value={t}
+																	className='bg-[var(--app-surface)] text-[var(--app-text)]'>
+																	{TYPE_META[t].label}
+																</option>
+															))}
+														</select>
+													);
 												})()}
 												<code className='rounded bg-[var(--app-bg)] px-1.5 py-0.5 text-[11px] opacity-75'>{detail.profile.slug}</code>
 												{profileEditing ?
