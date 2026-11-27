@@ -1762,10 +1762,6 @@ function buildFormattedSummary(profile, bullets, wikiNotes, { relatedCount = 0, 
 		'',
 		'## Source articles',
 		...(urls.length ? urls.map((u) => `- ${u}`) : ['- (no source URL)']),
-		'',
-		relatedCount > 1
-			? `Pieced from ${relatedCount} news_rss card(s) via news-rss-format-card; overview mixes a short paragraph with Timeline-style dated entries.`
-			: `Single-card rewrite via news-rss-format-card; overview mixes a short paragraph with Timeline-style dated entries.`,
 	];
 
 	return {
@@ -1789,7 +1785,10 @@ async function apiJson(pathname, { method = 'GET', body } = {}) {
 }
 
 async function patchProfile(id, patch) {
-	return apiJson(`/api/profiles/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch });
+	return apiJson(`/api/profiles/${encodeURIComponent(id)}`, {
+		method: 'PATCH',
+		body: { skipAutoResearch: true, ...patch },
+	});
 }
 
 async function addTimeline(id, entry) {

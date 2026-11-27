@@ -11,6 +11,13 @@ const BULLET_RE = /^[-*•]\s+(.+)$/;
 /** Same family of date labels as ProfilesClient SUMMARY_DATED_BULLET_RE (server-side). */
 const DATED_BULLET_RE =
 	/^(?:\*\*)?((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+(?:1[6-9]|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:1[6-9]|20)\d{2}|(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:1[6-9]|20)\d{2}|(?:1[6-9]|20)\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-(?:1[6-9]|20)\d{2}|(?:1[6-9]|20)\d{2}-\d{2}(?:-\d{2})?\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}-\d{2}(?:-\d{2})?|present|Present)|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?\s*[–—-]\s*(?:(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?|present|Present)|(?:1[6-9]|20)\d{2}\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}|present|Present)|(?:1[6-9]|20)\d{2}-\d{2}|\d{2}-(?:1[6-9]|20)\d{2}|(?:(?:Late|Early|Mid)(?:-|\s+))?(?:1[6-9]|20)\d{2}s?|(?:1[6-9]|20)\d{2}\+|(?:1[6-9]|20)\d{2})(?:\*\*)?\s*[—–:\-]\s*(.+)$/i;
+/** Bold year/range prefix without punctuation (e.g. `* **1945** adopted a formal constitution…`). */
+const BOLD_DATED_BULLET_RE =
+	/^\*\*((?:1[6-9]|20)\d{2}(?:\s*[–—-]\s*(?:(?:1[6-9]|20)\d{2}|present|Present))?)\*\*\s+(?![—–:\-])(.+)$/i;
+
+function matchDatedBullet(content: string): RegExpMatchArray | null {
+	return content.match(DATED_BULLET_RE) || content.match(BOLD_DATED_BULLET_RE);
+}
 
 const MONTH_INDEX: Record<string, string> = {
 	jan: '01',
@@ -210,7 +217,7 @@ export function parseSummaryTimelineItems(summary: string): ParsedSummaryTimelin
 			const bullet = firstLine.match(BULLET_RE);
 			if (!bullet) continue;
 			const firstBody = bullet[1]!.trim();
-			const dated = firstBody.match(DATED_BULLET_RE);
+			const dated = matchDatedBullet(firstBody);
 			if (!dated) continue;
 
 			const rawDateLabel = stripMd(dated[1] || '');
@@ -218,7 +225,7 @@ export function parseSummaryTimelineItems(summary: string): ParsedSummaryTimelin
 			const extraProse = block.lines
 				.slice(1)
 				.map((l) => stripMd(l))
-				.filter(Boolean)
+				.filter((l) => Boolean(l) && !/^[-*_]{3,}$/.test(l))
 				.join(' ')
 				.trim();
 			const combinedText = extraProse ? `${firstText} — ${extraProse}` : firstText;
@@ -498,7 +505,7 @@ function isDatedBulletContent(content: string): {
 	sortKey: number;
 	rawDateLabel: string;
 } {
-	const dated = content.match(DATED_BULLET_RE);
+	const dated = matchDatedBullet(content);
 	if (!dated) return { dated: false, sortKey: -1, rawDateLabel: '' };
 	const rawDateLabel = stripMd(dated[1] || '');
 	const { eventDate, endDate } = parseTimelineDateLabel(rawDateLabel);

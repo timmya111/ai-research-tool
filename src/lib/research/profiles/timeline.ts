@@ -372,6 +372,143 @@ function lookupHistoricEventByUrl(
 	return null;
 }
 
+function lookupAnyProfileByTitle(
+	db: DatabaseSync,
+	rawTitle: string,
+	excludeProfileId?: string | null,
+): LinkedHistoricEventHit | null {
+	const cleaned = String(rawTitle || '')
+		.replace(/^\[[^\]]+\]\s*/, '')
+		.replace(/\*\*/g, '')
+		.replace(/\s+/g, ' ')
+		.trim();
+	if (cleaned.length < 3) return null;
+
+	// Build progressively looser candidate strings: full, without trailing parenthetical, without trailing "event"/"profile"
+	const variants: string[] = [];
+	const pushVar = (s: string) => {
+		const t = s.trim();
+		if (t.length >= 3 && !variants.includes(t)) variants.push(t);
+	};
+	pushVar(cleaned);
+	const noParen = cleaned.replace(/\s*\([^)]*\)\s*$/, '').trim();
+	pushVar(noParen);
+	pushVar(noParen.replace(/\s+(?:event|profile)$/i, '').trim());
+
+	for (const candidate of variants) {
+		const norm = normTimelineTitle(candidate);
+		if (norm.length < 3) continue;
+
+		// 1. Exact name / normalized_name / alias match (fast & highest confidence)
+		const exact = db
+			.prepare(
+				`SELECT id, slug, name FROM profiles
+         WHERE status IN ('active', 'pinned')
+           AND (? IS NULL OR id != ?)
+           AND (lower(name) = lower(?) OR normalized_name = ?)
+         ORDER BY
+           CASE WHEN status = 'pinned' THEN 0 ELSE 1 END ASC,
+           CASE profile_type
+             WHEN 'region' THEN 0
+             WHEN 'historic_event' THEN 1
+             ELSE 2
+           END ASC
+         LIMIT 1`,
+			)
+			.get(excludeProfileId || null, excludeProfileId || null, candidate, norm) as
+			| Record<string, unknown>
+			| undefined;
+		if (exact?.id) {
+			return { id: String(exact.id), slug: String(exact.slug), name: String(exact.name) };
+		}
+
+		const aliasHit = db
+			.prepare(
+				`SELECT p.id, p.slug, p.name
+         FROM profile_aliases pa
+         JOIN profiles p ON p.id = pa.profile_id
+         WHERE p.status IN ('active', 'pinned')
+           AND (? IS NULL OR p.id != ?)
+           AND pa.normalized_alias = ?
+         ORDER BY
+           CASE WHEN p.status = 'pinned' THEN 0 ELSE 1 END ASC,
+           CASE p.profile_type
+             WHEN 'region' THEN 0
+             WHEN 'historic_event' THEN 1
+             ELSE 2
+           END ASC
+         LIMIT 1`,
+			)
+			.get(excludeProfileId || null, excludeProfileId || null, norm) as
+			| Record<string, unknown>
+			| undefined;
+		if (aliasHit?.id) {
+			return { id: String(aliasHit.id), slug: String(aliasHit.slug), name: String(aliasHit.name) };
+		}
+
+		// 2. Strong prefix / near-prefix match (e.g. "Oklahoma Structural Provinces Ranking" -> "... (Arbuckle–Wichita...)")
+		if (norm.length >= 8) {
+			const prefixRows = db
+				.prepare(
+					`SELECT id, slug, name, normalized_name FROM profiles
+           WHERE status IN ('active', 'pinned')
+             AND (? IS NULL OR id != ?)
+             AND (
+               normalized_name LIKE ?
+               OR name LIKE ?
+               OR (? LIKE normalized_name || '%' AND length(normalized_name) >= 10)
+             )
+           ORDER BY
+             CASE WHEN status = 'pinned' THEN 0 ELSE 1 END ASC,
+             CASE profile_type
+               WHEN 'region' THEN 0
+               WHEN 'historic_event' THEN 1
+               ELSE 2
+             END ASC,
+             length(name) ASC
+           LIMIT 10`,
+				)
+				.all(
+					excludeProfileId || null,
+					excludeProfileId || null,
+					`${norm}%`,
+					`${candidate.slice(0, 64)}%`,
+					norm,
+				) as Array<Record<string, unknown>>;
+
+			for (const r of prefixRows) {
+				const dbNorm = normTimelineTitle(String(r.name || ''));
+				if (!dbNorm || dbNorm.length < 6) continue;
+				if (dbNorm === norm || dbNorm.startsWith(norm) || norm.startsWith(dbNorm)) {
+					return { id: String(r.id), slug: String(r.slug), name: String(r.name) };
+				}
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Resolve free-text profile names (from ## Related profiles / ## Linked regions / ## See also)
+ * across ALL profile types. Never returns the excluded profile.
+ */
+export function resolveAnyProfileLinks(
+	titles: string[],
+	opts: { excludeProfileId?: string | null } = {},
+): Array<{ query: string; hit: LinkedHistoricEventHit | null }> {
+	const db = getProfilesDb();
+	const exclude = opts.excludeProfileId || null;
+	const out: Array<{ query: string; hit: LinkedHistoricEventHit | null }> = [];
+	const seen = new Set<string>();
+	for (const raw of titles) {
+		const q = String(raw || '').trim();
+		if (!q || seen.has(q)) continue;
+		seen.add(q);
+		out.push({ query: q, hit: lookupAnyProfileByTitle(db, q, exclude) });
+	}
+	return out;
+}
+
 /**
  * Resolve historic_event profiles for free-text titles / source URLs (Overview rail + tools).
  * Never returns the excluded profile.

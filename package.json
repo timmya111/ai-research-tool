@@ -39,6 +39,8 @@
 		"profiles:backfill": "node scripts/profiles-backfill.mjs",
 		"profiles:align": "node scripts/profiles-backfill.mjs --align-only",
 		"profiles:enrich": "node scripts/profiles-enrich.mjs",
+		"profiles:enrich:milestones": "node scripts/enrich-sparse-milestone-timelines.mjs",
+		"profiles:crawl:articles": "node scripts/crawl-article-entities.mjs",
 		"profiles:import-ok-hospitals": "node scripts/import-oklahoma-hospitals.mjs",
 		"profiles:import-bryan-oil": "node scripts/import-bryan-oil-companies.mjs",
 		"profiles:import-la-salle-oil": "node scripts/import-la-salle-oil-companies.mjs",

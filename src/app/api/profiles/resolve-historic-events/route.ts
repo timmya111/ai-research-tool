@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
-import { resolveHistoricEventLinks } from '@/lib/research/profiles/timeline';
+import {
+	resolveAnyProfileLinks,
+	resolveHistoricEventLinks,
+} from '@/lib/research/profiles/timeline';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
- * Resolve free-text titles / URLs to historic_event profiles for in-app Timeline links.
- * POST { titles?: string[], urls?: string[], excludeProfileId?: string }
+ * Resolve free-text titles / URLs to profiles for in-app Overview & Timeline links.
+ * POST { titles?: string[], urls?: string[], excludeProfileId?: string, allTypes?: boolean }
  */
 export async function POST(request: Request) {
 	const blocked = rejectUnlessLocalKnowledge(request);
@@ -16,13 +19,16 @@ export async function POST(request: Request) {
 	try {
 		const body = (await request.json()) as Record<string, unknown>;
 		const titles = Array.isArray(body.titles)
-			? body.titles.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 80)
+			? body.titles.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 100)
 			: [];
 		const urls = Array.isArray(body.urls)
 			? body.urls.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 40)
 			: [];
 		const excludeProfileId = body.excludeProfileId ? String(body.excludeProfileId) : null;
-		const resolved = resolveHistoricEventLinks(titles, { excludeProfileId, urls });
+		const allTypes = body.allTypes === true;
+		const resolved = allTypes
+			? resolveAnyProfileLinks(titles, { excludeProfileId })
+			: resolveHistoricEventLinks(titles, { excludeProfileId, urls });
 		const links: Record<string, { id: string; slug: string; name: string }> = {};
 		for (const row of resolved) {
 			if (!row.hit) continue;

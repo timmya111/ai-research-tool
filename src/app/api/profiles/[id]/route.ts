@@ -1,5 +1,9 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
+import {
+	runAutoProfileResearchPipeline,
+	shouldScheduleAutoResearch,
+} from '@/lib/research/profiles/autoResearchPipeline';
 import {
 	addAlias,
 	addIdentifier,
@@ -393,9 +397,62 @@ export async function PATCH(request: Request, context: Ctx) {
 			}
 		}
 
+		const skipAutoResearch =
+			body.skipAutoResearch === true ||
+			body.skipAutoResearch === 1 ||
+			body.skipAutoResearch === '1' ||
+			body.skipAutoResearch === 'true';
+		const forceAutoResearch =
+			body.autoResearch === true ||
+			body.autoResearch === 1 ||
+			body.autoResearch === '1' ||
+			body.autoResearch === 'true';
+		const isAutomatedBatchPatch =
+			metadataPatch.formattedBy === 'news-rss-format-card' ||
+			metadataPatch.formattedBy === 'historic-events-basic-timeline' ||
+			metadataPatch.sparseTimelineEnrichedAt != null ||
+			metadataPatch.entityCrawledAt != null;
+		const substantiveUserChange =
+			forceAutoResearch ||
+			body.name != null ||
+			body.summary != null ||
+			body.startDate !== undefined ||
+			body.endDate !== undefined ||
+			body.addAlias != null ||
+			body.updateAlias != null ||
+			body.replaceOtherNames != null ||
+			body.addLocation != null ||
+			body.updateLocation != null ||
+			body.addIdentifier != null;
+		const autoResearchScheduled =
+			!skipAutoResearch &&
+			!isAutomatedBatchPatch &&
+			substantiveUserChange &&
+			shouldScheduleAutoResearch(updated.id, { force: forceAutoResearch });
+		if (autoResearchScheduled) {
+			const pid = updated.id;
+			after(async () => {
+				try {
+					await runAutoProfileResearchPipeline(pid, {
+						trigger: 'update',
+						force: forceAutoResearch,
+					});
+				} catch (err) {
+					console.error('[auto-research] update pipeline failed', err);
+				}
+			});
+		}
+
 		const detail = getProfileDetail(updated.id);
 		return NextResponse.json(
-			{ ok: true, ...detail, ...(timelineSync ? { timelineSync } : {}) },
+			{
+				ok: true,
+				...detail,
+				...(timelineSync ? { timelineSync } : {}),
+				...(autoResearchScheduled
+					? { autoResearch: { scheduled: true, trigger: 'update', profileId: updated.id } }
+					: {}),
+			},
 			{ headers: { 'Cache-Control': 'no-store' } },
 		);
 	} catch (error: unknown) {

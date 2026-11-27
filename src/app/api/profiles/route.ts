@@ -1,5 +1,9 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { rejectUnlessLocalKnowledge } from '@/lib/research/knowledge/guard';
+import {
+	runAutoProfileResearchPipeline,
+	shouldScheduleAutoResearch,
+} from '@/lib/research/profiles/autoResearchPipeline';
 import { resolveFirmIdentityOnCreate } from '@/lib/research/profiles/firmIdentityFilter';
 import {
 	addAlias,
@@ -338,11 +342,43 @@ export async function POST(request: Request) {
 			}
 		}
 
+		const sourceCorpusStr = body.sourceCorpus ? String(body.sourceCorpus) : 'manual';
+		const skipAutoResearch =
+			body.skipAutoResearch === true ||
+			body.skipAutoResearch === 1 ||
+			body.skipAutoResearch === '1' ||
+			body.skipAutoResearch === 'true';
+		const forceAutoResearch =
+			body.autoResearch === true ||
+			body.autoResearch === 1 ||
+			body.autoResearch === '1' ||
+			body.autoResearch === 'true';
+		const autoResearchScheduled =
+			!skipAutoResearch &&
+			(sourceCorpusStr === 'manual' || forceAutoResearch) &&
+			shouldScheduleAutoResearch(profile.id, { force: forceAutoResearch });
+		if (autoResearchScheduled) {
+			const pid = profile.id;
+			after(async () => {
+				try {
+					await runAutoProfileResearchPipeline(pid, {
+						trigger: 'create',
+						force: forceAutoResearch,
+					});
+				} catch (err) {
+					console.error('[auto-research] create pipeline failed', err);
+				}
+			});
+		}
+
 		return NextResponse.json(
 			{
 				ok: true,
 				profile,
 				...(timelineSync ? { timelineSync, autoFormattedHistoric } : {}),
+				...(autoResearchScheduled
+					? { autoResearch: { scheduled: true, trigger: 'create', profileId: profile.id } }
+					: {}),
 				...(identity
 					? {
 							identityFilter: {

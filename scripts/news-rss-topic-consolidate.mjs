@@ -222,8 +222,6 @@ function buildTimelineSummary({ cluster, members, wikiNotes }) {
 		'',
 		'## Source articles',
 		...sources.map((u) => `- ${u}`),
-		'',
-		`Consolidated from ${sorted.length} news_rss card(s); overview mixes a short paragraph with Timeline-style dated entries.`,
 	];
 
 	return {

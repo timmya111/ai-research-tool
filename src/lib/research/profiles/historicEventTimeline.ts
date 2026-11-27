@@ -330,7 +330,10 @@ function peelTrailingSections(summary: string): {
 			while (i < lines.length) {
 				const t = lines[i]!.trim();
 				if (ANY_HEADING_RE.test(t)) break;
-				if (/^(?:Single-card rewrite via|Pieced from \d+ news_rss)/i.test(t)) {
+				if (
+					/^(?:Single-card rewrite (?:via|from)|Pieced from \d+ news_rss|Consolidated from \d+ news_rss)/i.test(t) ||
+					/overview mixes a short paragraph with Timeline-style dated entries\.?$/i.test(t)
+				) {
 					i += 1;
 					continue;
 				}
@@ -342,7 +345,10 @@ function peelTrailingSections(summary: string): {
 			continue;
 		}
 
-		if (/^(?:Single-card rewrite via|Pieced from \d+ news_rss)/i.test(trimmed)) {
+		if (
+			/^(?:Single-card rewrite (?:via|from)|Pieced from \d+ news_rss|Consolidated from \d+ news_rss)/i.test(trimmed) ||
+			/overview mixes a short paragraph with Timeline-style dated entries\.?$/i.test(trimmed)
+		) {
 			i += 1;
 			continue;
 		}

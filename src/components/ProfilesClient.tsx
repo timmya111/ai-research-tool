@@ -13,6 +13,14 @@ import { formatTickerListing } from '@/lib/research/profiles/tickerListing';
 import { summaryMarkdownToHtml } from '@/lib/research/profiles/summaryMarkdown';
 import { formatResearchDriveTimelineEntry } from '@/lib/research/profiles/researchDriveDisplay';
 import {
+	formatRangeSpanDuration,
+	formatTimelineSpanHeaderLabel,
+	nestTimelineItemsIntoRangeSpans,
+	parseSummaryDateBounds,
+	parseTimelineEntryBounds,
+	type RangeSpanChapter,
+} from '@/lib/research/profiles/timelineRangeNest';
+import {
 	formatFamilyPeerRoleLabel,
 	invertFamilyRoleForOutbound,
 	type PersonGender,
@@ -2290,6 +2298,11 @@ function sectionProseByYears(text: string): SummaryBlock[] {
 function normalizeSummaryMarkup(text: string): string {
 	return (
 		String(text || '')
+			// Turn `* **1945** adopted…` into `* 1945: adopted…` so bold-year bullets without punctuation stay dated timeline entries.
+			.replace(
+				new RegExp(`^([\\t ]*(?:[-*•]|\\d+[.)])\\s+)\\*\\*(${SUMMARY_YEAR_TOKEN})\\*\\*\\s+(?![—–:\\-])`, 'gm'),
+				'$1$2: ',
+			)
 			// Turn **1919**: / **1919–1920**: into plain year labels for sectioning.
 			.replace(new RegExp(`\\*\\*(${SUMMARY_YEAR_TOKEN})\\*\\*\\s*:`, 'g'), '$1:')
 			.replace(new RegExp(`\\*\\*(${SUMMARY_YEAR_TOKEN})\\*\\*`, 'g'), '$1')
@@ -2420,7 +2433,7 @@ function parseSummaryBlocks(text: string, opts?: { sourceDate?: string | null })
 		}
 
 		let line = trimmedOpen;
-		if (!line) continue;
+		if (!line || /^[-*_]{3,}$/.test(line)) continue;
 
 		let trailingDisclaimer: string | null = null;
 		const discIdx = line.search(SUMMARY_DISCLAIMER_RE);
@@ -2794,133 +2807,321 @@ function SummaryTimelineRail({
 	eventLinks?: Record<string, OverviewEventLink> | null;
 	onOpenProfile?: ((idOrSlug: string) => void) | null;
 }) {
-	const byYear = new Map<string, SummaryTimelineEntry[]>();
-	for (const entry of entries) {
-		const y = summaryTimelineYearBucket(entry.date);
-		const list = byYear.get(y) || [];
-		list.push(entry);
-		byYear.set(y, list);
-	}
-	const years = [...byYear.keys()].sort((a, b) => {
-		if (a === 'Undated') return 1;
-		if (b === 'Undated') return -1;
-		return summaryYearSortKey(b) - summaryYearSortKey(a);
-	});
-	for (const y of years) {
-		const list = byYear.get(y) || [];
-		list.sort((a, b) => summaryYearSortKey(b.date) - summaryYearSortKey(a.date));
-	}
+	const renderEntryBody = (entry: SummaryTimelineEntry, key: string) => {
+		const link = onOpenProfile ? resolveOverviewEventLink(entry.text, eventLinks) : null;
+		if (link && onOpenProfile) {
+			const { body, citation } = splitTrailingResearchDriveCitation(entry.text);
+			return (
+				<div
+					key={key}
+					className='space-y-0.5'>
+					<button
+						type='button'
+						onClick={() => onOpenProfile(link.slug || link.id)}
+						title={`Open profile: ${link.name}`}
+						className='block w-full text-left text-[12px] leading-relaxed text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
+						<SummaryMarkdown
+							text={body || entry.text}
+							inline
+							className='inline text-[12px] leading-relaxed'
+						/>
+					</button>
+					{citation ?
+						<div className='text-[11px] italic leading-snug text-teal-300/85'>{citation}</div>
+					:	null}
+				</div>
+			);
+		}
+		return (
+			<TimelineEntryMarkdown
+				key={key}
+				text={entry.text}
+				className='block'
+			/>
+		);
+	};
 
-	return (
-		<div className='space-y-4'>
-			{years.map((year) => {
-				const yearEntries = byYear.get(year) || [];
-				// Collapse same-date bullets: one date header, then stacked claims.
-				const dateGroups: Array<{ key: string; label: string | null; entries: SummaryTimelineEntry[] }> = [];
-				const dateIndex = new Map<string, number>();
-				for (const entry of yearEntries) {
-					const key = summaryTimelineDateKey(entry.date);
-					const existing = dateIndex.get(key);
-					if (existing != null) {
-						dateGroups[existing].entries.push(entry);
-						continue;
+	const renderYearBucketList = (listEntries: SummaryTimelineEntry[], prefix = '') => {
+		const byYear = new Map<string, SummaryTimelineEntry[]>();
+		for (const entry of listEntries) {
+			const y = summaryTimelineYearBucket(entry.date);
+			const list = byYear.get(y) || [];
+			list.push(entry);
+			byYear.set(y, list);
+		}
+		const years = [...byYear.keys()].sort((a, b) => {
+			if (a === 'Undated') return 1;
+			if (b === 'Undated') return -1;
+			return summaryYearSortKey(b) - summaryYearSortKey(a);
+		});
+		for (const y of years) {
+			const list = byYear.get(y) || [];
+			list.sort((a, b) => summaryYearSortKey(b.date) - summaryYearSortKey(a.date));
+		}
+
+		return (
+			<div className='space-y-4'>
+				{years.map((year) => {
+					const yearEntries = byYear.get(year) || [];
+					// Collapse same-date bullets: one date header, then stacked claims.
+					const dateGroups: Array<{ key: string; label: string | null; entries: SummaryTimelineEntry[] }> = [];
+					const dateIndex = new Map<string, number>();
+					for (const entry of yearEntries) {
+						const key = summaryTimelineDateKey(entry.date);
+						const existing = dateIndex.get(key);
+						if (existing != null) {
+							dateGroups[existing].entries.push(entry);
+							continue;
+						}
+						dateIndex.set(key, dateGroups.length);
+						dateGroups.push({
+							key,
+							label: summaryTimelineDateLabelInYear(entry.date, year),
+							entries: [entry],
+						});
 					}
-					dateIndex.set(key, dateGroups.length);
-					dateGroups.push({
-						key,
-						label: summaryTimelineDateLabelInYear(entry.date, year),
-						entries: [entry],
-					});
-				}
 
-				return (
-					<section
-						key={year}
-						className='space-y-2'>
-						<div className='flex items-baseline gap-2 border-b border-white/15 px-0.5 py-1'>
-							<h4 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h4>
-							<span className='text-[10px] opacity-60'>
-								{yearEntries.length} {yearEntries.length === 1 ? 'entry' : 'entries'}
-								{dateGroups.length !== yearEntries.length ? ` · ${dateGroups.length} dates` : ''}
-							</span>
-						</div>
-						<div className='relative ml-1.5 space-y-0 border-l-2 border-white/20 pl-3.5'>
-							{dateGroups.map((group) => {
-								const sourceTags = [
-									...new Set(group.entries.map((e) => e.sourceTag).filter(Boolean).map(String)),
-								];
-								return (
-									<article
-										key={`${year}-${group.key}`}
-										className='relative pb-3.5 last:pb-1'>
-										<span
-											aria-hidden
-											className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
-										/>
-										{group.label || sourceTags.length > 0 ?
-											<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
-												{group.label ?
-													<span className='font-mono font-semibold opacity-90'>{group.label}</span>
-												:	null}
-												{sourceTags.map((tag) => (
-													<span
-														key={tag}
-														className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>
-														{tag}
-													</span>
-												))}
+					return (
+						<section
+							key={`${prefix}${year}`}
+							className='space-y-2'>
+							<div className='flex items-baseline gap-2 border-b border-white/15 px-0.5 py-1'>
+								<h4 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h4>
+								<span className='text-[10px] opacity-60'>
+									{yearEntries.length} {yearEntries.length === 1 ? 'entry' : 'entries'}
+									{dateGroups.length !== yearEntries.length ? ` · ${dateGroups.length} dates` : ''}
+								</span>
+							</div>
+							<div className='relative ml-1.5 space-y-0 border-l-2 border-white/20 pl-3.5'>
+								{dateGroups.map((group) => {
+									const sourceTags = [
+										...new Set(group.entries.map((e) => e.sourceTag).filter(Boolean).map(String)),
+									];
+									return (
+										<article
+											key={`${prefix}${year}-${group.key}`}
+											className='relative pb-3.5 last:pb-1'>
+											<span
+												aria-hidden
+												className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
+											/>
+											{group.label || sourceTags.length > 0 ?
+												<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+													{group.label ?
+														<span className='font-mono font-semibold opacity-90'>{group.label}</span>
+													:	null}
+													{sourceTags.map((tag) => (
+														<span
+															key={tag}
+															className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>
+															{tag}
+														</span>
+													))}
+												</div>
+											:	null}
+											<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2' : 'mt-1'}>
+												{group.entries.map((entry, ei) => renderEntryBody(entry, `${group.key}-${ei}`))}
 											</div>
-										:	null}
-										<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2' : 'mt-1'}>
-											{group.entries.map((entry, ei) => {
-												const link = onOpenProfile
-													? resolveOverviewEventLink(entry.text, eventLinks)
-													: null;
-												if (link && onOpenProfile) {
-													const { body, citation } = splitTrailingResearchDriveCitation(entry.text);
-													return (
-														<div
-															key={`${group.key}-${ei}`}
-															className='space-y-0.5'>
-															<button
-																type='button'
-																onClick={() => onOpenProfile(link.slug || link.id)}
-																title={`Open profile: ${link.name}`}
-																className='block w-full text-left text-[12px] leading-relaxed text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
-																<SummaryMarkdown
-																	text={body || entry.text}
-																	inline
-																	className='inline text-[12px] leading-relaxed'
-																/>
-															</button>
-															{citation ?
-																<div className='text-[11px] italic leading-snug text-teal-300/85'>{citation}</div>
-															:	null}
-														</div>
-													);
-												}
-												return (
-													<TimelineEntryMarkdown
-														key={`${group.key}-${ei}`}
-														text={entry.text}
-														className='block'
-													/>
-												);
-											})}
-										</div>
-									</article>
-								);
-							})}
+										</article>
+									);
+								})}
+							</div>
+						</section>
+					);
+				})}
+			</div>
+		);
+	};
+
+	const renderSpanChapterCard = (
+		chapter: RangeSpanChapter<SummaryTimelineEntry>,
+		key: string,
+		depth = 0,
+	): ReactNode => {
+		const spanLabel = summaryTimelineDateLabel(chapter.span.date);
+		const duration = formatRangeSpanDuration(chapter.bounds);
+		const innerItems: Array<
+			| { kind: 'child'; sortKey: number; chapter: RangeSpanChapter<SummaryTimelineEntry> }
+			| { kind: 'point'; sortKey: number; entry: SummaryTimelineEntry }
+		> = [
+			...chapter.children.map((child) => ({
+				kind: 'child' as const,
+				sortKey: child.sortKey,
+				chapter: child,
+			})),
+			...chapter.nested.map((n) => ({
+				kind: 'point' as const,
+				sortKey: n.sortKey,
+				entry: n.item,
+			})),
+		].sort((a, b) => {
+			if (a.sortKey !== b.sortKey) return b.sortKey - a.sortKey;
+			if (a.kind !== b.kind) return a.kind === 'child' ? -1 : 1;
+			return 0;
+		});
+
+		type InnerNode =
+			| { kind: 'child'; chapter: RangeSpanChapter<SummaryTimelineEntry> }
+			| { kind: 'dateGroup'; dateKey: string; label: string; entries: SummaryTimelineEntry[] };
+		const groupedInner: InnerNode[] = [];
+		for (const item of innerItems) {
+			if (item.kind === 'child') {
+				groupedInner.push({ kind: 'child', chapter: item.chapter });
+				continue;
+			}
+			const dateKey = summaryTimelineDateKey(item.entry.date);
+			const prev = groupedInner[groupedInner.length - 1];
+			if (prev && prev.kind === 'dateGroup' && prev.dateKey === dateKey) {
+				prev.entries.push(item.entry);
+			} else {
+				groupedInner.push({
+					kind: 'dateGroup',
+					dateKey,
+					label: summaryTimelineDateLabel(item.entry.date),
+					entries: [item.entry],
+				});
+			}
+		}
+
+		return (
+			<section
+				key={key}
+				className={
+					depth > 0 ?
+						'overflow-hidden rounded-lg border border-amber-300/30 bg-white/[0.03]'
+					:	'overflow-hidden rounded-lg border border-[#F97316]/35 bg-[#F97316]/[0.06]'
+				}>
+				<header className='border-b border-white/10 px-3 py-2.5'>
+					<div className='flex flex-wrap items-center justify-between gap-2'>
+						<div className='flex flex-wrap items-center gap-x-2 gap-y-1'>
+							<h4 className='m-0 font-mono text-sm font-bold tracking-wide text-[#F97316]'>
+								{spanLabel}
+							</h4>
+							{duration ?
+								<span className='text-[10px] font-medium opacity-65'>{duration}</span>
+							:	null}
+							{chapter.span.sourceTag ?
+								<span className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>
+									{chapter.span.sourceTag}
+								</span>
+							:	null}
 						</div>
-					</section>
-				);
-			})}
-		</div>
+						<span className='rounded border border-[#F97316]/35 bg-[#F97316]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#FDBA74]'>
+							{chapter.totalNestedCount} {chapter.totalNestedCount === 1 ? 'milestone' : 'milestones'}
+						</span>
+					</div>
+					<div className='mt-1.5'>{renderEntryBody(chapter.span, `${key}-hdr`)}</div>
+				</header>
+				<div className='relative ml-3.5 space-y-0 border-l-2 border-[#F97316]/45 py-2.5 pl-3.5 pr-3'>
+					{groupedInner.map((node, ni) => {
+						if (node.kind === 'child') {
+							return (
+								<div
+									key={`${key}-child-${ni}`}
+									className='pb-3 last:pb-1'>
+									{renderSpanChapterCard(node.chapter, `${key}-c-${ni}`, depth + 1)}
+								</div>
+							);
+						}
+						const sourceTags = [
+							...new Set(node.entries.map((e) => e.sourceTag).filter(Boolean).map(String)),
+						];
+						return (
+							<article
+								key={`${key}-pt-${node.dateKey}-${ni}`}
+								className='relative pb-3 last:pb-1'>
+								<span
+									aria-hidden
+									className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
+								/>
+								<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+									<span className='font-mono font-semibold text-[#FDBA74]'>{node.label}</span>
+									{sourceTags.map((tag) => (
+										<span
+											key={tag}
+											className='rounded border border-white/20 px-1 py-0.5 text-[10px] opacity-70'>
+											{tag}
+										</span>
+									))}
+								</div>
+								<div className={node.entries.length > 1 ? 'mt-1.5 space-y-2' : 'mt-1'}>
+									{node.entries.map((entry, ei) =>
+										renderEntryBody(entry, `${key}-pt-${ni}-${ei}`),
+									)}
+								</div>
+							</article>
+						);
+					})}
+				</div>
+			</section>
+		);
+	};
+
+	const { stream, hasActiveSpans } = nestTimelineItemsIntoRangeSpans(
+		entries,
+		(e) => parseSummaryDateBounds(e.date),
+		(e) => summaryYearSortKey(e.date),
 	);
+
+	if (!hasActiveSpans) {
+		return renderYearBucketList(entries);
+	}
+
+	const blocks: ReactNode[] = [];
+	let pending: SummaryTimelineEntry[] = [];
+	const flushPending = (key: string) => {
+		if (!pending.length) return;
+		blocks.push(
+			<div key={key}>{renderYearBucketList(pending, `${key}-`)}</div>,
+		);
+		pending = [];
+	};
+
+	stream.forEach((item, idx) => {
+		if (item.kind === 'point') {
+			pending.push(item.item);
+			return;
+		}
+		flushPending(`pts-before-${idx}`);
+		blocks.push(renderSpanChapterCard(item.chapter, `span-${idx}`));
+	});
+	flushPending('pts-tail');
+
+	return <div className='space-y-4'>{blocks}</div>;
+}
+
+function lookupOutlineProfileLink(
+	raw: string | null | undefined,
+	links: Record<string, OverviewEventLink> | null | undefined,
+): OverviewEventLink | null {
+	if (!links || !raw) return null;
+	const trimmed = String(raw).replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+	if (!trimmed) return null;
+	if (links[trimmed]) return links[trimmed];
+	const noParen = trimmed.replace(/\s*\([^)]*\)\s*$/, '').trim();
+	if (noParen && links[noParen]) return links[noParen];
+	const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+	const qNorm = norm(trimmed);
+	const qNoParen = norm(noParen);
+	for (const [key, hit] of Object.entries(links)) {
+		const kNorm = norm(key);
+		if (!kNorm || kNorm.length < 4) continue;
+		if (kNorm === qNorm || (qNoParen && kNorm === qNoParen)) return hit;
+		if (qNorm.length >= 10 && (kNorm.startsWith(qNorm) || qNorm.startsWith(kNorm))) return hit;
+	}
+	return null;
 }
 
 /** Timeline-style left rail for undated outline / index / catalog bullets. */
-function SummaryOutlineRail({ entries }: { entries: SummaryBulletEntry[] }) {
+function SummaryOutlineRail({
+	entries,
+	profileLinks = null,
+	onOpenProfile = null,
+}: {
+	entries: SummaryBulletEntry[];
+	profileLinks?: Record<string, OverviewEventLink> | null;
+	onOpenProfile?: ((idOrSlug: string) => void) | null;
+}) {
 	return (
 		<div className='relative ml-1.5 space-y-0 border-l-2 border-white/20 pl-3.5'>
 			{entries.map((entry, ei) => {
@@ -2928,6 +3129,21 @@ function SummaryOutlineRail({ entries }: { entries: SummaryBulletEntry[] }) {
 				const textIsUrl = Boolean(href && entry.text && /^https?:\/\//i.test(entry.text.trim()));
 				const showUrlLink = Boolean(href && (!entry.title || textIsUrl || !entry.text.trim()));
 				const label = entry.title || (textIsUrl ? null : null);
+				const labelLink =
+					label && onOpenProfile && profileLinks ? lookupOutlineProfileLink(label, profileLinks) : null;
+				const fullTextLink =
+					!showUrlLink && entry.text && onOpenProfile && profileLinks
+						? lookupOutlineProfileLink(entry.text, profileLinks)
+						: null;
+				const dotSegments =
+					!showUrlLink && !fullTextLink && entry.text && entry.text.includes('·') && onOpenProfile && profileLinks
+						? entry.text.split(/\s*·\s*/).map((seg) => ({
+								seg,
+								hit: lookupOutlineProfileLink(seg, profileLinks),
+							}))
+						: null;
+				const hasDotLink = Boolean(dotSegments?.some((s) => s.hit));
+
 				return (
 					<article
 						key={`outline-${ei}`}
@@ -2937,7 +3153,15 @@ function SummaryOutlineRail({ entries }: { entries: SummaryBulletEntry[] }) {
 							className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[#0b1220]'
 						/>
 						{label ?
-							<div className='text-[11px] font-semibold leading-snug text-[#FDBA74]'>{label}</div>
+							labelLink && onOpenProfile ?
+								<button
+									type='button'
+									onClick={() => onOpenProfile(labelLink.slug || labelLink.id)}
+									title={`Open profile: ${labelLink.name}`}
+									className='cursor-pointer text-left text-[11px] font-semibold leading-snug text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
+									{label}
+								</button>
+							:	<div className='text-[11px] font-semibold leading-snug text-[#FDBA74]'>{label}</div>
 						:	null}
 						{showUrlLink && href ?
 							<a
@@ -2948,6 +3172,37 @@ function SummaryOutlineRail({ entries }: { entries: SummaryBulletEntry[] }) {
 								className='mt-0.5 block break-all text-[11px] text-sky-300 underline'>
 								{truncateDisplayUrl(textIsUrl ? entry.text : href)}
 							</a>
+						: fullTextLink && onOpenProfile ?
+							<button
+								type='button'
+								onClick={() => onOpenProfile(fullTextLink.slug || fullTextLink.id)}
+								title={`Open profile: ${fullTextLink.name}`}
+								className={`${label ? 'mt-0.5 ' : ''}block cursor-pointer text-left text-[12px] leading-relaxed text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100`}>
+								<SummaryMarkdown
+									text={entry.text}
+									inline
+									className='inline text-[12px] leading-relaxed'
+								/>
+							</button>
+						: hasDotLink && dotSegments && onOpenProfile ?
+							<div className={`${label ? 'mt-0.5 ' : ''}flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[12px] leading-relaxed text-white/90`}>
+								{dotSegments.map((item, si) => (
+									<span
+										key={`seg-${si}`}
+										className='inline-flex items-baseline gap-1.5'>
+										{si > 0 ? <span className='opacity-45'>·</span> : null}
+										{item.hit ?
+											<button
+												type='button'
+												onClick={() => onOpenProfile(item.hit!.slug || item.hit!.id)}
+												title={`Open profile: ${item.hit.name}`}
+												className='cursor-pointer text-left text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
+												{item.seg}
+											</button>
+										:	<span>{item.seg}</span>}
+									</span>
+								))}
+							</div>
 						: entry.text ?
 							<div className={label ? 'mt-0.5' : undefined}>
 								<SummaryMarkdown
@@ -2971,6 +3226,16 @@ function isEmptyLocalWikiPlaceholder(text: string | null | undefined): boolean {
 		.trim();
 	if (!t) return true;
 	return /no strong local[- ]wiki hits\b/i.test(t);
+}
+
+/** Internal formatter footer from news-rss-format-card / topic consolidate. */
+function isNewsFormatBoilerplateFooter(text: string | null | undefined): boolean {
+	const t = String(text || '').trim();
+	if (!t) return false;
+	return (
+		/^(?:Single-card rewrite (?:via|from)|Pieced from \d+ news_rss|Consolidated from \d+ news_rss)\b/i.test(t) ||
+		/overview mixes a short paragraph with Timeline-style dated entries\.?$/i.test(t)
+	);
 }
 
 function isLocalWikipediaCrossCheckHeading(text: string | null | undefined): boolean {
@@ -3021,7 +3286,7 @@ function stripEmptyLocalWikiCrossCheck(blocks: SummaryBlock[]): SummaryBlock[] {
 				continue;
 			}
 		}
-		if (b.kind === 'prose' && isEmptyLocalWikiPlaceholder(b.text)) continue;
+		if (b.kind === 'prose' && (isEmptyLocalWikiPlaceholder(b.text) || isNewsFormatBoilerplateFooter(b.text))) continue;
 		out.push(b);
 	}
 	return out;
@@ -3084,6 +3349,7 @@ function ProfileSummaryText({
 	eventTitle = null,
 	ensureEventTimeline = false,
 	eventLinks = null,
+	relatedProfileLinks = null,
 	onOpenProfile = null,
 }: {
 	text: string;
@@ -3091,6 +3357,7 @@ function ProfileSummaryText({
 	eventTitle?: string | null;
 	ensureEventTimeline?: boolean;
 	eventLinks?: Record<string, OverviewEventLink> | null;
+	relatedProfileLinks?: Record<string, OverviewEventLink> | null;
 	onOpenProfile?: ((idOrSlug: string) => void) | null;
 }) {
 	const raw = String(text || '').trim();
@@ -3184,7 +3451,11 @@ function ProfileSummaryText({
 					if (block.kind === 'bullets') {
 						return (
 							<div key={`b-${idx}`}>
-								<SummaryOutlineRail entries={block.entries} />
+								<SummaryOutlineRail
+									entries={block.entries}
+									profileLinks={relatedProfileLinks}
+									onOpenProfile={onOpenProfile}
+								/>
 							</div>
 						);
 					}
@@ -3225,16 +3496,53 @@ function ProfileSummaryText({
 							<div
 								key={`g-${idx}`}
 								className='grid grid-cols-1 gap-2 sm:grid-cols-2'>
-								{rows.map((row, ri) => (
-									<SummarySectionCard
-										key={`r-${idx}-${ri}`}
-										label={row.label}>
-										<SummaryMarkdown
-											text={row.value}
-											inline
-										/>
-									</SummarySectionCard>
-								))}
+								{rows.map((row, ri) => {
+									const isCrossRefLabel = /^(?:see(?:\s+also)?|related(?:\s+profiles?)?|linked(?:\s+profiles?)?)$/i.test(
+										String(row.label || '').trim(),
+									);
+									const segments =
+										isCrossRefLabel && onOpenProfile && relatedProfileLinks
+											? String(row.value || '')
+													.split(/\s*·\s*/)
+													.map((seg) => seg.replace(/\.\s*$/, '').trim())
+													.filter(Boolean)
+													.map((seg) => ({
+														seg,
+														hit: lookupOutlineProfileLink(seg, relatedProfileLinks),
+													}))
+											: null;
+									const hasSegmentLink = Boolean(segments?.some((s) => s.hit));
+									return (
+										<SummarySectionCard
+											key={`r-${idx}-${ri}`}
+											label={row.label}>
+											{hasSegmentLink && segments && onOpenProfile ?
+												<div className='flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[12px] leading-snug'>
+													{segments.map((item, si) => (
+														<span
+															key={`gseg-${si}`}
+															className='inline-flex items-baseline gap-1.5'>
+															{si > 0 ? <span className='opacity-45'>·</span> : null}
+															{item.hit ?
+																<button
+																	type='button'
+																	onClick={() => onOpenProfile(item.hit!.slug || item.hit!.id)}
+																	title={`Open profile: ${item.hit.name}`}
+																	className='cursor-pointer text-left text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
+																	{item.seg}
+																</button>
+															:	<span>{item.seg}</span>}
+														</span>
+													))}
+												</div>
+											:	<SummaryMarkdown
+													text={row.value}
+													inline
+												/>
+											}
+										</SummarySectionCard>
+									);
+								})}
 							</div>
 						);
 					}
@@ -3422,6 +3730,10 @@ export default function ProfilesClient({
 	const [overviewEventLinks, setOverviewEventLinks] = useState<Record<string, OverviewEventLink> | null>(
 		null,
 	);
+	const [overviewRelatedProfileLinks, setOverviewRelatedProfileLinks] = useState<Record<
+		string,
+		OverviewEventLink
+	> | null>(null);
 	const [finraDisclosures, setFinraDisclosures] = useState<ProfileFinraDisclosures | null>(null);
 	const [loadingFinraDisclosures, setLoadingFinraDisclosures] = useState(false);
 	const [finraDisclosuresError, setFinraDisclosuresError] = useState<string | null>(null);
@@ -4034,6 +4346,141 @@ export default function ProfilesClient({
 		return () => clearTimeout(timer);
 	}, [selectedId, mainView, profileTab, loadTimeline, detail?.profile?.profileType]);
 
+	// Auto-refresh profile detail & timeline while background auto-research pipeline is running.
+	const autoResearchState = (detail?.profile?.metadata as { autoResearch?: { status?: string } } | undefined)?.autoResearch?.status;
+	useEffect(() => {
+		const pid = detail?.profile?.id;
+		const ptype = detail?.profile?.profileType;
+		if (!pid || autoResearchState !== 'running') return;
+		let cancelled = false;
+		let attempts = 0;
+		const timer = setInterval(async () => {
+			if (cancelled) return;
+			attempts += 1;
+			if (attempts > 30) {
+				clearInterval(timer);
+				return;
+			}
+			try {
+				const res = await fetch(`/api/profiles/${encodeURIComponent(pid)}`, { cache: 'no-store' });
+				const data = await res.json();
+				if (cancelled || !res.ok || !data?.ok) return;
+				const nextStatus = (data.profile?.metadata as { autoResearch?: { status?: string } } | undefined)?.autoResearch?.status;
+				if (nextStatus && nextStatus !== 'running') {
+					clearInterval(timer);
+					setDetail(data as ProfileDetail);
+					await loadTimeline(pid, {
+						includeLinkedEvents: ptype === 'historic_event' ? false : undefined,
+					});
+					await loadList();
+				}
+			} catch {
+				/* ignore transient poll error */
+			}
+		}, 4000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [detail?.profile?.id, detail?.profile?.profileType, autoResearchState, loadTimeline, loadList]);
+
+	// Resolve ## Related profiles / ## Linked ... / ## See also bullets into clickable in-app profile links.
+	useEffect(() => {
+		if (!detail?.profile?.id || mainView !== 'profile') {
+			setOverviewRelatedProfileLinks(null);
+			return;
+		}
+		const profileId = detail.profile.id;
+		const summary = String(detail.profile.summary || '');
+		const blocks = parseSummaryBlocks(summary, { sourceDate: detail.profile.startDate });
+
+		// Pre-populate from already-loaded connected profiles (0ms instant hits).
+		const initial: Record<string, OverviewEventLink> = {};
+		for (const l of detail.links || []) {
+			const isFrom = l.fromProfileId === profileId;
+			const peerId = isFrom ? l.toProfileId : l.fromProfileId;
+			const peerSlug = isFrom ? l.toSlug : l.fromSlug;
+			const peerName = isFrom ? l.toName : l.fromName;
+			if (!peerId || !peerName) continue;
+			initial[peerName] = { id: peerId, slug: peerSlug || peerId, name: peerName };
+		}
+
+		// Collect bullet titles/items inside Related / Linked / See also sections (and any bullet segments).
+		const queries: string[] = [];
+		const pushQ = (s: string) => {
+			const t = String(s || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+			if (t.length >= 3 && !/^https?:\/\//i.test(t) && !queries.includes(t)) queries.push(t);
+		};
+		let inRelatedSection = false;
+		for (const b of blocks) {
+			if (b.kind === 'heading') {
+				inRelatedSection = /^(?:related|linked|see also|connections?|peers?)\b/i.test(b.text.trim());
+				continue;
+			}
+			if (b.kind === 'grid') {
+				for (const row of b.rows) {
+					if (!/^(?:see(?:\s+also)?|related(?:\s+profiles?)?|linked(?:\s+profiles?)?)$/i.test(String(row.label || '').trim())) {
+						continue;
+					}
+					const cleanedVal = String(row.value || '').replace(/\.\s*$/, '').trim();
+					if (cleanedVal.includes('·')) {
+						for (const seg of cleanedVal.split(/\s*·\s*/)) pushQ(seg.replace(/\.\s*$/, ''));
+					} else {
+						pushQ(cleanedVal);
+					}
+				}
+			}
+			if (b.kind === 'bullets' && inRelatedSection) {
+				for (const e of b.entries) {
+					if (e.href) continue;
+					if (e.title) pushQ(e.title);
+					if (e.text) {
+						pushQ(e.text);
+						if (e.text.includes('·')) {
+							for (const seg of e.text.split(/\s*·\s*/)) pushQ(seg);
+						}
+					}
+				}
+			}
+		}
+
+		if (Object.keys(initial).length) {
+			setOverviewRelatedProfileLinks(initial);
+		}
+		if (queries.length === 0) {
+			if (!Object.keys(initial).length) setOverviewRelatedProfileLinks(null);
+			return;
+		}
+
+		let cancelled = false;
+		const timer = setTimeout(() => {
+			void (async () => {
+				try {
+					const res = await fetch('/api/profiles/resolve-historic-events', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							titles: queries.slice(0, 80),
+							excludeProfileId: profileId,
+							allTypes: true,
+						}),
+					});
+					const data = await res.json();
+					if (!cancelled && data?.ok && data.links && typeof data.links === 'object') {
+						const merged = { ...initial, ...(data.links as Record<string, OverviewEventLink>) };
+						setOverviewRelatedProfileLinks(Object.keys(merged).length ? merged : null);
+					}
+				} catch {
+					/* best effort */
+				}
+			})();
+		}, 0);
+		return () => {
+			cancelled = true;
+			clearTimeout(timer);
+		};
+	}, [detail?.profile?.id, detail?.profile?.summary, detail?.profile?.startDate, detail?.links, mainView]);
+
 	// Historic events: resolve Overview Timeline claims → event profiles (same linking as Timeline tab).
 	useEffect(() => {
 		if (!detail?.profile?.id || mainView !== 'profile') return;
@@ -4238,10 +4685,13 @@ export default function ProfilesClient({
 			setMainView('profile');
 			await loadList();
 			const syncedCount = Number(data?.timelineSync?.upsertedOwn || 0);
+			const autoQueued = Boolean(data?.autoResearch?.scheduled);
 			setBanner(
-				syncedCount > 0
-					? `Created profile "${data.profile.name}" with ${syncedCount} timeline milestones.`
-					: `Created profile "${data.profile.name}".`,
+				`${
+					syncedCount > 0
+						? `Created profile "${data.profile.name}" with ${syncedCount} timeline milestones.`
+						: `Created profile "${data.profile.name}".`
+				}${autoQueued ? ' Auto-validation, API/RSS check, web/PDF/data-layer crawl & entity discovery running in background…' : ''}`,
 			);
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -4626,10 +5076,12 @@ export default function ProfilesClient({
 				});
 			}
 			const nextSlug = latest.profile.slug;
+			const autoResearchNote =
+				' Background auto-validation, API/RSS check, web/PDF/data-layer crawl & entity discovery scheduled.';
 			if (nextSlug && nextSlug !== prevSlug) {
 				setSelectedId(nextSlug);
 				syncUrl({ profile: nextSlug, view: 'profile' }, 'replace');
-				setBanner(`Applied changes — URL is now /profiles/${nextSlug.replace(':', '/')}.`);
+				setBanner(`Applied changes — URL is now /profiles/${nextSlug.replace(':', '/')}.${autoResearchNote}`);
 			} else if (summaryChanged && timelineSync && Number(timelineSync.parsed || 0) > 0) {
 				const mirrored = Number(timelineSync.mirroredRelated || 0);
 				const reordered =
@@ -4641,16 +5093,16 @@ export default function ProfilesClient({
 				setBanner(
 					`Applied profile edits. Timeline tab synced ${timelineSync.upsertedOwn || 0} overview milestones${
 						mirrored > 0 ? ` · mirrored ${mirrored} onto linked events` : ''
-					}${reordered}.`,
+					}${reordered}.${autoResearchNote}`,
 				);
 			} else if (summaryChanged && timelineSync?.reorder?.changed) {
 				setBanner(
 					`Applied profile edits. Overview Timeline reordered newest-first${
 						timelineSync.reorder.method === 'ollama' ? ' (Ollama)' : ''
-					}.`,
+					}.${autoResearchNote}`,
 				);
 			} else {
-				setBanner('Applied profile edits.');
+				setBanner(`Applied profile edits.${autoResearchNote}`);
 			}
 			// Float edited profile to the top of the left cards (userTouchedAt sort).
 			setOffset(0);
@@ -6597,6 +7049,50 @@ export default function ProfilesClient({
 													);
 												})()
 											:	null}
+											{(() => {
+												const ar = (
+													detail.profile.metadata as {
+														autoResearch?: {
+															status?: string;
+															model?: string | null;
+															stages?: {
+																localValidation?: { rssEventsLinked?: number; duplicateAlignments?: number };
+																internetCrawl?: { urlsCrawled?: number; pdfsExtracted?: number; dataLayersFound?: number; milestonesAdded?: number };
+																entitiesDiscovered?: { matchedUpdated?: number; created?: number };
+															};
+															error?: string | null;
+														};
+													} | undefined
+												)?.autoResearch;
+												if (!ar?.status) return null;
+												if (ar.status === 'running') {
+													return (
+														<div className='mt-1.5 flex items-center gap-2 rounded border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-[11px] text-sky-200'>
+															<span className='inline-block h-2 w-2 animate-pulse rounded-full bg-sky-400' />
+															<span>
+																Auto-research running{ar.model ? ` (${ar.model})` : ' (auto)'} — local validation · APIs/RSS · web/PDF/data-layer crawl · entity discovery…
+															</span>
+														</div>
+													);
+												}
+												if (ar.status === 'completed' && ar.stages) {
+													const ic = ar.stages.internetCrawl;
+													const ed = ar.stages.entitiesDiscovered;
+													const lv = ar.stages.localValidation;
+													return (
+														<div className='mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-200/90'>
+															<span className='font-semibold'>Auto-research{ar.model ? ` (${ar.model})` : ''}:</span>
+															<span>{ic?.urlsCrawled ?? 0} web/data crawled</span>
+															{(ic?.pdfsExtracted ?? 0) > 0 ? <span>· {ic?.pdfsExtracted} PDFs</span> : null}
+															{(ic?.dataLayersFound ?? 0) > 0 ? <span>· {ic?.dataLayersFound} data layers</span> : null}
+															<span>· +{ic?.milestonesAdded ?? 0} milestones</span>
+															<span>· {ed?.created ?? 0} new / {ed?.matchedUpdated ?? 0} updated entities</span>
+															{(lv?.rssEventsLinked ?? 0) > 0 ? <span>· {lv?.rssEventsLinked} RSS events linked</span> : null}
+														</div>
+													);
+												}
+												return null;
+											})()}
 											{profileEditing ?
 												<div className='mt-2'>
 													<textarea
@@ -6617,9 +7113,8 @@ export default function ProfilesClient({
 															eventLinks={
 																detail.profile.profileType === 'historic_event' ? overviewEventLinks : null
 															}
-															onOpenProfile={
-																detail.profile.profileType === 'historic_event' ? jumpToProfile : null
-															}
+															relatedProfileLinks={overviewRelatedProfileLinks}
+															onOpenProfile={jumpToProfile}
 														/>
 													:	<p className='m-0 text-xs italic opacity-60'>No summary yet.</p>}
 												</div>
@@ -8457,7 +8952,7 @@ export default function ProfilesClient({
 																timeline.entries.length > 1 && matchCount > 0 && matchCount < timeline.entries.length;
 															const isCurrentArticle = (title: string) =>
 																Boolean(highlightCurrent && titleMatchesProfile(title));
-															const renderYearSections = (entryList: typeof timeline.entries) => {
+															const renderPlainYearSections = (entryList: typeof timeline.entries, prefix = '') => {
 															const byYear = new Map<string, typeof timeline.entries>();
 															for (const entry of entryList) {
 															const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
@@ -8486,8 +8981,11 @@ export default function ProfilesClient({
 															}> = [];
 															const dateIndex = new Map<string, number>();
 															for (const entry of yearEntries) {
+															const spanBounds = parseTimelineEntryBounds(entry);
 															const resolved = resolveSummaryTimelineDate(entry.eventDate, sourceDate);
-															const key = summaryTimelineDateKey(resolved);
+															const key = spanBounds?.isRange
+															? `range:${formatTimelineSpanHeaderLabel(entry)}`
+															: summaryTimelineDateKey(resolved);
 															const existing = dateIndex.get(key);
 															if (existing != null) {
 															dateGroups[existing].entries.push(entry);
@@ -8496,13 +8994,15 @@ export default function ProfilesClient({
 															dateIndex.set(key, dateGroups.length);
 															dateGroups.push({
 															key,
-															label: summaryTimelineDateLabelInYear(resolved, year),
+															label: spanBounds?.isRange
+															? formatTimelineSpanHeaderLabel(entry)
+															: summaryTimelineDateLabelInYear(resolved, year),
 															entries: [entry],
 															});
 															}
 															return (
 															<section
-															key={year}
+															key={`${prefix}${year}`}
 															className='space-y-2'>
 															<div className='sticky top-0 z-[1] -mx-0.5 flex items-baseline gap-2 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-0.5 py-1.5'>
 															<h3 className='m-0 text-sm font-bold tracking-wide text-[#F97316]'>{year}</h3>
@@ -8524,7 +9024,7 @@ export default function ProfilesClient({
 															const showMeta = Boolean(group.label) || geos.length > 0 || urls.length > 0;
 															return (
 															<article
-															key={`${year}-${group.key}`}
+															key={`${prefix}${year}-${group.key}`}
 															className='relative pb-3.5 last:pb-1'>
 															<span
 															aria-hidden
@@ -8566,6 +9066,189 @@ export default function ProfilesClient({
 															})}
 															</div>
 															);
+															};
+
+															const renderTimelineSpanCard = (
+															chapter: RangeSpanChapter<(typeof timeline.entries)[number]>,
+															key: string,
+															depth = 0,
+															): ReactNode => {
+															const spanLabel = formatTimelineSpanHeaderLabel(chapter.span);
+															const duration = formatRangeSpanDuration(chapter.bounds);
+															const innerItems: Array<
+															| { kind: 'child'; sortKey: number; chapter: RangeSpanChapter<(typeof timeline.entries)[number]> }
+															| { kind: 'point'; sortKey: number; entry: (typeof timeline.entries)[number] }
+															> = [
+															...chapter.children.map((child) => ({
+															kind: 'child' as const,
+															sortKey: child.sortKey,
+															chapter: child,
+															})),
+															...chapter.nested.map((n) => ({
+															kind: 'point' as const,
+															sortKey: n.sortKey,
+															entry: n.item,
+															})),
+															].sort((a, b) => {
+															if (a.sortKey !== b.sortKey) return b.sortKey - a.sortKey;
+															if (a.kind !== b.kind) return a.kind === 'child' ? -1 : 1;
+															return 0;
+															});
+
+															type InnerNode =
+															| { kind: 'child'; chapter: RangeSpanChapter<(typeof timeline.entries)[number]> }
+															| {
+															kind: 'dateGroup';
+															dateKey: string;
+															label: string;
+															entries: Array<(typeof timeline.entries)[number]>;
+															};
+															const groupedInner: InnerNode[] = [];
+															for (const item of innerItems) {
+															if (item.kind === 'child') {
+															groupedInner.push({ kind: 'child', chapter: item.chapter });
+															continue;
+															}
+															const resolved = resolveSummaryTimelineDate(item.entry.eventDate, sourceDate);
+															const dateKey = summaryTimelineDateKey(resolved);
+															const prev = groupedInner[groupedInner.length - 1];
+															if (prev && prev.kind === 'dateGroup' && prev.dateKey === dateKey) {
+															prev.entries.push(item.entry);
+															} else {
+															groupedInner.push({
+															kind: 'dateGroup',
+															dateKey,
+															label: summaryTimelineDateLabel(resolved),
+															entries: [item.entry],
+															});
+															}
+															}
+
+															return (
+															<section
+															key={key}
+															className={
+															depth > 0 ?
+															'overflow-hidden rounded-lg border border-amber-500/30 bg-amber-500/[0.04]'
+															:	'overflow-hidden rounded-lg border border-[#F97316]/35 bg-[#F97316]/[0.05]'
+															}>
+															<header className='border-b border-[var(--app-border)] px-3 py-2.5'>
+															<div className='mb-1.5 flex flex-wrap items-center justify-between gap-2'>
+															<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5'>
+															<span className='font-mono text-sm font-bold tracking-wide text-[#F97316]'>
+															{spanLabel}
+															</span>
+															{duration ?
+															<span className='text-[11px] font-medium opacity-65'>{duration}</span>
+															:	null}
+															{chapter.span.geoLabel ?
+															<span className='text-[11px] opacity-65'>📍 {chapter.span.geoLabel}</span>
+															:	null}
+															{chapter.span.sourceUrl ?
+															<a
+															href={String(chapter.span.sourceUrl)}
+															target='_blank'
+															rel='noreferrer'
+															className='text-[11px] text-sky-600 underline dark:text-sky-300'>
+															Source ↗
+															</a>
+															:	null}
+															</div>
+															<span className='rounded border border-[#F97316]/35 bg-[#F97316]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#F97316] dark:text-[#FDBA74]'>
+															{chapter.totalNestedCount}{' '}
+															{chapter.totalNestedCount === 1 ? 'milestone' : 'milestones'}
+															</span>
+															</div>
+															{renderPointCard(chapter.span)}
+															</header>
+															<div className='relative ml-3.5 space-y-0 border-l-2 border-[#F97316]/45 py-2.5 pl-3.5 pr-3'>
+															{groupedInner.map((node, ni) => {
+															if (node.kind === 'child') {
+															return (
+															<div
+															key={`${key}-child-${ni}`}
+															className='pb-3 last:pb-1'>
+															{renderTimelineSpanCard(node.chapter, `${key}-c-${ni}`, depth + 1)}
+															</div>
+															);
+															}
+															const geos = node.entries
+															.map((e) => e.geoLabel)
+															.filter(Boolean)
+															.filter((g, i, arr) => arr.indexOf(g) === i);
+															const urls = node.entries
+															.map((e) => e.sourceUrl)
+															.filter(Boolean)
+															.filter((u, i, arr) => arr.indexOf(u) === i);
+															return (
+															<article
+															key={`${key}-pt-${node.dateKey}-${ni}`}
+															className='relative pb-3.5 last:pb-1'>
+															<span
+															aria-hidden
+															className='absolute -left-[1.03rem] top-1.5 h-2 w-2 rounded-full border-2 border-[#F97316] bg-[var(--app-surface)]'
+															/>
+															<div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]'>
+															<span className='font-mono font-semibold text-[#F97316] dark:text-[#FDBA74]'>
+															{node.label}
+															</span>
+															{geos.map((geo) => (
+															<span
+															key={String(geo)}
+															className='opacity-65'>
+															📍 {geo}
+															</span>
+															))}
+															{urls.map((url) => (
+															<a
+															key={String(url)}
+															href={String(url)}
+															target='_blank'
+															rel='noreferrer'
+															className='text-sky-600 underline dark:text-sky-300'>
+															Source ↗
+															</a>
+															))}
+															</div>
+															<div className={node.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
+															{node.entries.map((entry) => renderPointCard(entry))}
+															</div>
+															</article>
+															);
+															})}
+															</div>
+															</section>
+															);
+															};
+
+															const renderYearSections = (entryList: typeof timeline.entries) => {
+															const { stream, hasActiveSpans } = nestTimelineItemsIntoRangeSpans(
+															entryList,
+															(e) => parseTimelineEntryBounds(e),
+															(e) => summaryYearSortKey(resolveSummaryTimelineDate(e.eventDate, sourceDate)),
+															);
+															if (!hasActiveSpans) {
+															return renderPlainYearSections(entryList);
+															}
+															const nodes: ReactNode[] = [];
+															let pending: typeof timeline.entries = [];
+															const flushPending = (key: string) => {
+															if (!pending.length) return;
+															nodes.push(
+															<div key={key}>{renderPlainYearSections(pending, `${key}-`)}</div>,
+															);
+															pending = [];
+															};
+															stream.forEach((item, idx) => {
+															if (item.kind === 'point') {
+															pending.push(item.item);
+															return;
+															}
+															flushPending(`tl-pts-before-${idx}`);
+															nodes.push(renderTimelineSpanCard(item.chapter, `tl-span-${idx}`));
+															});
+															flushPending('tl-pts-tail');
+															return <div className='space-y-5'>{nodes}</div>;
 															};
 
 															const renderPointCard = (entry: (typeof timeline.entries)[number]) => {
