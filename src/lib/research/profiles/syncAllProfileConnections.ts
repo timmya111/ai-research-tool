@@ -758,9 +758,12 @@ export function syncAllProfileConnections(opts?: {
 	}> = [];
 
 	for (const prof of allProfiles) {
-		// Strip ## Land Deeds block (handled separately by strict Grantor/Grantee land-deed linker)
+		// Strip ## Land Deeds block (handled separately) and "Seeded from ..." corpus provenance footers
+		// so boilerplate seed notes never create cross-links between unrelated entities in the same corridor.
 		const ldIdx = prof.summary.indexOf('## Land Deeds');
-		const prose = (ldIdx !== -1 ? prof.summary.slice(0, ldIdx) : prof.summary).trim();
+		const prose = (ldIdx !== -1 ? prof.summary.slice(0, ldIdx) : prof.summary)
+			.replace(/^Seeded from\b[^\n]*$/gim, '')
+			.trim();
 		if (isBoilerplateOnlySummary(prose)) continue;
 
 		profilesScanned += 1;

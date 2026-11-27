@@ -14,6 +14,8 @@ export async function POST(request: Request) {
 		const body = (await request.json()) as Record<string, unknown>;
 		const keepId = String(body.keepId || '').trim();
 		const mergeId = String(body.mergeId || '').trim();
+		const preferKeep = Boolean(body.preferKeep);
+		const force = Boolean(body.force);
 		if (!keepId || !mergeId) {
 			return NextResponse.json(
 				{ ok: false, error: 'keepId and mergeId are required' },
@@ -27,7 +29,7 @@ export async function POST(request: Request) {
 			);
 		}
 
-		const merged = mergeProfiles(keepId, mergeId);
+		const merged = mergeProfiles(keepId, mergeId, undefined, { preferKeep, force });
 		if (!merged) {
 			return NextResponse.json(
 				{

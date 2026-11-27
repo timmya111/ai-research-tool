@@ -3877,6 +3877,15 @@ export default function ProfilesClient({
 	const [connNote, setConnNote] = useState('');
 	const [savingConn, setSavingConn] = useState(false);
 	const [connSearchOpen, setConnSearchOpen] = useState(false);
+	const [mergePanelOpen, setMergePanelOpen] = useState(false);
+	const [mergeSearch, setMergeSearch] = useState('');
+	const [mergeHits, setMergeHits] = useState<Array<ConnSearchHit & { primaryLocation?: string | null }>>([]);
+	const [mergeTarget, setMergeTarget] = useState<(ConnSearchHit & { primaryLocation?: string | null }) | null>(null);
+	const [mergeSearchOpen, setMergeSearchOpen] = useState(false);
+	const [mergeDirection, setMergeDirection] = useState<'absorb_into_current' | 'merge_current_into_target'>('absorb_into_current');
+	const [mergeForce, setMergeForce] = useState(false);
+	const [mergeConflictWarning, setMergeConflictWarning] = useState<string | null>(null);
+	const [mergingProfiles, setMergingProfiles] = useState(false);
 	const [nearbyData, setNearbyData] = useState<{
 		sourceLocations: string[];
 		counts: { sameBuilding: number; nearby: number };
@@ -4363,6 +4372,116 @@ export default function ProfilesClient({
 		}, 220);
 		return () => window.clearTimeout(handle);
 	}, [connSearch, connPeer, detail?.profile?.id]);
+
+	// Typeahead for manual “Merge…” panel (search any second profile to merge with the current one).
+	useEffect(() => {
+		setMergePanelOpen(false);
+		setMergeSearch('');
+		setMergeHits([]);
+		setMergeTarget(null);
+		setMergeSearchOpen(false);
+		setMergeDirection('absorb_into_current');
+		setMergeForce(false);
+		setMergeConflictWarning(null);
+	}, [detail?.profile?.id]);
+
+	useEffect(() => {
+		if (!mergePanelOpen) return;
+		const q = mergeSearch.trim();
+		if (mergeTarget && q === mergeTarget.name) {
+			setMergeHits([]);
+			return;
+		}
+		if (q.length < 2) {
+			setMergeHits([]);
+			return;
+		}
+		const subjectId = detail?.profile?.id;
+		const handle = window.setTimeout(() => {
+			void (async () => {
+				try {
+					const params = new URLSearchParams();
+					params.set('q', q);
+					params.set('limit', '12');
+					const res = await fetch(`/api/profiles?${params.toString()}`, { cache: 'no-store' });
+					const data = await res.json();
+					if (!res.ok || !data?.ok) return;
+					const hits = (Array.isArray(data.profiles) ? data.profiles : [])
+						.map((p: { id?: string; slug?: string; name?: string; profileType?: string; primaryLocation?: string | null }) => ({
+							id: String(p.id || ''),
+							slug: String(p.slug || ''),
+							name: String(p.name || ''),
+							profileType: (String(p.profileType || 'firm') in TYPE_META ?
+								(p.profileType as ProfileType)
+							:	'firm'),
+							primaryLocation: p.primaryLocation ? String(p.primaryLocation) : null,
+						}))
+						.filter((h: ConnSearchHit) => h.id && h.name && h.id !== subjectId);
+					setMergeHits(hits);
+					setMergeSearchOpen(true);
+				} catch {
+					/* ignore search errors */
+				}
+			})();
+		}, 220);
+		return () => window.clearTimeout(handle);
+	}, [mergePanelOpen, mergeSearch, mergeTarget, detail?.profile?.id]);
+
+	async function handleManualMergeSubmit() {
+		if (!detail || !mergeTarget || mergingProfiles) return;
+		const keep =
+			mergeDirection === 'absorb_into_current'
+				? { id: detail.profile.id, name: detail.profile.name, slug: detail.profile.slug }
+				: { id: mergeTarget.id, name: mergeTarget.name, slug: mergeTarget.slug };
+		const absorb =
+			mergeDirection === 'absorb_into_current'
+				? { id: mergeTarget.id, name: mergeTarget.name, slug: mergeTarget.slug }
+				: { id: detail.profile.id, name: detail.profile.name, slug: detail.profile.slug };
+
+		setMergingProfiles(true);
+		setError(null);
+		setMergeConflictWarning(null);
+		try {
+			const res = await fetch('/api/profiles/merge', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					keepId: keep.id,
+					mergeId: absorb.id,
+					preferKeep: true,
+					force: mergeForce,
+				}),
+			});
+			const data = await res.json();
+			if (res.status === 409) {
+				setMergeConflictWarning(
+					data?.error ||
+						'These two profiles have conflicting major IDs (CRD/CIK/ticker/EIN/CUSIP). Check "Force merge anyway" if you still want to combine them.',
+				);
+				return;
+			}
+			if (!res.ok || !data?.ok) {
+				throw new Error(data?.error || 'Merge failed');
+			}
+			const kept = data.kept as { id?: string; slug?: string; profileType?: string; name?: string } | undefined;
+			const keepKey = String(kept?.slug || kept?.id || keep.id);
+			const keepType = String(kept?.profileType || '');
+			const keepName = String(kept?.name || keep.name);
+			setMergePanelOpen(false);
+			setMergeTarget(null);
+			setMergeSearch('');
+			setMergeForce(false);
+			setMergeConflictWarning(null);
+			setBanner(`Merged "${absorb.name}" into "${keepName}".`);
+			setLastEnrichReport(null);
+			await refreshLeftListForProfile({ profileKey: keepKey, profileType: keepType || null });
+			await loadGlobalAlignments();
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setMergingProfiles(false);
+		}
+	}
 
 	const loadGlobalAlignments = useCallback(async () => {
 		setLoadingGlobalAlign(true);
@@ -5066,7 +5185,7 @@ export default function ProfilesClient({
 					if (l.relationType === 'family_or_associate') return false;
 					const peerId = l.fromProfileId === detail.profile.id ? l.toProfileId : l.fromProfileId;
 					const peerType = (l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
-					if (peerType === 'historic_event') return false;
+					if (peerType === 'historic_event' || peerType === 'region') return false;
 					if (empPeerIds.has(peerId)) return false;
 					return true;
 				})
@@ -7738,13 +7857,31 @@ export default function ProfilesClient({
 														Delete…
 													</button>
 												</>
-											:	<button
-													type='button'
-													onClick={beginProfileEdit}
-													className='cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs font-semibold hover:bg-[var(--app-surface-hover)]'
-													title='Edit name, other names, summary, dates, aliases, identifiers, locations, and connected profiles'>
-													Edit
-												</button>
+											:	<>
+													<button
+														type='button'
+														onClick={beginProfileEdit}
+														className='cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-xs font-semibold hover:bg-[var(--app-surface-hover)]'
+														title='Edit name, other names, summary, dates, aliases, identifiers, locations, and connected profiles'>
+														Edit
+													</button>
+													<button
+														type='button'
+														onClick={() => {
+															setMergePanelOpen((open) => !open);
+															setMergeConflictWarning(null);
+															setMergeForce(false);
+															setError(null);
+														}}
+														className={`cursor-pointer rounded-md border px-2.5 py-1.5 text-xs font-semibold ${
+															mergePanelOpen
+																? 'border-[#F97316] bg-[#F97316]/15 text-[#F97316]'
+																: 'border-[var(--app-border)] bg-[var(--app-bg)] hover:bg-[var(--app-surface-hover)]'
+														}`}
+														title='Merge this profile with another profile (consolidates aliases, identifiers, locations, links, and timeline)'>
+														Merge…
+													</button>
+												</>
 											}
 											<button
 												type='button'
@@ -7755,6 +7892,171 @@ export default function ProfilesClient({
 												{enriching ? 'Researching…' : 'Research & Fill Details'}
 											</button>
 										</div>
+										{!profileEditing && mergePanelOpen ?
+											<div className='mt-2 w-full rounded-lg border border-[#F97316]/40 bg-[var(--app-bg)] p-3 text-xs'>
+												<div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
+													<p className='m-0 font-semibold'>Merge two profiles</p>
+													<button
+														type='button'
+														onClick={() => {
+															setMergePanelOpen(false);
+															setMergeTarget(null);
+															setMergeSearch('');
+															setMergeForce(false);
+															setMergeConflictWarning(null);
+														}}
+														className='cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[11px] opacity-80 hover:opacity-100'>
+														Close
+													</button>
+												</div>
+												<div className='relative mb-2.5'>
+													<input
+														value={mergeSearch}
+														onChange={(e) => {
+															setMergeSearch(e.target.value);
+															if (mergeTarget && e.target.value !== mergeTarget.name) {
+																setMergeTarget(null);
+																setMergeConflictWarning(null);
+																setMergeForce(false);
+															}
+															setMergeSearchOpen(true);
+														}}
+														onFocus={() => {
+															if (mergeHits.length > 0) setMergeSearchOpen(true);
+														}}
+														placeholder='Search for the second profile to merge (name or slug)…'
+														autoComplete='off'
+														disabled={mergingProfiles}
+														className='w-full rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs'
+													/>
+													{mergeSearchOpen && !mergeTarget && mergeHits.length > 0 ?
+														<ul className='absolute z-30 m-0 mt-1 max-h-56 w-full list-none overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-lg'>
+															{mergeHits.map((hit) => (
+																<li key={hit.id}>
+																	<button
+																		type='button'
+																		onClick={() => {
+																			setMergeTarget(hit);
+																			setMergeSearch(hit.name);
+																			setMergeHits([]);
+																			setMergeSearchOpen(false);
+																			setMergeConflictWarning(null);
+																			setMergeForce(false);
+																		}}
+																		className='flex w-full cursor-pointer flex-wrap items-center justify-between gap-2 border-0 border-b border-[var(--app-border)] bg-transparent px-2.5 py-1.5 text-left text-xs hover:bg-[var(--app-surface-hover)]'>
+																		<span className='min-w-0 flex-1'>
+																			<span className='font-semibold'>{hit.name}</span>
+																			<span className='ml-1.5 font-mono text-[10px] opacity-60'>{hit.slug}</span>
+																			{hit.primaryLocation ?
+																				<span className='ml-1.5 text-[10px] opacity-65'>📍 {hit.primaryLocation}</span>
+																			:	null}
+																		</span>
+																		<span className={`shrink-0 rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[hit.profileType].badge}`}>
+																			{TYPE_META[hit.profileType].label}
+																		</span>
+																	</button>
+																</li>
+															))}
+														</ul>
+													:	null}
+												</div>
+												{mergeTarget ?
+													(() => {
+														const keepCard =
+															mergeDirection === 'absorb_into_current'
+																? { name: detail.profile.name, slug: detail.profile.slug, type: detail.profile.profileType }
+																: { name: mergeTarget.name, slug: mergeTarget.slug, type: mergeTarget.profileType };
+														const absorbCard =
+															mergeDirection === 'absorb_into_current'
+																? { name: mergeTarget.name, slug: mergeTarget.slug, type: mergeTarget.profileType }
+																: { name: detail.profile.name, slug: detail.profile.slug, type: detail.profile.profileType };
+														return (
+															<div className='space-y-2.5'>
+																<div className='grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-center'>
+																	<div className='rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-2'>
+																		<div className='text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300'>
+																			Keep (surviving profile)
+																		</div>
+																		<div className='mt-0.5 flex flex-wrap items-center gap-1.5'>
+																			<span className='font-semibold'>{keepCard.name}</span>
+																			<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[keepCard.type].badge}`}>
+																				{TYPE_META[keepCard.type].label}
+																			</span>
+																		</div>
+																		<div className='mt-0.5 font-mono text-[10px] opacity-65'>{keepCard.slug}</div>
+																	</div>
+																	<button
+																		type='button'
+																		disabled={mergingProfiles}
+																		onClick={() =>
+																			setMergeDirection((d) =>
+																				d === 'absorb_into_current' ? 'merge_current_into_target' : 'absorb_into_current',
+																			)
+																		}
+																		title='Swap which profile is kept and which is absorbed'
+																		className='cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[11px] font-semibold hover:bg-[var(--app-surface-hover)] disabled:opacity-50'>
+																		Swap ⇄
+																	</button>
+																	<div className='rounded border border-rose-500/35 bg-rose-500/10 px-2.5 py-2'>
+																		<div className='text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300'>
+																			Absorb &amp; remove
+																		</div>
+																		<div className='mt-0.5 flex flex-wrap items-center gap-1.5'>
+																			<span className='font-semibold'>{absorbCard.name}</span>
+																			<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[absorbCard.type].badge}`}>
+																				{TYPE_META[absorbCard.type].label}
+																			</span>
+																		</div>
+																		<div className='mt-0.5 font-mono text-[10px] opacity-65'>{absorbCard.slug}</div>
+																	</div>
+																</div>
+																<p className='m-0 text-[11px] opacity-75'>
+																	All aliases, identifiers, locations, connected profiles, timeline entries, and unique overview text from{' '}
+																	<strong>{absorbCard.name}</strong> will be consolidated onto <strong>{keepCard.name}</strong>. This cannot be undone.
+																</p>
+																{mergeConflictWarning ?
+																	<div className='rounded border border-amber-500/50 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-200'>
+																		<p className='m-0 mb-1.5'>{mergeConflictWarning}</p>
+																		<label className='flex cursor-pointer items-center gap-1.5 font-semibold'>
+																			<input
+																				type='checkbox'
+																				checked={mergeForce}
+																				onChange={(e) => setMergeForce(e.target.checked)}
+																			/>
+																			Force merge anyway (keep both profiles&apos; identifiers on {keepCard.name})
+																		</label>
+																	</div>
+																:	null}
+																<div className='flex flex-wrap items-center gap-2'>
+																	<button
+																		type='button'
+																		disabled={mergingProfiles || (Boolean(mergeConflictWarning) && !mergeForce)}
+																		onClick={() => void handleManualMergeSubmit()}
+																		className='cursor-pointer rounded-md border-none bg-[#F97316] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#ea6a0f] disabled:opacity-50'>
+																		{mergingProfiles ? 'Merging…' : `Merge "${absorbCard.name}" into "${keepCard.name}"`}
+																	</button>
+																	<button
+																		type='button'
+																		disabled={mergingProfiles}
+																		onClick={() => {
+																			setMergeTarget(null);
+																			setMergeSearch('');
+																			setMergeForce(false);
+																			setMergeConflictWarning(null);
+																		}}
+																		className='cursor-pointer rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50'>
+																		Pick another
+																	</button>
+																</div>
+															</div>
+														);
+													})()
+												:	<p className='m-0 text-[11px] opacity-65'>
+														Type at least 2 characters to find another profile to combine with <strong>{detail.profile.name}</strong>.
+													</p>
+												}
+											</div>
+										:	null}
 										{profileEditing && deleteConfirmOpen ?
 											<div className='mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs'>
 												<p className='m-0 mb-1.5 font-semibold text-rose-800 dark:text-rose-200'>
@@ -9007,17 +9309,17 @@ export default function ProfilesClient({
 													return !empPeerIds.has(peerId);
 												});
 
-												const historicEventLinks = nonEmpLinks
+												const historicEventAndRegionLinks = nonEmpLinks
 													.filter((l) => {
 														const peerType = (l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
-														return peerType === 'historic_event';
+														return peerType === 'historic_event' || peerType === 'region';
 													})
 													.sort((a, b) => {
 														const da = a.startDate || a.peerStartDate || a.endDate || a.peerEndDate || '';
 														const dbDate = b.startDate || b.peerStartDate || b.endDate || b.peerEndDate || '';
 														if (da && !dbDate) return -1;
 														if (!da && dbDate) return 1;
-														// Newest historic events first on overview.
+														// Newest historic events and regions first on overview.
 														if (da !== dbDate) return dbDate.localeCompare(da);
 														const na = (a.fromProfileId === detail.profile.id ? a.toName : a.fromName) || '';
 														const nb = (b.fromProfileId === detail.profile.id ? b.toName : b.fromName) || '';
@@ -9029,7 +9331,7 @@ export default function ProfilesClient({
 														if (l.relationType === 'family_or_associate') return false;
 														if (classifyLinkProximityCue(l) !== null) return false;
 														const peerType = (l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
-														return peerType !== 'historic_event';
+														return peerType !== 'historic_event' && peerType !== 'region';
 													})
 													.map((l) => ({ link: l, connStatus: getConnStatus(l) }))
 													.sort((a, b) => {
@@ -9073,17 +9375,22 @@ export default function ProfilesClient({
 
 												return (
 													<div className='space-y-4'>
-														{historicEventLinks.length > 0 ?
+														{historicEventAndRegionLinks.length > 0 ?
 															<div className='rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3'>
-																<h3 className='m-0 mb-2 text-xs font-semibold uppercase opacity-75'>Historic Events ({historicEventLinks.length})</h3>
+																<h3 className='m-0 mb-2 text-xs font-semibold uppercase opacity-75'>
+																	Historic Events &amp; Regions ({historicEventAndRegionLinks.length})
+																</h3>
 																<div className='space-y-2'>
-																	{historicEventLinks.map((l) => {
+																	{historicEventAndRegionLinks.map((l) => {
 																		const isOut = l.fromProfileId === detail.profile.id;
 																		const peerId = isOut ? l.toProfileId : l.fromProfileId;
 																		const peerName = isOut ? l.toName : l.fromName;
+																		const peerType = (isOut ? l.toType : l.fromType) || 'historic_event';
 																		const evStart = l.startDate || l.peerStartDate || null;
 																		const evEnd = l.endDate || l.peerEndDate || null;
 																		const hasDateSpan = Boolean(formatDateSpan(evStart, evEnd, false, false));
+																		const noteClean = scrubEvidenceNoteSourceTags(l.evidenceNote || '');
+																		const cardDesc = noteClean || l.peerSummary || '';
 																		return (
 																			<button
 																				key={l.id}
@@ -9101,12 +9408,15 @@ export default function ProfilesClient({
 																						codes={l.peerCountryCodes}
 																						size='sm'
 																					/>
+																					<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}>
+																						{TYPE_META[peerType].label}
+																					</span>
 																					{l.peerPrimaryLocation ?
 																						<span className='text-[11px] opacity-70'>📍 {l.peerPrimaryLocation}</span>
 																					:	null}
 																				</div>
-																				{l.peerSummary ?
-																					<p className='mt-1 mb-0 line-clamp-2 text-[11px] leading-relaxed opacity-80'>{l.peerSummary}</p>
+																				{cardDesc ?
+																					<p className='mt-1 mb-0 line-clamp-2 text-[11px] leading-relaxed opacity-80'>{cardDesc}</p>
 																				:	null}
 																			</button>
 																		);
@@ -9370,7 +9680,8 @@ export default function ProfilesClient({
 																		const connIsCurrent =
 																			connStatus === 'current' ? true
 																			: connStatus === 'old' ? false
-																			: null;
+																			: displayRelation === 'employed_by' || displayRelation === 'registered_at' ? null
+																			: false;
 																		const spanStart =
 																			draft ?
 																				normalizeIsoDate(displayStart.trim()).date || displayStart.trim() || null

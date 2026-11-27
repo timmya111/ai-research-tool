@@ -3673,25 +3673,28 @@ export function mergeProfiles(
 	keepIdOrSlug: string,
 	mergeIdOrSlug: string,
 	dbOverride?: DatabaseSync,
+	opts?: {
+		/** Honor the caller's explicit keepId/keep.name instead of auto-swapping by official ID count or longest name. */
+		preferKeep?: boolean;
+		/** Allow merging even when both profiles carry distinct major IDs (explicit manual override). */
+		force?: boolean;
+	},
 ): { kept: Profile; mergedId: string; mergedName: string } | null {
 	const db = dbOverride ?? getProfilesDb();
 	let keep = getProfile(keepIdOrSlug, db);
 	let merge = getProfile(mergeIdOrSlug, db);
 	if (!keep || !merge || keep.id === merge.id) return null;
 
-	// Never collapse two entities that each have a distinct major ID (CRD/CIK/ticker/EIN/CUSIP).
-	// One profile per ID — same/similar names alone are not enough.
-	if (profilesHaveConflictingMajorIds(keep.id, merge.id, db)) {
+	// Never collapse two entities that each have a distinct major ID (CRD/CIK/ticker/EIN/CUSIP)
+	// unless the user explicitly confirmed a forced manual merge.
+	if (!opts?.force && profilesHaveConflictingMajorIds(keep.id, merge.id, db)) {
 		return null;
 	}
 
-	// Swap keep/merge only when the merge target has more official IDs.
-	// Display-name length is applied below via pickMergeCanonicalName — do not swap
-	// the surviving slug just because a predecessor name is slightly longer
-	// (e.g. "BMG Interactive" vs "Rockstar Games").
+	// Swap keep/merge only when the merge target has more official IDs (skipped when user explicitly picked keepId).
 	let keepOfficial = countOfficialNameIds(keep.id, db);
 	let mergeOfficial = countOfficialNameIds(merge.id, db);
-	if (mergeOfficial > keepOfficial) {
+	if (!opts?.preferKeep && mergeOfficial > keepOfficial) {
 		const tmp = keep;
 		keep = merge;
 		merge = tmp;
@@ -3793,15 +3796,25 @@ export function mergeProfiles(
 					: merge.endDate
 				: keep.endDate || merge.endDate;
 
-		const namePick = pickMergeCanonicalName(
-			keep.name,
-			merge.name,
-			keepOfficial,
-			mergeOfficial,
-		);
+		const namePick = opts?.preferKeep
+			? {
+					canonical: keep.name,
+					otherNames:
+						merge.name.trim() &&
+						merge.name.trim().toLowerCase() !== keep.name.trim().toLowerCase()
+							? [merge.name.trim()]
+							: [],
+				}
+			: pickMergeCanonicalName(
+					keep.name,
+					merge.name,
+					keepOfficial,
+					mergeOfficial,
+				);
 		const canonicalName = namePick.canonical || keep.name;
-		mergedMeta.mergeCanonicalNameRule =
-			keepOfficial !== mergeOfficial
+		mergedMeta.mergeCanonicalNameRule = opts?.preferKeep
+			? 'manual_keep'
+			: keepOfficial !== mergeOfficial
 				? 'official_id'
 				: 'longest_name';
 
