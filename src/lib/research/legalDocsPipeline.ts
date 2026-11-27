@@ -22,6 +22,8 @@ export type RelationshipEdgeType =
 	| 'CO_DEFENDANT_IN_LITIGATION'
 	| 'GARNISHMENT_COUNTERPARTY_EMPLOYER'
 	| 'GARNISHMENT_COUNTERPARTY_BANK'
+	| 'CO_COUNSEL_IN_LITIGATION'
+	| 'AMICUS_CURIAE_IN_LITIGATION'
 	| 'CFPB_COMPLAINT_LINKED_STATE';
 
 export interface FirmRelationshipEdge {
@@ -293,7 +295,7 @@ const KNOWN_COUNTERPARTIES_RE: Array<{
 	canonical: string;
 	type: FirmRelationshipEdge['targetType'];
 }> = [
-	{ re: /\bCavalry\s+SPV\s+I(?:,\s*|\s+)LLC\b/i, canonical: 'Cavalry SPV I, LLC', type: 'debt_buyer' },
+	{ re: /\bCavalry\s+SPV(?:,?\s*|\s+)I\.?(?:,\s*|\s+)LLC\b/i, canonical: 'Cavalry SPV I, LLC', type: 'debt_buyer' },
 	{ re: /\bMidland\s+Funding(?:,\s*|\s+)LLC\b/i, canonical: 'Midland Funding LLC', type: 'debt_buyer' },
 	{ re: /\bMidland\s+Credit\s+Management\b/i, canonical: 'Midland Credit Management, Inc.', type: 'debt_buyer' },
 	{ re: /\bAtlantic\s+Credit\s*(?:&|and)\s*Finance\b/i, canonical: 'Atlantic Credit & Finance Inc.', type: 'debt_buyer' },
@@ -305,12 +307,82 @@ const KNOWN_COUNTERPARTIES_RE: Array<{
 	{ re: /\bWorld\s+Wide\s+Asset\s+Purchasing\b/i, canonical: 'World Wide Asset Purchasing', type: 'debt_buyer' },
 	{ re: /\bCapital\s+One(?:\s+Bank|\s+Financial)?\b/i, canonical: 'CAPITAL ONE FINANCIAL CORPORATION', type: 'bank' },
 	{ re: /\bSynchrony\s+Bank\b/i, canonical: 'Synchrony Bank', type: 'bank' },
-	{ re: /\bJ\.?P\.?\s*Morgan\s+Chase(?:\s+Bank)?\b/i, canonical: 'JPMorgan Chase & Co.', type: 'bank' },
+	{ re: /\bJ\.?P\.?\s*Morgan\s+Chase(?:\s+Bank(?:,?\s*N\.?A\.?)?)?\b/i, canonical: 'JPMorgan Chase & Co.', type: 'bank' },
+	{ re: /\bBank\s+of\s+America(?:,?\s*N\.?A\.?)?\b/i, canonical: 'BANK OF AMERICA, NATIONAL ASSOCIATION', type: 'bank' },
+	{ re: /\bWells\s+Fargo\s+Bank(?:,?\s*N\.?A\.?)?\b/i, canonical: 'WELLS FARGO BANK, N.A.', type: 'bank' },
+	{ re: /\bFord\s+Motor\s+Credit(?:\s+Company(?:,?\s*LLC)?)?\b/i, canonical: 'FORD MOTOR CREDIT COMPANY', type: 'debt_buyer' },
+	{ re: /\bGMAC(?:,?\s*LLC)\b/i, canonical: 'GMAC, LLC', type: 'debt_buyer' },
+	{ re: /\bToyota\s+Motor\s+Credit(?:\s+Corporation)?\b/i, canonical: 'Toyota Motor Credit Corporation', type: 'debt_buyer' },
+	{ re: /\bNuvell\s+Credit\s+Company(?:\s+LLC)?\b/i, canonical: 'Nuvell Credit Company LLC', type: 'debt_buyer' },
+	{ re: /\bNuvell\s+National\s+Auto\s+Finance(?:\s+LLC)?\b/i, canonical: 'Nuvell National Auto Finance LLC', type: 'debt_buyer' },
+	{ re: /\b(?:American\s+)?Suzuki\s+Financial\s+Services(?:\s+Company)?(?:\s+LLC)?\b/i, canonical: 'American Suzuki Financial Services Company LLC', type: 'debt_buyer' },
+	{ re: /\bNissan\s+Motor\s+Acceptance(?:\s+Corp\.?)?\b/i, canonical: 'Nissan Motor Acceptance Corp.', type: 'debt_buyer' },
+	{ re: /\bAmerican\s+Honda\s+Finance(?:\s+Corporation)?\b/i, canonical: 'American Honda Finance Corporation', type: 'debt_buyer' },
+	{ re: /\bAmeriCredit\s+Financial(?:,\s*|\s+)Services(?:,?\s*Inc\.?)?\b/i, canonical: 'AmeriCredit Financial Services, Inc.', type: 'debt_buyer' },
+	{ re: /\bCrowe\s*(?:&|and)\s*Dunlevy\b/i, canonical: 'Crowe & Dunlevy', type: 'other' },
+	{ re: /\bSooner\s+State\s+Bank\b/i, canonical: 'Sooner State Bank', type: 'bank' },
+	{ re: /\bGriffin\s+Communications(?:\s+L\.?\s*L\.?\s*C\.?)?\b/i, canonical: 'Griffin Communications, L.L.C.', type: 'other' },
+	{ re: /\bNYT\s+Broadcasting(?:\s+LLC)?\b/i, canonical: 'NYT Broadcasting LLC', type: 'other' },
 	{ re: /\bCitibank\b/i, canonical: 'Citibank, N.A.', type: 'bank' },
 	{ re: /\bDiscover\s+Bank\b/i, canonical: 'Discover Bank', type: 'bank' },
 	{ re: /\bBest\s+Buy\s+Co\.?(?:,?\s*Inc\.?)?\b/i, canonical: 'Best Buy Co., Inc.', type: 'employer' },
 	{ re: /\bADP,?\s+LLC\b|\bAutomatic\s+Data\s+Processing\b/i, canonical: 'ADP, LLC', type: 'payroll_processor' },
 ];
+
+function cleanDocInlineText(raw: string): string {
+	return String(raw || '')
+		.replace(/[\r\n\t]+/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+/**
+ * Extract a concise, human-readable context excerpt around a matched entity in court OCR text,
+ * and detect whether the match occurs in an Amicus Curiae block, Co-Counsel line, or pure case citation.
+ */
+function analyzeOcrEntityContext(
+	fullText: string,
+	re: RegExp,
+): {
+	matched: boolean;
+	excerpt: string;
+	isAmicus: boolean;
+	isCoCounsel: boolean;
+	isCitationOnly: boolean;
+} {
+	const clean = cleanDocInlineText(fullText);
+	const m = re.exec(clean);
+	if (!m || m.index == null) {
+		return { matched: false, excerpt: '', isAmicus: false, isCoCounsel: false, isCitationOnly: false };
+	}
+	const idx = m.index;
+	const hitLen = m[0].length;
+	const before = clean.slice(Math.max(0, idx - 260), idx);
+	const after = clean.slice(idx + hitLen, Math.min(clean.length, idx + hitLen + 750));
+	const windowText = `${before}${m[0]}${after}`;
+
+	const amicusPos = after.search(/\bAmicus\s+Curiae\b/i);
+	const isAmicus =
+		amicusPos !== -1 &&
+		!/\b(?:Appellant|Appellee|Plaintiff|Defendant)\b/i.test(after.slice(0, amicusPos));
+	const isCoCounsel =
+		/\bappearing\s+for\s+(?:Appellant|Appellee|Plaintiff|Defendant)\b/i.test(after.slice(0, 140)) &&
+		/\b(?:P\.C\.|LLP|PLLC|Crowe|Law|Attorneys?)\b/i.test(windowText);
+	// Detect pure precedent citations such as "see also Capital One Auto Fin. v. Osborn, 515 F.3d 817"
+	// or "See, e.g., Wright v. Santander Consumer USA Inc., No. 07-1483, 2007 WL 1892502"
+	const nearBefore = clean.slice(Math.max(0, idx - 60), idx);
+	const nearAfter = clean.slice(idx + hitLen, Math.min(clean.length, idx + hitLen + 100));
+	const isCitationOnly =
+		!isAmicus &&
+		!isCoCounsel &&
+		(/\b(?:see\s+also|see,?\s+e\.g\.|accord|cf\.|citing)\b/i.test(nearBefore) ||
+			/\b\d+\s+(?:F\.3d|F\.2d|F\.\s*Supp|B\.R\.|U\.S\.|WL\s+\d+)\b/i.test(nearAfter));
+
+	// Build a clean sentence-ish excerpt around the match
+	const rawSlice = clean.slice(Math.max(0, idx - 90), Math.min(clean.length, idx + hitLen + 150)).trim();
+	const excerpt = rawSlice.replace(/^\S+\s+/, (lead) => (idx > 90 ? `…${lead}` : lead)).slice(0, 220);
+	return { matched: true, excerpt, isAmicus, isCoCounsel, isCitationOnly };
+}
 
 /**
  * Extract typed FirmRelationshipEdge records from an OCR'd/extracted court document or docket caption.
@@ -325,12 +397,16 @@ export function extractEdgesFromCourtDocument(input: {
 }): FirmRelationshipEdge[] {
 	const edges: FirmRelationshipEdge[] = [];
 	const seen = new Set<string>();
-	const full = `${input.title}\n${input.text}`;
+	const cleanTitle = cleanDocInlineText(input.title);
+	const full = `${cleanTitle}\n${input.text}`;
 	const low = full.toLowerCase();
+	const sourceFirmNorm = normalizeText(input.sourceFirm);
 	const isGarnishmentDoc = /\b(?:garnish(?:ee|ment)|wage\s+withholding|continuing\s+garnishment|payroll)\b/i.test(full);
-	const isFdcpaCoDef = /\b(?:fdcpa|fair\s+debt\s+collection\s+practices\s+act|co-defendant|defendants?)\b/i.test(full) &&
-		/\bv\.\s+/i.test(input.title) &&
-		!/^\s*love,?\s+beal/i.test(input.title);
+	const isFdcpaCoDef =
+		(/\b(?:fdcpa|fair\s+debt\s+collection\s+practices\s+act|co-defendant|defendants?)\b/i.test(full) ||
+			/\bDefendant,\s+and\b/i.test(full)) &&
+		/\bv\.?\s+/i.test(cleanTitle) &&
+		!/^\s*love,?\s+beal/i.test(cleanTitle);
 
 	const pushEdge = (
 		rawTargetEntity: string,
@@ -338,15 +414,21 @@ export function extractEdgesFromCourtDocument(input: {
 		edgeType: RelationshipEdgeType,
 		evidenceSummary: string,
 	) => {
-		const targetEntity = rawTargetEntity
+		const targetEntity = cleanDocInlineText(rawTargetEntity)
 			.replace(/\bSvcs\.?\b/g, 'Services')
 			.replace(/\bServ\.?\b/g, 'Services')
 			.replace(/[,;:\s]+$/g, '')
-			.replace(/\s+/g, ' ')
 			.trim();
-		const k = `${normalizeText(targetEntity)}|${edgeType}|${input.caseOrRecordId}`;
+		const targetNorm = normalizeText(targetEntity);
+		if (!targetNorm || targetNorm === sourceFirmNorm) return;
+		const k = `${targetNorm}|${edgeType}|${input.caseOrRecordId}`;
 		if (seen.has(k)) return;
-		if (targetEntity.toLowerCase().includes('love, beal') || targetEntity.toLowerCase().includes('love beal')) return;
+		if (
+			sourceFirmNorm.includes('love beal') &&
+			(targetEntity.toLowerCase().includes('love, beal') || targetEntity.toLowerCase().includes('love beal'))
+		) {
+			return;
+		}
 		seen.add(k);
 		edges.push({
 			sourceFirm: input.sourceFirm,
@@ -356,38 +438,44 @@ export function extractEdgesFromCourtDocument(input: {
 			jurisdiction: input.jurisdiction,
 			courtOrSource: input.courtOrSource,
 			caseOrRecordId: input.caseOrRecordId,
-			evidenceSummary: evidenceSummary.slice(0, 320),
+			evidenceSummary: cleanDocInlineText(evidenceSummary).slice(0, 340),
 		});
 	};
 
 	// 1. Known counterparty entities mentioned in the caption or OCR text
 	for (const known of KNOWN_COUNTERPARTIES_RE) {
-		if (!known.re.test(full)) continue;
+		const ctx = analyzeOcrEntityContext(full, known.re);
+		if (!ctx.matched) continue;
+		// Skip pure precedent citations (e.g. "see also Capital One Auto Fin. v. Osborn, 515 F.3d 817")
+		if (ctx.isCitationOnly) continue;
+
 		let edgeType: RelationshipEdgeType = 'REPRESENTS_CREDITOR_OR_DEBT_BUYER';
-		if (known.type === 'payroll_processor' || (known.type === 'employer' && isGarnishmentDoc)) {
+		let detailDesc = `${cleanTitle} (${input.caseOrRecordId}, ${input.courtOrSource}) — "${ctx.excerpt}"`;
+		if (ctx.isAmicus) {
+			edgeType = 'AMICUS_CURIAE_IN_LITIGATION';
+			detailDesc = `Amicus Curiae in ${cleanTitle} (${input.caseOrRecordId}, ${input.courtOrSource}).`;
+		} else if (ctx.isCoCounsel) {
+			edgeType = 'CO_COUNSEL_IN_LITIGATION';
+			detailDesc = `Co-counsel in ${cleanTitle} (${input.caseOrRecordId}, ${input.courtOrSource}) — "${ctx.excerpt}"`;
+		} else if (known.type === 'payroll_processor' || (known.type === 'employer' && isGarnishmentDoc)) {
 			edgeType = 'GARNISHMENT_COUNTERPARTY_EMPLOYER';
 		} else if (known.type === 'bank' && isGarnishmentDoc && !/\bplaintiff\b/i.test(low.slice(0, 400))) {
 			edgeType = 'GARNISHMENT_COUNTERPARTY_BANK';
-		} else if (isFdcpaCoDef && (known.type === 'debt_buyer' || known.type === 'bank')) {
+		} else if (isFdcpaCoDef && (known.type === 'debt_buyer' || known.type === 'bank' || known.type === 'other')) {
 			edgeType = 'CO_DEFENDANT_IN_LITIGATION';
 		}
-		pushEdge(
-			known.canonical,
-			known.type,
-			edgeType,
-			`${input.title} (${input.caseOrRecordId}, ${input.courtOrSource}) — extracted from court document text.`,
-		);
+		pushEdge(known.canonical, known.type, edgeType, detailDesc);
 	}
 
 	// 2. Also extract corporate co-party from "X v. Y" case caption when it ends with LLC/Inc/Corp/Bank/LP
-	const captionM = input.title.match(/^(.+?)\s+v\.?\s+(.+)$/i);
+	const captionM = cleanTitle.match(/^(.+?)\s+v\.?\s+(.+)$/i);
 	if (captionM) {
 		for (const side of [captionM[1]!, captionM[2]!]) {
-			const cleaned = side.replace(/\bet\s+al\.?$/i, '').trim();
+			const cleaned = side.replace(/\bet\s+al\.?$/i, '').replace(/,\s*and$/i, '').trim();
 			if (
 				cleaned.length >= 4 &&
 				cleaned.length <= 75 &&
-				/\b(?:LLC|L\.L\.C\.|Inc\.?|Corp\.?|Corporation|Bank|L\.P\.|LP|Partners|Funding|Financial|Recovery|Credit)\b/i.test(cleaned) &&
+				/\b(?:LLC|L\.L\.C\.|Inc\.?|Corp\.?|Corporation|Bank|L\.P\.|LP|Partners|Funding|Financial|Recovery|Credit|Broadcasting|Communications)\b/i.test(cleaned) &&
 				!/love,?\s+beal/i.test(cleaned)
 			) {
 				const kind = classifyEntityKind(cleaned, full);
@@ -403,7 +491,7 @@ export function extractEdgesFromCourtDocument(input: {
 					cleaned,
 					kind,
 					edgeType,
-					`Named party in ${input.title} (${input.caseOrRecordId}, ${input.courtOrSource}).`,
+					`Named party in ${cleanTitle} (${input.caseOrRecordId}, ${input.courtOrSource}).`,
 				);
 			}
 		}
@@ -1300,6 +1388,10 @@ function edgeTypeToProfileRelation(edgeType: RelationshipEdgeType): {
 			return { relationType: 'business_tie', rolePrefix: 'Represented creditor / debt buyer' };
 		case 'CO_DEFENDANT_IN_LITIGATION':
 			return { relationType: 'business_tie', rolePrefix: 'Co-defendant in litigation' };
+		case 'CO_COUNSEL_IN_LITIGATION':
+			return { relationType: 'business_tie', rolePrefix: 'Co-counsel in litigation' };
+		case 'AMICUS_CURIAE_IN_LITIGATION':
+			return { relationType: 'affiliated_with', rolePrefix: 'Amicus curiae in litigation' };
 		case 'GARNISHMENT_COUNTERPARTY_EMPLOYER':
 			return { relationType: 'business_tie', rolePrefix: 'Garnishment counterparty (employer/payroll)' };
 		case 'GARNISHMENT_COUNTERPARTY_BANK':
@@ -1521,17 +1613,28 @@ export async function ingestLegalDocsForProfile(
 				});
 			if (target.id === profile.id) continue;
 
+			const existingCurated = db
+				.prepare(
+					`SELECT id FROM profile_links
+           WHERE ((from_profile_id = ? AND to_profile_id = ?) OR (from_profile_id = ? AND to_profile_id = ?))
+             AND source_corpus != 'legal-api-ocr'
+           LIMIT 1`,
+				)
+				.get(profile.id, target.id, target.id, profile.id) as { id?: string } | undefined;
+			if (existingCurated?.id) continue;
+
 			const { relationType, rolePrefix } = edgeTypeToProfileRelation(edge.edgeType);
 			upsertProfileLink({
 				fromProfileId: profile.id,
 				toProfileId: target.id,
 				relationType,
-				roleLabel: `${rolePrefix} (${edge.edgeType})`,
+				roleLabel: edge.caseOrRecordId ? `${rolePrefix} (${edge.caseOrRecordId})` : rolePrefix,
 				status: 'observed',
 				confidence: 0.93,
 				angle: 'law_enforcement',
 				sourceCorpus: 'legal-api-ocr',
 				evidenceNote: edge.evidenceSummary,
+				dedupeHint: `${edge.edgeType}:${edge.caseOrRecordId || ''}`,
 			});
 			linksUpserted += 1;
 		}
@@ -1913,14 +2016,108 @@ export function readCachedLegalDocFullText(docId: string): {
 			extractionMethod?: string;
 			pdfPath?: string | null;
 		};
-		return {
-			id: String(parsed.id || safe),
-			title: String(parsed.title || safe),
-			fullText: String(parsed.fullText || parsed.textExcerpt || ''),
-			extractionMethod: String(parsed.extractionMethod || 'pdftotext'),
-			pdfPath: parsed.pdfPath || null,
-		};
-	} catch {
-		return null;
+	return {
+		id: String(parsed.id || safe),
+		title: String(parsed.title || safe),
+		fullText: String(parsed.fullText || parsed.textExcerpt || ''),
+		extractionMethod: String(parsed.extractionMethod || 'pdftotext'),
+		pdfPath: parsed.pdfPath || null,
+	};
+} catch {
+	return null;
+}
+}
+
+/**
+ * Re-scan cached non-CFPB court/docket OCR documents and materialize Connected Profiles
+ * (`profile_links`) for every extracted counterparty, co-defendant, co-counsel, amicus curiae,
+ * and strict existing-profile name match — attaching the exact description from the filing.
+ */
+export function syncOcrNameMatchesToProfileLinks(profileIdOrSlug?: string): {
+	docsScanned: number;
+	linksUpserted: number;
+	profilesCreated: number;
+} {
+	const db = getProfilesDb();
+	const filterProfile = profileIdOrSlug ? getProfile(profileIdOrSlug) : null;
+	const entries = getAllCachedOcrEntries().filter((e) => {
+		if (e.doc.source === 'cfpb') return false;
+		if (filterProfile) {
+			return e.doc.profileId === filterProfile.id || e.doc.profileSlug === filterProfile.slug;
+		}
+		return true;
+	});
+
+	let docsScanned = 0;
+	let linksUpserted = 0;
+	let profilesCreated = 0;
+	const seenPair = new Set<string>();
+
+	for (const entry of entries) {
+		docsScanned += 1;
+		const owner = getProfile(entry.doc.profileId) || getProfile(entry.doc.profileSlug);
+		if (!owner) continue;
+
+		const freshEdges = extractEdgesFromCourtDocument({
+			sourceFirm: owner.name,
+			title: entry.doc.title,
+			text: entry.fullText,
+			courtOrSource: entry.doc.courtOrSource,
+			caseOrRecordId: entry.doc.caseOrRecordId,
+			jurisdiction: entry.doc.jurisdiction,
+		});
+
+		for (const edge of freshEdges) {
+			if (edge.edgeType === 'CFPB_COMPLAINT_LINKED_STATE') continue;
+			const targetHit = findExistingProfileDuplicate({
+				name: edge.targetEntity,
+				profileType: 'firm',
+			});
+			let target = targetHit?.profile || null;
+			if (!target) {
+				target = upsertProfile({
+					profileType: 'firm',
+					name: edge.targetEntity,
+					status: 'active',
+					summary: `${edge.targetEntity} — documented in ${edge.courtOrSource} (${edge.caseOrRecordId || 'court record'}).`,
+					sourceCorpus: 'legal-api-ocr',
+				});
+				profilesCreated += 1;
+			}
+			if (target.id === owner.id) continue;
+
+			const pairKey = `${owner.id}|${target.id}|${edge.edgeType}`;
+			if (seenPair.has(pairKey)) continue;
+			seenPair.add(pairKey);
+
+			// Skip creating a duplicate legal-api-ocr link if a curated link already connects this exact pair
+			const existingCurated = db
+				.prepare(
+					`SELECT id FROM profile_links
+           WHERE ((from_profile_id = ? AND to_profile_id = ?) OR (from_profile_id = ? AND to_profile_id = ?))
+             AND source_corpus != 'legal-api-ocr'
+           LIMIT 1`,
+				)
+				.get(owner.id, target.id, target.id, owner.id) as { id?: string } | undefined;
+			if (existingCurated?.id) continue;
+
+			const { relationType, rolePrefix } = edgeTypeToProfileRelation(edge.edgeType);
+			upsertProfileLink({
+				fromProfileId: owner.id,
+				toProfileId: target.id,
+				relationType,
+				roleLabel: `${rolePrefix} (${entry.doc.caseOrRecordId})`,
+				startDate: entry.doc.dateIssued || null,
+				status: 'observed',
+				confidence: 0.93,
+				angle: 'law_enforcement',
+				sourceCorpus: 'legal-api-ocr',
+				evidenceNote: edge.evidenceSummary,
+				dedupeHint: `${edge.edgeType}:${entry.doc.caseOrRecordId}`,
+			});
+			linksUpserted += 1;
+		}
 	}
+
+	return { docsScanned, linksUpserted, profilesCreated };
 }
