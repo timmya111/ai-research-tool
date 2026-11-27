@@ -12,8 +12,10 @@ import {
 	deleteIdentifier,
 	deleteLocation,
 	deleteProfile,
+	findExistingProfileDuplicate,
 	getProfile,
 	getProfileDetail,
+	recordDuplicateAlignmentCandidates,
 	replaceOtherNames,
 	touchProfilesForUserAction,
 	updateAlias,
@@ -82,6 +84,63 @@ export async function PATCH(request: Request, context: Ctx) {
 				{ ok: false, error: `Invalid profileType: ${String(body.profileType)}` },
 				{ status: 400 },
 			);
+		}
+
+		// Extra duplicate validation check when renaming or changing category on an existing profile.
+		const allowDuplicate = body.allowDuplicate === true;
+		const existingBeforeUpdate = getProfile(key);
+		if (!existingBeforeUpdate) {
+			return NextResponse.json({ ok: false, error: 'Profile not found' }, { status: 404 });
+		}
+		if (!allowDuplicate) {
+			const candidateName =
+				body.name != null && String(body.name).trim()
+					? String(body.name).trim()
+					: existingBeforeUpdate.name;
+			const candidateType = nextProfileType ?? existingBeforeUpdate.profileType;
+			const nameOrTypeChanging =
+				candidateName !== existingBeforeUpdate.name ||
+				candidateType !== existingBeforeUpdate.profileType;
+			if (nameOrTypeChanging) {
+				const dupHit = findExistingProfileDuplicate({
+					name: candidateName,
+					profileType: candidateType,
+					startDate:
+						body.startDate !== undefined
+							? body.startDate
+								? String(body.startDate)
+								: null
+							: existingBeforeUpdate.startDate,
+					endDate:
+						body.endDate !== undefined
+							? body.endDate
+								? String(body.endDate)
+								: null
+							: existingBeforeUpdate.endDate,
+					excludeProfileId: existingBeforeUpdate.id,
+				});
+				if (dupHit) {
+					const ep = dupHit.profile;
+					// Surface this duplicate pair in /profiles/alignments immediately so the user can merge or dismiss it.
+					recordDuplicateAlignmentCandidates(existingBeforeUpdate.id);
+					return NextResponse.json(
+						{
+							ok: false,
+							duplicate: true,
+							matchReason: dupHit.matchReason,
+							error: `Another matching profile already exists: "${ep.name}" (${ep.profileType.replace(/_/g, ' ')} — ${dupHit.matchReason}).`,
+							existingProfile: {
+								id: ep.id,
+								slug: ep.slug,
+								name: ep.name,
+								profileType: ep.profileType,
+								primaryLocation: dupHit.primaryLocation,
+							},
+						},
+						{ status: 409, headers: { 'Cache-Control': 'no-store' } },
+					);
+				}
+			}
 		}
 
 		let updated = updateProfileFields(key, {
@@ -297,6 +356,8 @@ export async function PATCH(request: Request, context: Ctx) {
 			touchProfilesForUserAction([updated.id]);
 			updated = getProfile(updated.id) || updated;
 		}
+		// Immediately refresh duplicate candidates in /profiles/alignments after profile updates.
+		recordDuplicateAlignmentCandidates(updated.id);
 
 		/** Sync Overview ## Timeline dated bullets → Timeline tab (+ linked historic_event mirrors). */
 		const syncFlag = body.syncTimelineFromSummary;

@@ -41,6 +41,7 @@ import {
 	pickBestFullAddress,
 	pickBestLocation,
 	sha256Key,
+	stripLegalSuffixes,
 } from '@/lib/research/profiles/normalize';
 import { getProfilesDir } from '@/lib/research/profiles/paths';
 import {
@@ -196,6 +197,8 @@ export type UpsertProfileInput = {
 	endDate?: string | null;
 	metadata?: Record<string, unknown>;
 	sourceCorpus?: string;
+	/** When true, bypass duplicate detection and allocate a unique slug for a genuinely separate profile. */
+	skipDuplicateCheck?: boolean;
 };
 
 function syncLifeDateMetadata(
@@ -218,7 +221,7 @@ function syncLifeDateMetadata(
 	return next;
 }
 
-const PAREN_ACRONYM_RE = /^(.{4,}?)\s*\(([A-Z][A-Z0-9&./-]{1,14})\)\s*$/;
+const PAREN_ACRONYM_RE = /^(.{4,}?)\s*\(([A-Z][A-Z0-9&./\s-]{1,22})\)\s*$/;
 const ORG_DEDUPE_TYPES = new Set<ProfileType>([
 	'firm',
 	'education',
@@ -228,24 +231,662 @@ const ORG_DEDUPE_TYPES = new Set<ProfileType>([
 	'region',
 ]);
 
+const GENERIC_ORG_DEDUPE_WORDS = new Set([
+	'company',
+	'corporation',
+	'corp',
+	'group',
+	'holdings',
+	'partners',
+	'capital',
+	'ventures',
+	'financial',
+	'securities',
+	'advisors',
+	'advisers',
+	'investments',
+	'management',
+	'services',
+	'solutions',
+	'systems',
+	'technologies',
+	'international',
+	'global',
+	'american',
+	'national',
+	'united',
+	'united states',
+	'federal',
+	'state',
+	'department',
+	'institute',
+	'foundation',
+	'association',
+	'society',
+	'trust',
+	'bank',
+	'university',
+	'college',
+	'school',
+	'hospital',
+	'medical',
+	'center',
+	'clinic',
+	'research',
+	'energy',
+	'resources',
+	'properties',
+	'realty',
+	'development',
+	'industries',
+	'agency',
+	'commission',
+	'board',
+	'office',
+	'council',
+	'committee',
+	'authority',
+]);
+
+const UNIQUE_DEDUPE_ID_SCHEMES = new Set([
+	'finra_crd',
+	'sec_cik',
+	'irs_ein',
+	'wikidata',
+	'ror',
+	'orcid',
+	'usgs_event',
+	'spc_om',
+]);
+
 /**
- * Extract base name + acronym from names like "Federal Emergency Management Agency (FEMA)".
+ * Extract base name + acronym from names like "Federal Emergency Management Agency (FEMA)"
+ * or "National Oceanic and Atmospheric Administration (NOAA / SPC)".
  */
 export function extractParenthesizedAcronymAndBase(
 	name: string,
-): { base: string; acronym: string } | null {
+): { base: string; acronym: string; extraAcronyms?: string[] } | null {
 	const m = String(name || '').trim().match(PAREN_ACRONYM_RE);
 	if (!m) return null;
 	const base = m[1]!.trim();
-	const acronym = m[2]!.trim();
-	if (base.length < 4 || acronym.length < 2) return null;
-	return { base, acronym };
+	const rawInner = m[2]!.trim();
+	if (base.length < 4 || rawInner.length < 2) return null;
+	const parts = rawInner
+		.split(/\s*\/\s*/)
+		.map((s) => s.trim())
+		.filter((s) => /^[A-Z][A-Z0-9&.-]{1,14}$/.test(s));
+	if (!parts.length) return null;
+	return {
+		base,
+		acronym: parts[0]!,
+		extraAcronyms: parts.slice(1),
+	};
+}
+
+function canonicalOrgRoot(raw: string): string {
+	const cleaned = String(raw || '')
+		.replace(/\s*\([^)]*\)\s*/g, ' ')
+		.trim();
+	let norm = normalizeText(cleaned);
+	norm = norm.replace(/^the\s+/, '');
+	norm = norm.replace(/^(?:u\s+s|us)\s+/, 'united states ');
+	const stripped = stripLegalSuffixes(norm);
+	return (stripped.length >= 4 && !GENERIC_ORG_DEDUPE_WORDS.has(stripped) ? stripped : norm).trim();
+}
+
+function buildCanonicalOrgKeys(names: string[]): { exactKeys: Set<string>; roots: Set<string> } {
+	const exactKeys = new Set<string>();
+	const roots = new Set<string>();
+	const addKey = (k: string, minLen = 2) => {
+		const n = normalizeText(k);
+		if (n.length >= minLen && !GENERIC_ORG_DEDUPE_WORDS.has(n)) {
+			exactKeys.add(n);
+		}
+	};
+	const expandVariants = (raw: string) => {
+		const n = normalizeText(raw);
+		if (!n) return;
+		addKey(n, 2);
+		const noThe = n.replace(/^the\s+/, '');
+		if (noThe !== n && noThe.length >= 4) addKey(noThe, 4);
+		else if (n.length >= 4 && !n.startsWith('the ')) addKey(`the ${n}`, 6);
+
+		// Toggle U.S. / US <-> United States
+		if (/^(?:u\s+s|us)\s+/.test(noThe)) {
+			addKey(noThe.replace(/^(?:u\s+s|us)\s+/, 'united states '), 8);
+		} else if (/^united states\s+/.test(noThe)) {
+			const tail = noThe.replace(/^united states\s+/, '');
+			if (tail.length >= 4) {
+				addKey(`u s ${tail}`, 6);
+				addKey(`us ${tail}`, 6);
+			}
+		}
+
+		const stripped = stripLegalSuffixes(noThe);
+		if (stripped && stripped !== noThe && stripped.length >= 4 && !GENERIC_ORG_DEDUPE_WORDS.has(stripped)) {
+			addKey(stripped, 4);
+		}
+		const root = canonicalOrgRoot(raw);
+		if (root.length >= 4 && !GENERIC_ORG_DEDUPE_WORDS.has(root)) {
+			roots.add(root);
+			addKey(root, 4);
+		}
+	};
+
+	for (const raw of names) {
+		const clean = String(raw || '').trim();
+		if (!clean) continue;
+		expandVariants(clean);
+		const paren = extractParenthesizedAcronymAndBase(clean);
+		if (paren) {
+			expandVariants(paren.base);
+			addKey(paren.acronym, 2);
+			for (const extra of paren.extraAcronyms || []) addKey(extra, 2);
+		}
+	}
+	return { exactKeys, roots };
+}
+
+function normalizePersonComparisonName(raw: string): string {
+	return normalizeText(raw)
+		.replace(/^(?:dr|mr|mrs|ms|prof|gen|col|lt|maj|capt|adm|rev|hon|sen|rep|gov|sir)\s+/i, '')
+		.replace(/\s+(?:jr|sr|ii|iii|iv|v|phd|md|jd|esq|cfa|cpa)$/i, '')
+		.trim();
+}
+
+function extractYear4(iso: string | null | undefined): number | null {
+	const m = String(iso || '').match(/\b(1\d{3}|20\d{2})\b/);
+	return m ? Number(m[1]) : null;
+}
+
+function normalizeUrlForDedupe(raw: string): string {
+	return String(raw || '')
+		.trim()
+		.toLowerCase()
+		.replace(/^https?:\/\//, '')
+		.replace(/^www\./, '')
+		.replace(/\/+$/, '');
+}
+
+export type DuplicateProfileMatch = {
+	profile: Profile;
+	matchReason: string;
+	primaryLocation: string | null;
+};
+
+/**
+ * Extra validation check run before creating or renaming/re-categorizing a profile.
+ * Checks unique identifiers, Wikipedia/source URLs, exact/alias/slug matches,
+ * canonical org variants (leading "The", "U.S." <-> "United States", legal suffixes,
+ * parenthesized acronyms, cross-category org matches), and date-compatible person matches.
+ */
+export function findExistingProfileDuplicate(
+	input: {
+		name: string;
+		profileType: ProfileType;
+		aliases?: string[];
+		identifiers?: Array<{ scheme: string; value: string }>;
+		startDate?: string | null;
+		endDate?: string | null;
+		metadata?: Record<string, unknown> | null;
+		excludeProfileId?: string | null;
+	},
+	dbOverride?: DatabaseSync,
+): DuplicateProfileMatch | null {
+	const db = dbOverride ?? getProfilesDb();
+	const clean = String(input.name || '').trim();
+	if (!clean) return null;
+	const excludeId = input.excludeProfileId ? String(input.excludeProfileId) : '';
+
+	const attachPrimaryLoc = (profile: Profile, matchReason: string): DuplicateProfileMatch => {
+		const locRows = db
+			.prepare('SELECT raw, city, county, state, country, role, confirmed FROM profile_locations WHERE profile_id = ?')
+			.all(profile.id) as Array<{
+			raw: string;
+			city: string | null;
+			county: string | null;
+			state: string | null;
+			country: string | null;
+			role: string | null;
+			confirmed: number;
+		}>;
+		const best = pickBestLocation(
+			locRows.map((l) => ({ ...l, confirmed: Boolean(l.confirmed) })),
+		);
+		const primaryLocation = best
+			? formatCompactCityStateLocation(best, { countryAbbrev: countryToIsoAbbrev(best.country) }) ||
+				best.raw
+			: null;
+		return { profile, matchReason, primaryLocation };
+	};
+
+	const rankCandidates = (rows: Array<Record<string, unknown>>): Profile[] => {
+		const seen = new Set<string>();
+		const list: Profile[] = [];
+		for (const r of rows) {
+			const id = String(r.id || '');
+			if (!id || id === excludeId || seen.has(id)) continue;
+			seen.add(id);
+			list.push(rowToProfile(r));
+		}
+		if (list.length <= 1) return list;
+		const ids = list.map((p) => p.id);
+		const ph = ids.map(() => '?').join(',');
+		const linkCounts = new Map<string, number>();
+		for (const r of db
+			.prepare(
+				`SELECT pid, count(*) AS cnt FROM (
+           SELECT from_profile_id AS pid FROM profile_links WHERE from_profile_id IN (${ph})
+           UNION ALL
+           SELECT to_profile_id AS pid FROM profile_links WHERE to_profile_id IN (${ph})
+         ) GROUP BY pid`,
+			)
+			.all(...ids, ...ids) as Array<{ pid: string; cnt: number }>) {
+			linkCounts.set(String(r.pid), Number(r.cnt || 0));
+		}
+		const targetNorm = normalizeText(clean);
+		const targetRoot = ORG_DEDUPE_TYPES.has(input.profileType) ? canonicalOrgRoot(clean) : targetNorm;
+		list.sort((a, b) => {
+			const exactNameA = a.normalizedName === targetNorm ? 1 : 0;
+			const exactNameB = b.normalizedName === targetNorm ? 1 : 0;
+			if (exactNameB !== exactNameA) return exactNameB - exactNameA;
+			const exactRootA =
+				(ORG_DEDUPE_TYPES.has(a.profileType) ? canonicalOrgRoot(a.name) : a.normalizedName) === targetRoot
+					? 1
+					: 0;
+			const exactRootB =
+				(ORG_DEDUPE_TYPES.has(b.profileType) ? canonicalOrgRoot(b.name) : b.normalizedName) === targetRoot
+					? 1
+					: 0;
+			if (exactRootB !== exactRootA) return exactRootB - exactRootA;
+			const sameA = a.profileType === input.profileType ? 1 : 0;
+			const sameB = b.profileType === input.profileType ? 1 : 0;
+			if (sameB !== sameA) return sameB - sameA;
+			const pinA = a.status === 'pinned' ? 1 : 0;
+			const pinB = b.status === 'pinned' ? 1 : 0;
+			if (pinB !== pinA) return pinB - pinA;
+			const lcDiff = (linkCounts.get(b.id) || 0) - (linkCounts.get(a.id) || 0);
+			if (lcDiff !== 0) return lcDiff;
+			return (b.summary || '').length - (a.summary || '').length;
+		});
+		return list;
+	};
+
+	// Layer 1: Unique identifiers & Wikipedia/source URLs
+	const idPairs: Array<{ scheme: string; normVal: string }> = [];
+	for (const ident of input.identifiers || []) {
+		const scheme = String(ident.scheme || '').trim().toLowerCase();
+		const value = String(ident.value || '').trim();
+		if (!scheme || !value) continue;
+		if (UNIQUE_DEDUPE_ID_SCHEMES.has(scheme)) {
+			idPairs.push({ scheme, normVal: normalizeText(value).replace(/\s+/g, '') });
+		} else if (scheme === 'url' && /wikipedia\.org\/wiki\//i.test(value)) {
+			idPairs.push({ scheme: 'url', normVal: normalizeUrlForDedupe(value) });
+		}
+	}
+	const meta = input.metadata || {};
+	if (typeof meta.finraCrd === 'string' && /^\d{1,10}$/.test(meta.finraCrd.trim())) {
+		idPairs.push({ scheme: 'finra_crd', normVal: meta.finraCrd.trim() });
+	}
+	if (typeof meta.wikidataId === 'string' && /^Q\d+$/i.test(meta.wikidataId.trim())) {
+		idPairs.push({ scheme: 'wikidata', normVal: meta.wikidataId.trim().toLowerCase() });
+	}
+	const metaWikiUrl = typeof meta.wikipediaUrl === 'string' ? meta.wikipediaUrl.trim() : '';
+	const metaSourceUrl =
+		input.profileType === 'historic_event' && typeof meta.sourceUrl === 'string'
+			? meta.sourceUrl.trim()
+			: '';
+	if (metaWikiUrl && /wikipedia\.org\/wiki\//i.test(metaWikiUrl)) {
+		idPairs.push({ scheme: 'url', normVal: normalizeUrlForDedupe(metaWikiUrl) });
+	}
+	if (metaSourceUrl) {
+		idPairs.push({ scheme: 'url', normVal: normalizeUrlForDedupe(metaSourceUrl) });
+	}
+
+	for (const { scheme, normVal } of idPairs) {
+		if (!normVal) continue;
+		const rows =
+			scheme === 'url'
+				? (db
+						.prepare(
+							`SELECT DISTINCT p.*
+               FROM profiles p
+               JOIN profile_identifiers pi ON pi.profile_id = p.id
+               WHERE p.status IN ('active', 'pinned')
+                 AND p.id != ?
+                 AND pi.scheme = 'url'
+                 AND lower(replace(replace(rtrim(pi.value, '/'), 'https://', ''), 'http://', '')) IN (?, ?)
+               LIMIT 6`,
+						)
+						.all(excludeId, normVal, `www.${normVal}`) as Array<Record<string, unknown>>)
+				: (db
+						.prepare(
+							`SELECT DISTINCT p.*
+               FROM profiles p
+               JOIN profile_identifiers pi ON pi.profile_id = p.id
+               WHERE p.status IN ('active', 'pinned')
+                 AND p.id != ?
+                 AND pi.scheme = ?
+                 AND pi.normalized_value = ?
+               LIMIT 6`,
+						)
+						.all(excludeId, scheme, normVal) as Array<Record<string, unknown>>);
+		const ranked = rankCandidates(rows);
+		if (ranked.length > 0) {
+			return attachPrimaryLoc(ranked[0]!, `matching ${scheme} identifier`);
+		}
+	}
+
+	// Layer 2: Organizations (canonical name, leading "The", "U.S." <-> "United States", legal suffixes, parens, cross-category)
+	if (ORG_DEDUPE_TYPES.has(input.profileType)) {
+		const allNames = [clean, ...(input.aliases || []).map((a) => String(a || '').trim()).filter(Boolean)];
+		const { exactKeys, roots } = buildCanonicalOrgKeys(allNames);
+		const candidateRows: Array<Record<string, unknown>> = [];
+
+		if (exactKeys.size > 0) {
+			const keyList = [...exactKeys];
+			const ph = keyList.map(() => '?').join(',');
+			const rows = db
+				.prepare(
+					`SELECT DISTINCT p.*
+           FROM profiles p
+           LEFT JOIN profile_aliases pa ON pa.profile_id = p.id
+           WHERE p.status IN ('active', 'pinned')
+             AND p.id != ?
+             AND p.profile_type IN ('firm','education','nonprofit','medical_hospital','government','region')
+             AND (
+               p.normalized_name IN (${ph})
+               OR pa.normalized_alias IN (${ph})
+             )
+           LIMIT 20`,
+				)
+				.all(excludeId, ...keyList, ...keyList) as Array<Record<string, unknown>>;
+			candidateRows.push(...rows);
+		}
+
+		// SQL prefix/suffix sweep catches existing DB rows that lack alias rows (e.g. "Google Inc." when creating "Google")
+		for (const root of roots) {
+			if (root.length < 5) continue;
+			const shortUs = root.startsWith('united states ') ? root.slice('united states '.length) : null;
+			const likeParams: string[] = [
+				root,
+				`the ${root}`,
+				`${root} (%`,
+				`${root} inc%`,
+				`${root} corp%`,
+				`${root} llc%`,
+				`${root} ltd%`,
+				`${root} company%`,
+				`${root} group%`,
+			];
+			if (shortUs && shortUs.length >= 4) {
+				likeParams.push(`u s ${shortUs}%`, `us ${shortUs}%`, `united states ${shortUs}%`);
+			}
+			const clauses = likeParams.map(() => 'p.normalized_name LIKE ?').join(' OR ');
+			const likeRows = db
+				.prepare(
+					`SELECT DISTINCT p.*
+           FROM profiles p
+           WHERE p.status IN ('active', 'pinned')
+             AND p.id != ?
+             AND p.profile_type IN ('firm','education','nonprofit','medical_hospital','government','region')
+             AND (${clauses})
+           LIMIT 20`,
+				)
+				.all(excludeId, ...likeParams) as Array<Record<string, unknown>>;
+			for (const r of likeRows) {
+				const candRoot = canonicalOrgRoot(String(r.name || ''));
+				if (candRoot && roots.has(candRoot)) {
+					candidateRows.push(r);
+				}
+			}
+		}
+
+		const ranked = rankCandidates(candidateRows);
+		if (ranked.length > 0) {
+			const norm = normalizeText(clean);
+			const primaryRoot = canonicalOrgRoot(clean);
+			// Prefer exact canonical name/root match first (even across org categories, so e.g.
+			// "Cherokee Nation" matches government:Cherokee Nation rather than firm:Cherokee Nation Businesses).
+			const exactOrRoot = ranked.filter(
+				(m) => m.normalizedName === norm || canonicalOrgRoot(m.name) === primaryRoot,
+			);
+			if (exactOrRoot.length > 0) {
+				const top = exactOrRoot[0]!;
+				return attachPrimaryLoc(
+					top,
+					top.profileType !== input.profileType
+						? `already exists under ${top.profileType.replace(/_/g, ' ')}`
+						: top.normalizedName === norm
+							? 'exact name match'
+							: 'matching canonical organization name/alias',
+				);
+			}
+			const sameType = ranked.filter((m) => m.profileType === input.profileType);
+			if (sameType.length >= 1) {
+				const top = sameType[0]!;
+				if (sameType.length === 1 || top.status === 'pinned') {
+					return attachPrimaryLoc(top, 'matching canonical organization name/alias');
+				}
+			}
+			const top = ranked[0]!;
+			if (ranked.length === 1) {
+				return attachPrimaryLoc(
+					top,
+					`already exists under ${top.profileType.replace(/_/g, ' ')}`,
+				);
+			}
+		}
+		return null;
+	}
+
+	// Layer 3: Person duplicate check (exact normalized name / honorific-stripped / alias, with birth/death date-conflict guard)
+	if (input.profileType === 'person') {
+		const norm = normalizeText(clean);
+		const strippedPerson = normalizePersonComparisonName(clean);
+		const keys = new Set<string>();
+		if (norm.length >= 4) keys.add(norm);
+		if (strippedPerson.length >= 4) keys.add(strippedPerson);
+		for (const a of input.aliases || []) {
+			const an = normalizeText(a);
+			if (an.length >= 4) keys.add(an);
+		}
+		if (!keys.size) return null;
+		const keyList = [...keys];
+		const ph = keyList.map(() => '?').join(',');
+		const rows = db
+			.prepare(
+				`SELECT DISTINCT p.*
+         FROM profiles p
+         LEFT JOIN profile_aliases pa ON pa.profile_id = p.id
+         WHERE p.status IN ('active', 'pinned')
+           AND p.id != ?
+           AND p.profile_type = 'person'
+           AND (
+             p.normalized_name IN (${ph})
+             OR pa.normalized_alias IN (${ph})
+           )
+         LIMIT 15`,
+			)
+			.all(excludeId, ...keyList, ...keyList) as Array<Record<string, unknown>>;
+
+		const inStartYr = extractYear4(input.startDate);
+		const inEndYr = extractYear4(input.endDate);
+		const compatible = rows.filter((r) => {
+			const rStartYr = extractYear4(r.start_date != null ? String(r.start_date) : null);
+			const rEndYr = extractYear4(r.end_date != null ? String(r.end_date) : null);
+			if (inStartYr && rStartYr && Math.abs(inStartYr - rStartYr) > 1) return false;
+			if (inEndYr && rEndYr && Math.abs(inEndYr - rEndYr) > 1) return false;
+			return true;
+		});
+		const ranked = rankCandidates(compatible);
+		if (ranked.length > 0) {
+			const top = ranked[0]!;
+			return attachPrimaryLoc(
+				top,
+				top.normalizedName === norm ? 'exact person name match' : 'matching person alias',
+			);
+		}
+		return null;
+	}
+
+	// Layer 4: Historic Event duplicate check (exact normalized name or slug)
+	if (input.profileType === 'historic_event') {
+		const norm = normalizeText(clean);
+		const slug = makeProfileSlug('historic_event', clean);
+		const rows = db
+			.prepare(
+				`SELECT * FROM profiles
+         WHERE status IN ('active', 'pinned')
+           AND id != ?
+           AND profile_type = 'historic_event'
+           AND (normalized_name = ? OR slug = ?)
+         LIMIT 5`,
+			)
+			.all(excludeId, norm, slug) as Array<Record<string, unknown>>;
+		const ranked = rankCandidates(rows);
+		if (ranked.length > 0) {
+			return attachPrimaryLoc(ranked[0]!, 'matching historic event title');
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Record any duplicate/overlap candidates for a newly created or updated profile directly into
+ * `alignment_candidates` so they immediately appear in `/profiles/alignments` for review & merge.
+ */
+export function recordDuplicateAlignmentCandidates(
+	profileId: string,
+	dbOverride?: DatabaseSync,
+): number {
+	const db = dbOverride ?? getProfilesDb();
+	const row = db
+		.prepare('SELECT * FROM profiles WHERE id = ? AND status IN (\'active\', \'pinned\')')
+		.get(profileId) as Record<string, unknown> | undefined;
+	if (!row) return 0;
+	const p = rowToProfile(row);
+
+	const aliases = (
+		db
+			.prepare('SELECT alias FROM profile_aliases WHERE profile_id = ? AND alias_kind != \'slug\'')
+			.all(p.id) as Array<{ alias: string }>
+	).map((r) => r.alias);
+	const identifiers = (
+		db
+			.prepare('SELECT scheme, value FROM profile_identifiers WHERE profile_id = ?')
+			.all(p.id) as Array<{ scheme: string; value: string }>
+	).map((r) => ({ scheme: r.scheme, value: r.value }));
+
+	// Gather up to 8 distinct duplicate peers by repeatedly excluding already-found peer IDs.
+	const seenPeers = new Set<string>([p.id]);
+	const hits: DuplicateProfileMatch[] = [];
+	for (let i = 0; i < 6; i += 1) {
+		const hit = findExistingProfileDuplicate(
+			{
+				name: p.name,
+				profileType: p.profileType,
+				aliases,
+				identifiers,
+				startDate: p.startDate,
+				endDate: p.endDate,
+				metadata: p.metadata,
+				excludeProfileId: p.id,
+			},
+			db,
+		);
+		if (!hit || seenPeers.has(hit.profile.id)) break;
+		seenPeers.add(hit.profile.id);
+		hits.push(hit);
+		// Single top match is usually sufficient; avoid looping endlessly since excludeProfileId takes one ID
+		break;
+	}
+
+	// Also check all exact/canonical org peers or shared-ID peers directly so multi-duplicate clusters show up.
+	const extraPeerIds = new Set<string>(hits.map((h) => h.profile.id));
+	if (ORG_DEDUPE_TYPES.has(p.profileType)) {
+		const { exactKeys, roots } = buildCanonicalOrgKeys([p.name, ...aliases]);
+		if (exactKeys.size > 0) {
+			const keyList = [...exactKeys];
+			const ph = keyList.map(() => '?').join(',');
+			const peers = db
+				.prepare(
+					`SELECT DISTINCT p.*
+           FROM profiles p
+           LEFT JOIN profile_aliases pa ON pa.profile_id = p.id
+           WHERE p.status IN ('active', 'pinned')
+             AND p.id != ?
+             AND p.profile_type IN ('firm','education','nonprofit','medical_hospital','government','region')
+             AND (p.normalized_name IN (${ph}) OR pa.normalized_alias IN (${ph}))
+           LIMIT 8`,
+				)
+				.all(p.id, ...keyList, ...keyList) as Array<Record<string, unknown>>;
+			for (const pr of peers) {
+				const peer = rowToProfile(pr);
+				if (extraPeerIds.has(peer.id)) continue;
+				const candRoot = canonicalOrgRoot(peer.name);
+				if (roots.has(candRoot) || exactKeys.has(peer.normalizedName)) {
+					extraPeerIds.add(peer.id);
+					hits.push({
+						profile: peer,
+						matchReason:
+							peer.profileType !== p.profileType
+								? `already exists under ${peer.profileType.replace(/_/g, ' ')}`
+								: 'matching canonical organization name/alias',
+						primaryLocation: null,
+					});
+				}
+			}
+		}
+	}
+
+	let created = 0;
+	for (const hit of hits.slice(0, 8)) {
+		const peer = hit.profile;
+		if (peer.id === p.id) continue;
+		const isIdMatch = hit.matchReason.includes('identifier');
+		const isPersonName = p.profileType === 'person' && !isIdMatch;
+		const alignmentKind: AlignmentKind = isIdMatch
+			? 'shared_identifier'
+			: isPersonName
+				? 'possible_match_name_only'
+				: 'same_entity_alias';
+		const [leftId, rightId] = [p.id, peer.id].sort();
+		const score = isIdMatch ? 0.96 : isPersonName ? 0.78 : peer.profileType === p.profileType ? 0.91 : 0.86;
+		const cautionTier: CautionTier =
+			isIdMatch || (!isPersonName && peer.profileType === p.profileType)
+				? 'stronger_indicator'
+				: 'closer_look';
+		const dedupeKey = sha256Key([alignmentKind, leftId, rightId]);
+		const id = upsertAlignmentCandidate(
+			{
+				dedupeKey,
+				alignmentKind,
+				leftProfileId: p.id,
+				rightProfileId: peer.id,
+				score,
+				cautionTier,
+				rationale: `Duplicate check on create/update (${hit.matchReason}): "${p.name}" (${p.profileType}) ↔ "${peer.name}" (${peer.profileType}).`,
+				evidence: [
+					{
+						corpus: 'duplicate-validation',
+						label: `Duplicate check (${hit.matchReason})`,
+						snippet: `"${p.name}" (${p.slug}) matches existing "${peer.name}" (${peer.slug})`,
+					},
+				],
+			},
+			db,
+		);
+		if (id) created += 1;
+	}
+	return created;
 }
 
 /**
  * Find an unambiguous existing active/pinned non-person org profile matching by
- * normalized name, base name without parenthesized acronym, or exact alias/acronym.
- * Prevents duplicates like creating "FEMA" when "Federal Emergency Management Agency (FEMA)" exists.
+ * normalized name, canonical org variants (The / U.S. / legal suffix / parenthesized acronym),
+ * or exact alias/acronym.
  */
 export function findExistingOrgByNameOrAlias(
 	name: string,
@@ -253,57 +894,8 @@ export function findExistingOrgByNameOrAlias(
 	dbOverride?: DatabaseSync,
 ): Profile | null {
 	if (!ORG_DEDUPE_TYPES.has(profileType)) return null;
-	const db = dbOverride ?? getProfilesDb();
-	const clean = String(name || '').trim();
-	if (!clean) return null;
-
-	const keys = new Set<string>();
-	const norm = normalizeText(clean);
-	if (norm.length >= 2) keys.add(norm);
-	const paren = extractParenthesizedAcronymAndBase(clean);
-	if (paren) {
-		const baseNorm = normalizeText(paren.base);
-		const acrNorm = normalizeText(paren.acronym);
-		if (baseNorm.length >= 4) keys.add(baseNorm);
-		if (acrNorm.length >= 2) keys.add(acrNorm);
-	}
-	if (!keys.size) return null;
-
-	const keyList = [...keys];
-	const placeholders = keyList.map(() => '?').join(',');
-	const rows = db
-		.prepare(
-			`SELECT DISTINCT p.*
-       FROM profiles p
-       LEFT JOIN profile_aliases pa ON pa.profile_id = p.id
-       WHERE p.status IN ('active', 'pinned')
-         AND p.profile_type IN ('firm','education','nonprofit','medical_hospital','government','region')
-         AND (
-           p.normalized_name IN (${placeholders})
-           OR pa.normalized_alias IN (${placeholders})
-         )
-       LIMIT 12`,
-		)
-		.all(...keyList, ...keyList) as Array<Record<string, unknown>>;
-
-	if (!rows.length) return null;
-	const matches = rows.map(rowToProfile);
-
-	// Prefer exact same category when unambiguous.
-	const sameType = matches.filter((m) => m.profileType === profileType);
-	if (sameType.length === 1) return sameType[0]!;
-	if (sameType.length > 1) {
-		// Tie-break on exact normalized_name match or pinned status.
-		const exactSame = sameType.filter((m) => m.normalizedName === norm);
-		if (exactSame.length === 1) return exactSame[0]!;
-		const pinnedSame = sameType.filter((m) => m.status === 'pinned');
-		if (pinnedSame.length === 1) return pinnedSame[0]!;
-		return null;
-	}
-
-	// Cross-category fallback only when unambiguous (single matching org profile).
-	if (matches.length === 1) return matches[0]!;
-	return null;
+	const hit = findExistingProfileDuplicate({ name, profileType }, dbOverride);
+	return hit ? hit.profile : null;
 }
 
 function indexParenthesizedAcronymAliases(
@@ -346,7 +938,7 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 		throw new Error(`Invalid profileType: ${input.profileType}`);
 	}
 
-	const slug = input.slug ? makeProfileSlug(input.profileType, input.slug) : makeProfileSlug(input.profileType, cleanName);
+	let slug = input.slug ? makeProfileSlug(input.profileType, input.slug) : makeProfileSlug(input.profileType, cleanName);
 	const normalizedName = normalizeText(cleanName);
 	const now = new Date().toISOString();
 	const inputStart =
@@ -362,15 +954,36 @@ export function upsertProfile(input: UpsertProfileInput, dbOverride?: DatabaseSy
 				? null
 				: undefined;
 
-	let existing = db.prepare('SELECT * FROM profiles WHERE slug = ?').get(slug) as
-		| Record<string, unknown>
-		| undefined;
-	if (!existing && !input.slug && ORG_DEDUPE_TYPES.has(input.profileType)) {
-		const matchedOrg = findExistingOrgByNameOrAlias(cleanName, input.profileType, db);
-		if (matchedOrg) {
-			existing = db.prepare('SELECT * FROM profiles WHERE id = ?').get(matchedOrg.id) as
-				| Record<string, unknown>
-				| undefined;
+	let existing: Record<string, unknown> | undefined;
+	if (input.skipDuplicateCheck) {
+		slug = allocateUniqueProfileSlug(db, input.profileType, input.slug || cleanName);
+	} else {
+		existing = db.prepare('SELECT * FROM profiles WHERE slug = ?').get(slug) as
+			| Record<string, unknown>
+			| undefined;
+		if (!existing) {
+			// Extra validation check: catch canonical org variants (even if custom slug was passed),
+			// strong identifier / Wikipedia URL matches, and date-compatible person/event duplicates.
+			const dupHit = findExistingProfileDuplicate(
+				{
+					name: cleanName,
+					profileType: input.profileType,
+					startDate: inputStart ?? null,
+					endDate: inputEnd ?? null,
+					metadata: input.metadata || null,
+				},
+				db,
+			);
+			const allowDupReuse =
+				dupHit &&
+				(ORG_DEDUPE_TYPES.has(input.profileType) ||
+					dupHit.matchReason.includes('identifier') ||
+					!input.slug);
+			if (allowDupReuse && dupHit) {
+				existing = db.prepare('SELECT * FROM profiles WHERE id = ?').get(dupHit.profile.id) as
+					| Record<string, unknown>
+					| undefined;
+			}
 		}
 	}
 

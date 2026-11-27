@@ -7,6 +7,7 @@ import { FinraDisclosuresPanel } from '@/components/FinraDisclosuresPanel';
 import { ProfileTimelineCareerView } from '@/components/ProfileTimelineCareerView';
 import ThemeToggle from '@/components/ThemeToggle';
 import type { ProfileFinraDisclosures } from '@/lib/research/finraDisclosuresShared';
+import { classifyLinkProximityCue } from '@/lib/research/profiles/edgeWeights';
 import { detectFirmActiveFinraScope, detectFirmLiveSourceUrl } from '@/lib/research/profiles/liveListing';
 import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import { formatTickerListing } from '@/lib/research/profiles/tickerListing';
@@ -3754,6 +3755,18 @@ export default function ProfilesClient({
 	const [lastEnrichReport, setLastEnrichReport] = useState<EnrichProfileReport | null>(null);
 	const [banner, setBanner] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [duplicateConflict, setDuplicateConflict] = useState<{
+		mode: 'create' | 'edit' | 'category';
+		message: string;
+		existingProfile: {
+			id: string;
+			slug: string;
+			name: string;
+			profileType: ProfileType;
+			primaryLocation?: string | null;
+		};
+		pendingCategoryType?: ProfileType;
+	} | null>(null);
 	const [showCreate, setShowCreate] = useState(false);
 	const [newType, setNewType] = useState<ProfileType>('historic_event');
 	const [newName, setNewName] = useState('');
@@ -3864,6 +3877,43 @@ export default function ProfilesClient({
 	const [connNote, setConnNote] = useState('');
 	const [savingConn, setSavingConn] = useState(false);
 	const [connSearchOpen, setConnSearchOpen] = useState(false);
+	const [nearbyData, setNearbyData] = useState<{
+		sourceLocations: string[];
+		counts: { sameBuilding: number; nearby: number };
+		sameBuildingItems: Array<{
+			profileId: string;
+			slug: string;
+			name: string;
+			profileType: ProfileType;
+			countryCodes: string[];
+			address: string;
+			matchedSourceAddress: string;
+			proximity: 'same_building' | 'linked_nearby' | 'same_street' | 'same_zip' | 'nearby_coords' | 'same_city';
+			proximityLabel: string;
+			suiteToken: string | null;
+			distanceMiles: number | null;
+			alreadyConnected: boolean;
+			linkId?: string | null;
+			linkRoleLabel?: string | null;
+		}>;
+		nearbyItems: Array<{
+			profileId: string;
+			slug: string;
+			name: string;
+			profileType: ProfileType;
+			countryCodes: string[];
+			address: string;
+			matchedSourceAddress: string;
+			proximity: 'same_building' | 'linked_nearby' | 'same_street' | 'same_zip' | 'nearby_coords' | 'same_city';
+			proximityLabel: string;
+			suiteToken: string | null;
+			distanceMiles: number | null;
+			alreadyConnected: boolean;
+			linkId?: string | null;
+			linkRoleLabel?: string | null;
+		}>;
+	} | null>(null);
+	const [linkingNearbyId, setLinkingNearbyId] = useState<string | null>(null);
 
 	const syncUrl = useCallback((next: { profile?: string | null; view?: 'profile' | 'alignments' }, mode: 'push' | 'replace' = 'push') => {
 		if (typeof window === 'undefined') return;
@@ -4057,7 +4107,96 @@ export default function ProfilesClient({
 		setConnNote('');
 		setConnSearchOpen(false);
 		setConnLinkDrafts([]);
+		setNearbyData(null);
 	}, [selectedId]);
+
+	// Load Same Building Complex & Nearby profiles whenever the selected profile, locations, or links change.
+	const activeDetailProfileId = detail?.profile?.id || null;
+	const activeDetailProfileSlug = detail?.profile?.slug || null;
+	const activeDetailLocSig = detail ? detail.locations.map((l) => `${l.id}:${l.raw}`).join('|') : '';
+	const activeDetailLinkCount = detail?.links?.length ?? 0;
+	const activeDetailHasProximityLinks = Boolean(
+		detail?.links?.some((l) => classifyLinkProximityCue(l) !== null),
+	);
+	useEffect(() => {
+		if (!activeDetailProfileId || (!activeDetailLocSig && !activeDetailHasProximityLinks)) {
+			setNearbyData(null);
+			return;
+		}
+		let cancelled = false;
+		const key = activeDetailProfileSlug || activeDetailProfileId;
+		void (async () => {
+			try {
+				const res = await fetch(
+					`/api/profiles/${encodeURIComponent(key)}/nearby?limit=120`,
+					{ cache: 'no-store' },
+				);
+				const data = await res.json();
+				if (!cancelled && res.ok && data?.ok) {
+					setNearbyData({
+						sourceLocations: Array.isArray(data.sourceLocations) ? data.sourceLocations : [],
+						counts: {
+							sameBuilding: Number(data.counts?.sameBuilding || 0),
+							nearby: Number(data.counts?.nearby || 0),
+						},
+						sameBuildingItems: Array.isArray(data.sameBuildingItems) ? data.sameBuildingItems : [],
+						nearbyItems: Array.isArray(data.nearbyItems) ? data.nearbyItems : [],
+					});
+				}
+			} catch {
+				/* non-fatal */
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [activeDetailProfileId, activeDetailProfileSlug, activeDetailLocSig, activeDetailHasProximityLinks, activeDetailLinkCount]);
+
+	async function handleQuickLinkNearby(item: {
+		profileId: string;
+		name: string;
+		address: string;
+		proximity: 'same_building' | 'linked_nearby' | 'same_street' | 'same_zip' | 'nearby_coords' | 'same_city';
+		proximityLabel: string;
+	}) {
+		if (!detail?.profile?.id || !selectedId) return;
+		setLinkingNearbyId(item.profileId);
+		setError(null);
+		try {
+			const res = await fetch('/api/profiles/links', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					fromProfileId: detail.profile.id,
+					toProfileId: item.profileId,
+					relationType: 'location_overlap',
+					roleLabel: item.proximity === 'same_building' ? 'Same building' : item.proximityLabel,
+					evidenceNote: `${item.proximityLabel} — ${item.address}`,
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to link profile');
+			setNearbyData((prev) =>
+				prev
+					? {
+							...prev,
+							sameBuildingItems: prev.sameBuildingItems.map((x) =>
+								x.profileId === item.profileId ? { ...x, alreadyConnected: true } : x,
+							),
+							nearbyItems: prev.nearbyItems.map((x) =>
+								x.profileId === item.profileId ? { ...x, alreadyConnected: true } : x,
+							),
+						}
+					: prev,
+			);
+			await loadDetail(selectedId);
+			setBanner(`Linked “${item.name}” (${item.proximityLabel}).`);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setLinkingNearbyId(null);
+		}
+	}
 
 	// Typeahead for Connected Profiles “+ Add connection”.
 	useEffect(() => {
@@ -4637,11 +4776,12 @@ export default function ProfilesClient({
 		}
 	}
 
-	async function handleCreateProfile(e: React.FormEvent) {
-		e.preventDefault();
+	async function handleCreateProfile(e?: React.FormEvent, opts?: { forceCreate?: boolean }) {
+		e?.preventDefault();
 		if (!newName.trim()) return;
 		setCreating(true);
 		setError(null);
+		setDuplicateConflict(null);
 		try {
 			const aliases = newAliases
 				.split(',')
@@ -4676,11 +4816,21 @@ export default function ProfilesClient({
 					locations,
 					employmentHistory,
 					status: 'pinned',
+					...(opts?.forceCreate ? { forceCreate: true } : {}),
 				}),
 			});
 			const data = await res.json();
+			if (res.status === 409 && data?.duplicate && data?.existingProfile) {
+				setDuplicateConflict({
+					mode: 'create',
+					message: String(data.error || 'A matching profile already exists.'),
+					existingProfile: data.existingProfile,
+				});
+				return;
+			}
 			if (!res.ok || !data?.ok) throw new Error(data?.error || `Create failed (${res.status})`);
 			setShowCreate(false);
+			setDuplicateConflict(null);
 			setNewName('');
 			setNewSummary('');
 			setNewAliases('');
@@ -4873,11 +5023,26 @@ export default function ProfilesClient({
 			body: JSON.stringify(body),
 		});
 		const data = await res.json();
+		if (res.status === 409 && data?.duplicate && data?.existingProfile) {
+			const err = new Error(String(data.error || 'A matching profile already exists.')) as Error & {
+				duplicate?: boolean;
+				existingProfile?: {
+					id: string;
+					slug: string;
+					name: string;
+					profileType: ProfileType;
+					primaryLocation?: string | null;
+				};
+			};
+			err.duplicate = true;
+			err.existingProfile = data.existingProfile;
+			throw err;
+		}
 		if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to save profile');
 		return data as ProfileDetail;
 	}
 
-	async function handleQuickChangeProfileType(nextType: ProfileType) {
+	async function handleQuickChangeProfileType(nextType: ProfileType, opts?: { allowDuplicate?: boolean }) {
 		if (!detail || !selectedId || nextType === detail.profile.profileType) return;
 		const prevType = detail.profile.profileType;
 		const prevSlug = detail.profile.slug || selectedId;
@@ -4885,11 +5050,13 @@ export default function ProfilesClient({
 		const nextLabel = TYPE_META[nextType]?.label || nextType;
 		setSavingCategory(true);
 		setError(null);
+		setDuplicateConflict(null);
 		try {
 			const latest = await patchProfile(prevSlug, {
 				profileType: nextType,
 				userTouch: true,
 				skipAutoResearch: true,
+				...(opts?.allowDuplicate ? { allowDuplicate: true } : {}),
 			});
 			const nextSlug = latest.profile.slug || latest.profile.id;
 			setDetail(latest);
@@ -4907,13 +5074,32 @@ export default function ProfilesClient({
 				}.`,
 			);
 		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : String(e));
+			const dupErr = e as Error & {
+				duplicate?: boolean;
+				existingProfile?: {
+					id: string;
+					slug: string;
+					name: string;
+					profileType: ProfileType;
+					primaryLocation?: string | null;
+				};
+			};
+			if (dupErr?.duplicate && dupErr.existingProfile) {
+				setDuplicateConflict({
+					mode: 'category',
+					message: dupErr.message,
+					existingProfile: dupErr.existingProfile,
+					pendingCategoryType: nextType,
+				});
+			} else {
+				setError(e instanceof Error ? e.message : String(e));
+			}
 		} finally {
 			setSavingCategory(false);
 		}
 	}
 
-	async function handleApplyProfileEdit() {
+	async function handleApplyProfileEdit(opts?: { allowDuplicate?: boolean }) {
 		if (!selectedId || !detail) return;
 		if (!nameDraft.trim()) {
 			setError('Name cannot be empty.');
@@ -4921,6 +5107,7 @@ export default function ProfilesClient({
 		}
 		setSavingCore(true);
 		setError(null);
+		setDuplicateConflict(null);
 		const prevSlug = detail.profile.slug || selectedId;
 		let profileKey = selectedId;
 		try {
@@ -4948,6 +5135,7 @@ export default function ProfilesClient({
 							endDate: lifeEndDraft.trim() ? normalizeIsoDate(lifeEndDraft.trim()).date || lifeEndDraft.trim() : null,
 						}
 					:	{}),
+					...(opts?.allowDuplicate ? { allowDuplicate: true } : {}),
 				});
 				profileKey = latest.profile.slug || latest.profile.id;
 				const syncFromPatch = (
@@ -5198,7 +5386,25 @@ export default function ProfilesClient({
 				}
 			}
 		} catch (e: unknown) {
-			setError(e instanceof Error ? e.message : String(e));
+			const dupErr = e as Error & {
+				duplicate?: boolean;
+				existingProfile?: {
+					id: string;
+					slug: string;
+					name: string;
+					profileType: ProfileType;
+					primaryLocation?: string | null;
+				};
+			};
+			if (dupErr?.duplicate && dupErr.existingProfile) {
+				setDuplicateConflict({
+					mode: 'edit',
+					message: dupErr.message,
+					existingProfile: dupErr.existingProfile,
+				});
+			} else {
+				setError(e instanceof Error ? e.message : String(e));
+			}
 		} finally {
 			setSavingCore(false);
 		}
@@ -6232,6 +6438,69 @@ export default function ProfilesClient({
 					<div className='mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-800 dark:text-rose-200'>{error}</div>
 				:	null}
 
+				{duplicateConflict ?
+					<div className='mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/50 bg-amber-500/15 px-3 py-2.5 text-xs text-amber-950 dark:text-amber-100'>
+						<div className='min-w-0 flex-1'>
+							<div className='font-semibold'>Duplicate profile check</div>
+							<div className='mt-0.5 opacity-90'>
+								{duplicateConflict.message}
+								{duplicateConflict.existingProfile.primaryLocation ? ` · 📍 ${duplicateConflict.existingProfile.primaryLocation}` : ''}
+							</div>
+						</div>
+						<div className='flex flex-wrap items-center gap-1.5'>
+							<button
+								type='button'
+								onClick={() => {
+									const targetSlug = duplicateConflict.existingProfile.slug || duplicateConflict.existingProfile.id;
+									setDuplicateConflict(null);
+									setShowCreate(false);
+									setProfileEditing(false);
+									jumpToProfile(targetSlug);
+								}}
+								className='cursor-pointer rounded border border-amber-600/50 bg-amber-500/25 px-2.5 py-1 text-[11px] font-semibold hover:bg-amber-500/35'>
+								Open existing profile
+							</button>
+							<button
+								type='button'
+								onClick={() => {
+									setDuplicateConflict(null);
+									setShowCreate(false);
+									setProfileEditing(false);
+									setAlignKindFilter('same_entity_alias');
+									setAlignStatusFilter('proposed');
+									setAlignOffset(0);
+									setMainView('alignments');
+									syncUrl({ view: 'alignments', profile: null }, 'push');
+								}}
+								className='cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-[11px] font-medium hover:bg-[var(--app-surface-hover)]'>
+								View in Alignments
+							</button>
+							<button
+								type='button'
+								onClick={() => {
+									const conflict = duplicateConflict;
+									setDuplicateConflict(null);
+									if (conflict.mode === 'create') {
+										void handleCreateProfile(undefined, { forceCreate: true });
+									} else if (conflict.mode === 'edit') {
+										void handleApplyProfileEdit({ allowDuplicate: true });
+									} else if (conflict.mode === 'category' && conflict.pendingCategoryType) {
+										void handleQuickChangeProfileType(conflict.pendingCategoryType, { allowDuplicate: true });
+									}
+								}}
+								className='cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-[11px] font-medium hover:bg-[var(--app-surface-hover)]'>
+								{duplicateConflict.mode === 'create' ? 'Create separate anyway' : 'Save anyway'}
+							</button>
+							<button
+								type='button'
+								onClick={() => setDuplicateConflict(null)}
+								className='cursor-pointer border-0 bg-transparent px-1 text-xs opacity-70 hover:opacity-100'>
+								✕
+							</button>
+						</div>
+					</div>
+				:	null}
+
 				{/* Stats Bar / Quick Type Filters */}
 				{stats ?
 					<section className='mb-4 grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-10'>
@@ -6794,11 +7063,10 @@ export default function ProfilesClient({
 													const hasAlts = Boolean(p.alternateNames && p.alternateNames.length > 0);
 													const hasCrd =
 														(p.profileType === 'person' || p.profileType === 'firm') && Boolean(p.finraCrd);
-													const loc = !hasAlts && p.primaryLocation ? p.primaryLocation : null;
+													const loc = p.primaryLocation ? p.primaryLocation : null;
 													const hasEventDate =
 														p.profileType === 'historic_event' && Boolean(p.startDate || p.endDate);
-													const secondary = hasAlts ? p.alternateNames!.join(' · ') : loc;
-													if (!hasCrd && !hasEventDate && !secondary) return null;
+													if (!hasCrd && !hasEventDate && !loc && !hasAlts) return null;
 													const bits: Array<{ key: string; node: ReactNode }> = [];
 													if (hasCrd) {
 														bits.push({
@@ -6820,14 +7088,16 @@ export default function ProfilesClient({
 															),
 														});
 													}
-													if (secondary) {
+													if (loc) {
 														bits.push({
-															key: 'sec',
-															node: hasAlts ? (
-																<span className='italic'>{secondary}</span>
-															) : (
-																<span>{secondary}</span>
-															),
+															key: 'loc',
+															node: <span>{loc}</span>,
+														});
+													}
+													if (hasAlts) {
+														bits.push({
+															key: 'alts',
+															node: <span className='italic'>{p.alternateNames!.join(' · ')}</span>,
 														});
 													}
 													return (
@@ -7744,8 +8014,16 @@ export default function ProfilesClient({
 												const isNewsRssHistoric =
 													detail.profile.profileType === 'historic_event' && isNewsRssHistoricMetadata(meta);
 												const sourceLabels = collectProfileSourceLabels(detail.identifiers);
-												// Drop URL chips already covered by the Wikipedia meta link.
-												// News RSS article URLs stay as plain domain Sources text (not Website ↗ / bbc ↗).
+												const preferredWebsiteRaw =
+													(typeof meta.website === 'string' && /^https?:\/\//i.test(meta.website) ? meta.website : null) ||
+													(typeof meta.companyUrl === 'string' && /^https?:\/\//i.test(meta.companyUrl) ? meta.companyUrl : null);
+												// News RSS citations are not org websites.
+												const preferredWebsite = isNewsRssHistoric ? null : preferredWebsiteRaw;
+												const preferredWebsiteHost = preferredWebsite ? hostnameFromUrl(preferredWebsite) : null;
+												const preferredWebsiteNorm = preferredWebsite ? normalizeHref(preferredWebsite) : '';
+												// Drop URL chips already covered by the Wikipedia meta link or the profile's own website.
+												// News RSS article URLs stay as plain domain Sources text.
+												const seenUrlHosts = new Set<string>(preferredWebsiteHost ? [preferredWebsiteHost] : []);
 												const urlIds = detail.identifiers.filter((idItem) => {
 													if (String(idItem.scheme || '').toLowerCase() !== 'url') return false;
 													if (isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value)) {
@@ -7755,6 +8033,10 @@ export default function ProfilesClient({
 													if (!href) return false;
 													if (wikiNorm && normalizeHref(href) === wikiNorm) return false;
 													if (isNewsRssHistoric) return false;
+													if (preferredWebsiteNorm && normalizeHref(href) === preferredWebsiteNorm) return false;
+													const host = hostnameFromUrl(href);
+													if (host && seenUrlHosts.has(host)) return false;
+													if (host) seenUrlHosts.add(host);
 													return true;
 												});
 												const newsDomainLabels: string[] = [];
@@ -7775,11 +8057,6 @@ export default function ProfilesClient({
 														pushDomain(idItem.value);
 													}
 												}
-												const preferredWebsiteRaw =
-													(typeof meta.website === 'string' && /^https?:\/\//i.test(meta.website) ? meta.website : null) ||
-													(typeof meta.companyUrl === 'string' && /^https?:\/\//i.test(meta.companyUrl) ? meta.companyUrl : null);
-												// News RSS citations are not org "Website ↗" links.
-												const preferredWebsite = isNewsRssHistoric ? null : preferredWebsiteRaw;
 												const hasRegistryLinks =
 													finraLinks.length > 0 || typeof meta.finraVisualizerUrl === 'string' || typeof meta.wikipediaUrl === 'string' || Boolean(preferredWebsite);
 												const showAliases = true;
@@ -7991,14 +8268,11 @@ export default function ProfilesClient({
 																			</a>
 																		:	null}
 																		{preferredWebsite ?
-																			<a
-																				href={preferredWebsite}
-																				target='_blank'
-																				rel='noreferrer'
-																				className='text-[11px] font-semibold text-[#F97316] underline'
+																			<span
+																				className='text-[11px] font-medium'
 																				title={preferredWebsite}>
-																				Website ↗
-																			</a>
+																				{preferredWebsiteHost || preferredWebsite}
+																			</span>
 																		:	null}
 																	</div>
 																:	null}
@@ -8110,7 +8384,12 @@ export default function ProfilesClient({
 																{sourceLabels.length > 0 || urlIds.length > 0 || newsDomainLabels.length > 0 ?
 																	(() => {
 																		const coveredLabels = new Set<string>(urlIds.map((idItem) => sourceLabelFromUrl(String(idItem.value || ''))).filter(Boolean) as string[]);
-																		// Meta Wikipedia / FINRA chips already cover these labels.
+																		// Meta Wikipedia / FINRA / Website entries already cover these labels.
+																		if (preferredWebsiteHost) {
+																			coveredLabels.add(preferredWebsiteHost);
+																			const shortWeb = sourceLabelFromUrl(`https://${preferredWebsiteHost}`);
+																			if (shortWeb) coveredLabels.add(shortWeb);
+																		}
 																		if (wikiNorm) coveredLabels.add('wikipedia');
 																		if (typeof meta.finraVisualizerUrl === 'string') {
 																			coveredLabels.add('finra');
@@ -8144,23 +8423,18 @@ export default function ProfilesClient({
 																						{urlIds
 																							.filter((idItem) => !pendingDeleteIdentIds.includes(idItem.id))
 																							.slice(0, 8)
-																							.map((idItem, urlIdx) => {
+																							.map((idItem) => {
 																								const href = String(idItem.value || '').trim();
-																								const preferredNorm = preferredWebsite ? normalizeHref(preferredWebsite) : '';
-																								const isPrimary = (preferredNorm && normalizeHref(href) === preferredNorm) || (!preferredNorm && urlIdx === 0);
-																								const label = isPrimary ? 'website' : sourceLabelFromUrl(href) || href.slice(0, 48);
-																								const withProto = /^https?:\/\//i.test(href) ? href : `https://${href}`;
+																								const label = hostnameFromUrl(href) || href.slice(0, 48);
 																								return (
 																									<li
 																										key={idItem.id}
 																										className='flex flex-wrap items-center gap-1.5'>
-																										<a
-																											href={withProto}
-																											target='_blank'
-																											rel='noreferrer'
-																											className='font-semibold text-[#F97316] underline'>
-																											{label} ↗
-																										</a>
+																										<span
+																											className='font-medium'
+																											title={href}>
+																											{label}
+																										</span>
 																										{profileEditing ?
 																											<button
 																												type='button'
@@ -8628,6 +8902,7 @@ export default function ProfilesClient({
 												const connectedLinks = nonEmpLinks
 													.filter((l) => {
 														if (l.relationType === 'family_or_associate') return false;
+														if (classifyLinkProximityCue(l) !== null) return false;
 														const peerType = (l.fromProfileId === detail.profile.id ? l.toType : l.fromType) || 'firm';
 														return peerType !== 'historic_event';
 													})
@@ -9101,6 +9376,112 @@ export default function ProfilesClient({
 																	</button>
 																</div>
 															</form>
+
+															{/* Same Building Complex & Nearby sections (always expanded when non-empty; hidden when empty) */}
+															{(() => {
+																const sameBldg = nearbyData?.sameBuildingItems || [];
+																const nearList = nearbyData?.nearbyItems || [];
+																if (sameBldg.length === 0 && nearList.length === 0) return null;
+																const renderProximityRow = (
+																	item: NonNullable<typeof nearbyData>['nearbyItems'][number],
+																) => {
+																	const linkedDraft = item.linkId ? draftById.get(item.linkId) : undefined;
+																	const markedRemove = Boolean(linkedDraft?.deleted);
+																	return (
+																		<div
+																			key={item.profileId}
+																			className={`flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs ${markedRemove ? 'opacity-50' : ''}`}>
+																			<div className={`min-w-0 flex-1 ${markedRemove ? 'line-through' : ''}`}>
+																				<div className='flex flex-wrap items-center gap-1.5'>
+																					<button
+																						type='button'
+																						onClick={() => jumpToProfile(item.slug || item.profileId)}
+																						className='cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline'>
+																						{item.name}
+																					</button>
+																					<CountryFlags
+																						codes={item.countryCodes}
+																						size='sm'
+																					/>
+																					<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[item.profileType].badge}`}>
+																						{TYPE_META[item.profileType].label}
+																					</span>
+																					<span
+																						className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+																							item.proximity === 'same_building' ?
+																								'border-emerald-500/40 bg-emerald-500/12 text-emerald-800 dark:text-emerald-200'
+																							: item.proximity === 'linked_nearby' || item.proximity === 'same_street' || item.proximity === 'nearby_coords' ?
+																								'border-sky-500/40 bg-sky-500/12 text-sky-800 dark:text-sky-200'
+																							:	'border-[var(--app-border)] bg-[var(--app-bg)] opacity-80'
+																						}`}>
+																						{item.proximityLabel}
+																					</span>
+																					{item.linkRoleLabel ?
+																						<span className='text-[11px] opacity-75'>({item.linkRoleLabel})</span>
+																					:	null}
+																				</div>
+																				{item.address ?
+																					<div className='mt-0.5 text-[11px] opacity-75'>📍 {item.address}</div>
+																				:	null}
+																			</div>
+																			{profileEditing && item.linkId && linkedDraft ?
+																				<button
+																					type='button'
+																					onClick={() =>
+																						setConnLinkDrafts((rows) =>
+																							rows.map((r) => (r.id === item.linkId ? { ...r, deleted: !markedRemove } : r)),
+																						)
+																					}
+																					className='shrink-0 cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px] font-semibold opacity-80 hover:opacity-100'>
+																					{markedRemove ? 'Undo' : 'Remove'}
+																				</button>
+																			: item.alreadyConnected ?
+																				<span className='shrink-0 rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200'>
+																					Connected
+																				</span>
+																			:	<button
+																					type='button'
+																					disabled={linkingNearbyId === item.profileId}
+																					onClick={() => void handleQuickLinkNearby(item)}
+																					className='shrink-0 cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)] disabled:opacity-50'>
+																					{linkingNearbyId === item.profileId ? 'Linking…' : '+ Link'}
+																				</button>
+																			}
+																		</div>
+																	);
+																};
+																return (
+																	<div className='mt-3 space-y-3 border-t border-[var(--app-border)] pt-3'>
+																		{sameBldg.length > 0 ?
+																			<div>
+																				<div className='mb-1.5 flex items-center justify-between gap-2'>
+																					<h4 className='m-0 text-xs font-semibold uppercase opacity-75'>
+																						Same Building Complex ({(nearbyData?.counts.sameBuilding ?? sameBldg.length).toLocaleString()})
+																					</h4>
+																					<span className='text-[10px] opacity-60'>Closest first</span>
+																				</div>
+																				<div className='space-y-1.5'>
+																					{sameBldg.map(renderProximityRow)}
+																				</div>
+																			</div>
+																		:	null}
+
+																		{nearList.length > 0 ?
+																			<div className={sameBldg.length > 0 ? 'border-t border-[var(--app-border)]/70 pt-2.5' : ''}>
+																				<div className='mb-1.5 flex items-center justify-between gap-2'>
+																					<h4 className='m-0 text-xs font-semibold uppercase opacity-75'>
+																						Nearby ({(nearbyData?.counts.nearby ?? nearList.length).toLocaleString()})
+																					</h4>
+																					<span className='text-[10px] opacity-60'>Closest first · street, corridor, ZIP &amp; distance</span>
+																				</div>
+																				<div className='space-y-1.5'>
+																					{nearList.map(renderProximityRow)}
+																				</div>
+																			</div>
+																		:	null}
+																	</div>
+																);
+															})()}
 														</div>
 													</div>
 												);

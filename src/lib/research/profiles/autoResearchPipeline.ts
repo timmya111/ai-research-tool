@@ -45,8 +45,10 @@ import {
 	addLocation,
 	addPersonEmployment,
 	findExistingOrgByNameOrAlias,
+	findExistingProfileDuplicate,
 	getProfile,
 	getProfileDetail,
+	recordDuplicateAlignmentCandidates,
 	updateProfileFields,
 	upsertAlignmentCandidate,
 	upsertProfile,
@@ -359,7 +361,8 @@ function runLocalDbCrossChecks(detail: ProfileDetail): {
 	const norm = normalizeText(p.name);
 	const stripped = stripLegalSuffixes(p.name);
 
-	// 1. Check potential duplicate profiles (shared external IDs or matching normalized names)
+	// 1. Check potential duplicate profiles (canonical org variants, aliases, cross-category orgs, shared IDs, person names)
+	duplicateAlignments += recordDuplicateAlignmentCandidates(p.id);
 	const dupIds = new Set<string>();
 	for (const ident of detail.identifiers) {
 		if (!['wikidata', 'finra_crd', 'sec_cik', 'irs_ein', 'ticker', 'ror', 'orcid'].includes(ident.scheme)) continue;
@@ -944,6 +947,22 @@ async function matchUpdateOrCreateDiscoveredEntity(
 		.all(parentDetail.profile.id, norm, stripped) as Array<{ profile_id?: string }>;
 	for (const r of aliasRows) if (r.profile_id) candidateIds.add(String(r.profile_id));
 
+	// Extra validation check across canonical variants (leading "The", "U.S." <-> "United States",
+	// legal suffixes, parenthesized acronyms, cross-category orgs, and unique identifiers/URLs).
+	const extraDupHit = findExistingProfileDuplicate({
+		name: entity.name,
+		profileType: entity.profileType,
+		aliases: wikiHit?.title && wikiHit.title !== entity.name ? [wikiHit.title] : [],
+		identifiers: [
+			...(wikiHit?.qid ? [{ scheme: 'wikidata', value: wikiHit.qid }] : []),
+			...(wikiHit?.url ? [{ scheme: 'url', value: wikiHit.url }] : []),
+		],
+		startDate: wikiHit?.inception || null,
+		excludeProfileId: parentDetail.profile.id,
+	});
+	if (extraDupHit) {
+		candidateIds.add(extraDupHit.profile.id);
+	}
 	if (entity.profileType !== 'person' && entity.profileType !== 'historic_event') {
 		const orgHit = findExistingOrgByNameOrAlias(entity.name, entity.profileType);
 		if (orgHit && orgHit.id !== parentDetail.profile.id) {
@@ -1116,6 +1135,7 @@ async function matchUpdateOrCreateDiscoveredEntity(
 		summary: newSummary,
 		startDate: wikiHit?.inception ? normalizeIsoDate(wikiHit.inception).date : null,
 		sourceCorpus: PIPELINE_CORPUS,
+		skipDuplicateCheck: Boolean(customSlug && entity.profileType === 'person'),
 		metadata: {
 			discoveredFromProfileSlug: parentDetail.profile.slug,
 			discoveredRole: entity.role,

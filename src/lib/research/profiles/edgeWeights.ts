@@ -586,3 +586,35 @@ export function alignmentKindForProximity(
 	if (proximity === 'block') return 'block_colocation';
 	return 'city_colocation';
 }
+
+const SAME_BUILDING_LINK_CUE_RE =
+	/\b(?:same\s+(?:building|address|suite|office|tower|floor|facility)|co-?located\s+(?:at|in)|shares?\s+(?:the\s+)?(?:same\s+)?building)\b/i;
+
+const NEARBY_LINK_CUE_RE =
+	/\b(?:near\s+[A-Z0-9]|nearby\b|same\s+[^,()]{1,45}\bcorridor\b|\bcorridor\s+(?:clients|presence|peer|firm)\b|adjacent\s+to\b|next\s+door\b|across\s+the\s+street\b|same\s+(?:street|block|zip|corridor)\b|\b(?:building|block|city)_colocation\b)/;
+
+/**
+ * Classify whether an existing profile_link is primarily a proximity connection
+ * (`same_building` vs `nearby`) rather than a direct corporate/employment/peer tie.
+ */
+export function classifyLinkProximityCue(link: {
+	relationType?: string | null;
+	roleLabel?: string | null;
+	evidenceNote?: string | null;
+}): 'same_building' | 'nearby' | null {
+	const rel = String(link.relationType || '').trim();
+	const role = String(link.roleLabel || '').trim();
+	const note = String(link.evidenceNote || '').trim();
+	const combined = `${role} ${note}`.trim();
+
+	if (SAME_BUILDING_LINK_CUE_RE.test(combined)) {
+		return 'same_building';
+	}
+	if (rel === 'location_overlap') {
+		return 'nearby';
+	}
+	if (combined && NEARBY_LINK_CUE_RE.test(combined)) {
+		return 'nearby';
+	}
+	return null;
+}

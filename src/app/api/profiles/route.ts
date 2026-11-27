@@ -10,9 +10,11 @@ import {
 	addIdentifier,
 	addLocation,
 	addPersonEmployment,
+	findExistingProfileDuplicate,
 	getProfileDetail,
 	getProfileStats,
 	listProfiles,
+	recordDuplicateAlignmentCandidates,
 	updateProfileFields,
 	upsertProfile,
 } from '@/lib/research/profiles/store';
@@ -208,6 +210,52 @@ export async function POST(request: Request) {
 			}
 		}
 
+		// Extra duplicate validation check before creating a new profile.
+		// Catches existing profiles matching by identifier, Wikipedia URL, canonical org variants
+		// (leading "The", "U.S." <-> "United States", legal suffixes, parens, cross-category), or person name/alias.
+		const forceCreate = body.forceCreate === true;
+		if (!forceCreate) {
+			const inputAliases = Array.isArray(body.aliases)
+				? body.aliases
+						.map((a) => (typeof a === 'string' ? a : a && typeof a === 'object' ? String((a as Record<string, unknown>).alias || '') : ''))
+						.filter(Boolean)
+				: [];
+			const inputIdents = Array.isArray(body.identifiers)
+				? body.identifiers
+						.filter((x): x is Record<string, unknown> => Boolean(x && typeof x === 'object'))
+						.map((x) => ({ scheme: String(x.scheme || ''), value: String(x.value || '') }))
+						.filter((x) => x.scheme && x.value)
+				: [];
+			const dupHit = findExistingProfileDuplicate({
+				name,
+				profileType: effectiveType,
+				aliases: inputAliases,
+				identifiers: inputIdents,
+				startDate: body.startDate ? String(body.startDate) : null,
+				endDate: body.endDate ? String(body.endDate) : null,
+				metadata: metaInput,
+			});
+			if (dupHit) {
+				const ep = dupHit.profile;
+				return NextResponse.json(
+					{
+						ok: false,
+						duplicate: true,
+						matchReason: dupHit.matchReason,
+						error: `A matching profile already exists: "${ep.name}" (${ep.profileType.replace(/_/g, ' ')} — ${dupHit.matchReason}).`,
+						existingProfile: {
+							id: ep.id,
+							slug: ep.slug,
+							name: ep.name,
+							profileType: ep.profileType,
+							primaryLocation: dupHit.primaryLocation,
+						},
+					},
+					{ status: 409, headers: { 'Cache-Control': 'no-store' } },
+				);
+			}
+		}
+
 		let profile = upsertProfile({
 			profileType: effectiveType,
 			name,
@@ -218,7 +266,10 @@ export async function POST(request: Request) {
 			endDate: body.endDate ? String(body.endDate) : null,
 			metadata: Object.keys(metaInput).length ? metaInput : undefined,
 			sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
+			skipDuplicateCheck: forceCreate,
 		});
+		// Immediately surface any potential duplicate candidates in /profiles/alignments.
+		recordDuplicateAlignmentCandidates(profile.id);
 
 		let timelineSync: ReturnType<typeof syncSummaryTimelineToEntries> | null = null;
 		const syncDisabled =

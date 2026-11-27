@@ -356,18 +356,19 @@ export function normalizeLocationRecord(input: {
 			}
 		}
 
-		// "Suite 308 Washington" + "DC" → peel city out of a trailing Washington in the prior part.
+		// "Suite 308 Washington" + "DC" → peel city out of a trailing Washington in the prior part (keep Washington as its own segment).
 		for (let i = 0; i < parts.length - 1; i++) {
 			if (/^(?:d\.?\s*c\.?|DC)(?:\s+\d{5}(?:-\d{4})?)?$/i.test(parts[i + 1])) {
-				const wash = parts[i].match(/^(.*\b)?(washington)\s*$/i);
+				const wash = parts[i].match(/^(.+\b)(washington)\s*$/i);
 				if (wash) {
 					const leading = String(wash[1] || '').trim().replace(/[,\s]+$/g, '');
-					if (leading) parts[i] = leading;
-					else parts.splice(i, 1);
-					city = city || 'Washington';
-					state = 'DC';
-					country = 'US';
-					break;
+					if (leading) {
+						parts.splice(i, 1, leading, 'Washington');
+						city = city || 'Washington';
+						state = 'DC';
+						country = 'US';
+						break;
+					}
 				}
 			}
 		}
