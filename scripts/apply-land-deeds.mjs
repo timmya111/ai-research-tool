@@ -63,7 +63,7 @@ function subjectShortName(name) {
 	return parts.slice(0, 2).join(' ');
 }
 
-function truncateLegal(legal, max = 72) {
+function truncateLegal(legal, max = 12_000) {
 	const t = String(legal || '').replace(/\s+/g, ' ').trim();
 	if (!t || /^unknown$/i.test(t)) return '';
 	if (t.length <= max) return t;

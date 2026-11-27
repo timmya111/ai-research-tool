@@ -1,382 +1,371 @@
 # AI Research Tool
 
-Standalone local research assistant extracted from the Local AI stack in `finra-sec-data-visualizer-canvas`.
+Local research workspace (port **3333**) for turning news, filings, and web sources into structured **entity profiles**—people, firms, governments, nonprofits, historic events—with timelines, locations, identifiers, and linked relationships.
 
-It keeps:
+**Build profiles automatically** from news events and other material by:
 
-- Ollama chat UI
-- Adaptive auto model routing (single specialist or tools/fetch + reason → merge)
-- Tool calling (`fetch_url`, `current_time`, `inspect_canvas_graph`, `search_knowledge`, `chart_filings`, `make_logo`)
-- Live FINRA app API fetch (Vercel host allowlisted)
-- Canvas snapshot attach from the live graph (postMessage window or pasted JSON)
-- Localhost-only guard by default
+- **AI Chat** — paste an article, RSS digest, press release, or filing excerpt and ask the model to create or update profiles (`search_profiles` / `upsert_profile`). The agent extracts names, dates, roles, addresses, and links them into the Profiles store.
+- **Profiles dashboard** — browse and edit the same entities at `/profiles` (Overview, Timeline, Connections, Locations). Seed from imported news topics, land deeds, or bulk scripts, then refine in the UI.
 
-Redis/firm-roster specialist tools stay in the FINRA app’s `/local-ai` page.
+Under the hood: Ollama chat, a local SQLite knowledge store (RAG), Profiles SQLite, and download/ingest pipelines for Oklahoma / Texas public records and related corpora (all under `.data/`).
 
-## Quick start
+### Profiles dashboard
 
-1. **Node.js ≥ 22.13** (uses built-in `node:sqlite` for the knowledge store)
-2. Install deps: `pnpm install`
-3. Run [Ollama](https://ollama.com) locally and pull a chat model, e.g. `ollama pull ornith:latest`
-4. Optional for knowledge/RAG: `ollama pull nomic-embed-text`
-5. Start the app: `pnpm dev` (http://localhost:3333)
-6. Ask questions on the home page
+![Profiles overview — firm card with aliases, HQ, identifiers, and summary](docs/images/profiles-overview.jpg)
 
-Local knowledge store (SQLite under `.data/knowledge/`): project picker + notes browser; **Remember answers** / **Save fetches** / **Auto-retrieve** toggles (off by default); optional “Save N fetches?” toast; **Reindex** when the embed model changes; agent `search_knowledge`. Design: [`docs/knowledge-store-design.md`](docs/knowledge-store-design.md). Smoke: `pnpm knowledge:smoke`.
+![Profiles timeline — career chapters, nested employment, and disclosure events](docs/images/profiles-timeline.jpg)
 
-Bryan County charts: agent tool `chart_filings` aggregates stored filings by recorded date (day/week/month) or document type, writes **PNG by default** (shareable online; optional `jpeg` / `svg`) under `.data/charts/` via sharp, served at `GET /api/charts/<id>` (localhost). Logos: `make_logo` defaults to **SVG** vector. Suggested question chips include monthly volume, by-type, and MTG-only charts.
+---
 
-## Live FINRA app
+## Prerequisites
 
-Default origin: `https://finra-sec-data-visualizer-canvas.vercel.app`
-
-### API queries
-
-Paste allowlisted URLs into chat; the agent uses `fetch_url`. Built-in hosts include the live visualizer, BrokerCheck, and AdviserInfo.
-
-Example: `https://finra-sec-data-visualizer-canvas.vercel.app/api/finra/health`
-
-### Canvas share
-
-Canvas state lives in the browser on the live app origin, so this tool cannot read it silently.
-
-1. **Connect live graph** — opens/reuses a window to the live app; with the graph loaded, **Refresh canvas** requests a snapshot via `postMessage` (needs the FINRA app build that accepts `localhost:3333`).
-2. **Paste snapshot** — on the live graph, use **Copy canvas**, then **Paste snapshot** here and Apply.
-3. Check **Question about node graph** so the agent calls `inspect_canvas_graph`.
-
-## Env
-
-See `.env.example`.
-
-| Variable | Purpose |
+| Requirement | Notes |
 | --- | --- |
-| `OLLAMA_BASE_URL` | Ollama base URL (default `http://127.0.0.1:11434`) |
-| `RESEARCH_OLLAMA_NUM_CTX` | Chat/tools `num_ctx` (default `32768`) |
-| `RESEARCH_TOOL_RESULT_MAX_CHARS` | Max JSON chars per tool result fed back to the model (default `8000`) |
-| `RESEARCH_SEARCH_SNIPPET_CHARS` | Per-hit snippet length for `search_knowledge` (default `400`) |
-| `RESEARCH_FACTCHECK` | Post-answer check via `bespoke-minicheck` when installed (default on; set `0` to disable) |
-| `ALLOW_LOCAL_AI` | Set `1` to allow non-localhost access |
-| `RESEARCH_FETCH_HOSTS` | Extra comma-separated hosts for `fetch_url` |
-| `RESEARCH_OPEN_FETCH` | Set `1` to allow any public https host (private IPs still blocked) |
-| `NEXT_PUBLIC_FINRA_APP_ORIGIN` | Live visualizer origin for Connect, postMessage, and `search_finra_sidecar` (prod flat-file CRD index) |
-| `RESEARCH_DATA_DIR` | Absolute or relative knowledge store root (default `.data/knowledge`) |
-| `RESEARCH_EMBED_MODEL` | Ollama embed model (default `nomic-embed-text`) |
-| `RESEARCH_EMBED_CONCURRENCY` | Parallel embeds during ingest (default `4`) |
-| `RESEARCH_KNOWLEDGE_REMOTE` | With `ALLOW_LOCAL_AI=1`, expose `/api/knowledge` off loopback (**dangerous**) |
-| `RESEARCH_RAG_AUTO` | Set `1` to auto-inject knowledge snippets into every chat (default off) |
-| `RESEARCH_RAG_TOP_K` | Snippet count for auto-retrieve (default `4`) |
+| **Node.js ≥ 22.13** | Uses built-in `node:sqlite` |
+| **pnpm** | `packageManager` is `pnpm@11.3.0` |
+| **[Ollama](https://ollama.com)** | Local chat + embeddings |
+| **Docker** (optional) | FlareSolverr for OKCountyRecords / Cloudflare pages |
+| **Python 3 + [uv](https://github.com/astral-sh/uv)** (optional) | Research Drive OCR, Digital Earth / PQW / META25 / Physics Congress crawlers |
+| **Playwright** (optional) | Dallas deeds, some authority scrapers (`pnpm exec playwright install`) |
 
-## API
+---
 
-- `GET /api/status` — Ollama reachability + free local models + knowledge summary (path/counts on loopback only)
-- `POST /api/chat` — `{ question, model?, history?, availableModels?, aboutNodeGraph?, canvasSnapshot?, projectId?, persistChat?, persistFetches?, ragAuto? }`
-  - `persistChat` / `persistFetches` default **off**; when on, ingest runs after the response via `after()` (does not fail the chat)
-  - `ragAuto` overrides `RESEARCH_RAG_AUTO` for that request
-- `GET/POST /api/knowledge/projects` — list / create projects
-- `PATCH/DELETE /api/knowledge/projects/[id]` — rename / delete project (cannot delete the last one)
-- `GET/POST /api/knowledge` — list docs (`?projectId=`) / create note `{ projectId, text, title? }`
-- `GET/DELETE /api/knowledge/[id]` — get / delete document
-- `POST /api/knowledge/search` — `{ projectId, query, limit?, sourceType? }`
-- `POST /api/knowledge/chat` — per-turn save `{ projectId, question, answer, toolTrace? }`
-- `POST /api/knowledge/fetches` — save fetch bodies from `{ projectId, toolTrace }` (toast confirm)
-- `POST /api/knowledge/reindex` — re-embed chunks `{ projectId? }` (omit for all)
-
-Knowledge routes are **localhost-only** unless both `RESEARCH_KNOWLEDGE_REMOTE=1` and `ALLOW_LOCAL_AI=1`. Wipe store: delete the folder shown in `status.knowledge.path` (default `.data/knowledge/`).
-
-## Oklahoma / Texas seismic (USGS ComCat)
-
-Local mirror of USGS earthquakes **M≥2.5 since 2016** for Oklahoma and Texas (bbox query + place-name filter), ingested as monthly/yearly digests into knowledge project **OK TX Seismic**.
+## Quick start (chat only)
 
 ```bash
-pnpm seismic:download   # → .data/seismic/
-pnpm seismic:ingest     # → knowledge project "OK TX Seismic" (app must be on :3333)
+pnpm install
+ollama pull ornith:latest          # or another chat model in the picker
+ollama pull nomic-embed-text       # optional; needed for knowledge embeddings / RAG
+cp .env.example .env.local         # edit if needed
+pnpm dev                           # http://localhost:3333
 ```
 
-In the UI: select **OK TX Seismic**, turn on **Auto-retrieve**, then use the sky-colored seismic suggested questions. Source: [USGS FDSN Event API](https://earthquake.usgs.gov/fdsnws/event/1/) (public domain).
+- **Chat** (`/`) — ask questions or paste news/filings and request profile upserts  
+- **Profiles** (`/profiles`) — browse Overview + Timeline cards (screenshots above)
 
-## Oklahoma / Texas tornadoes (SPC + NCEI)
+Smoke the knowledge store: `pnpm knowledge:smoke`.
 
-Local mirror of NOAA **SPC actual tornado tracks** (through latest published year) plus **NCEI Storm Events** tornado narratives for Oklahoma and Texas since 2016, ingested into knowledge project **OK TX Tornadoes**.
+---
 
-```bash
-pnpm tornado:download   # → .data/tornadoes/
-pnpm tornado:ingest     # → knowledge project "OK TX Tornadoes" (app must be on :3333)
-```
+## First-time setup checklist
 
-In the UI: select **OK TX Tornadoes**, turn on **Auto-retrieve**, then use the amber tornado suggested questions. Sources: [SPC WCM data](https://www.spc.noaa.gov/wcm/#data) and [NCEI Storm Events CSV](https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/).
+1. Install Node deps: `pnpm install`
+2. Start Ollama and pull at least one chat model (+ `nomic-embed-text` for RAG)
+3. Copy `.env.example` → `.env.local` (defaults are fine for loopback-only use)
+4. Start the app: `pnpm dev` (must be on **:3333** for most ingest scripts)
+5. For Oklahoma land records / Yahoo enrich: start **FlareSolverr** (below)
+6. Download only the corpora you need (tables below), then ingest while the app is running
+7. In the UI: pick the matching knowledge **project**, turn on **Auto-retrieve** when asking about that corpus
 
-## Questions playlist daily monitor
-
-Checks the curated YouTube playlist **questions** (`PLo7mtD5End19Dekfsy90VWbuym5OSZeAU`) once per day. New videos are auto-scrubbed (metadata + captions + AUTO cards) into `.data/concealment-scrubs/playlist-PLo7mt/` and `INDEX.md` is rebuilt.
-
-```bash
-pnpm questions:monitor:seed   # first-time: mark current playlist IDs as seen
-pnpm questions:monitor:once   # one check now
-pnpm questions:monitor        # long-running loop (default interval 24h)
-```
-
-Cron (installed on this machine): `15 6 * * *` → `pnpm questions:monitor:once`  
-Log: `~/.grok/long-running-background-tasks/questions_playlist_daily.log`  
-Seen IDs: `.data/monitors/questions-playlist-seen.json`  
-Daily reports: `.data/concealment-scrubs/playlist-PLo7mt/daily/`
-
-| Env | Default | Purpose |
-| --- | --- | --- |
-| `QUESTIONS_PLAYLIST_URL` | `…list=PLo7mt…` | Playlist URL |
-| `QUESTIONS_PLAYLIST_ONCE` | `0` | Set `1` for a single check |
-| `QUESTIONS_PLAYLIST_SEED_ONLY` | `0` | Seed seen IDs without scrubbing |
-| `QUESTIONS_PLAYLIST_INTERVAL_MS` | `86400000` | Loop interval when not once |
-
-## Bryan County real-time monitor
-
-Logs new filings from [okcountyrecords.com/real-time/bryan](https://okcountyrecords.com/real-time/bryan) into the knowledge project **Bryan County**, including **detail-page** fields (grantor, grantee, book, pages, fees, legal).
-
-Detail/feed HTML parsers are adapted from [ok-bryan-county-notify](https://github.com/timmya111/ok-bryan-county-notify). Pages are fetched through **FlareSolverr** (Docker) so Cloudflare is solved without a desktop browser/login window.
+### FlareSolverr (OKCR / Cloudflare)
 
 ```bash
 docker run -d --name flaresolverr -p 8191:8191 --restart unless-stopped \
   --dns 8.8.8.8 --dns 1.1.1.1 \
   ghcr.io/flaresolverr/flaresolverr:latest
-pnpm add -D jsdom   # if needed
-pnpm dev            # app must be on :3333
-BRYAN_MONITOR_ONCE=1 pnpm bryan:monitor   # one poll
-pnpm bryan:monitor                        # every 60s (default)
 ```
 
-If FlareSolverr starts failing with `ERR_NAME_NOT_RESOLVED`, recreate the container with the `--dns` flags above (`docker rm -f flaresolverr` then re-run).
+Health: `curl -fsS http://127.0.0.1:8191/health`. If DNS breaks (`ERR_NAME_NOT_RESOLVED`), recreate with the `--dns` flags above.
 
-| Env | Default | Purpose |
-| --- | --- | --- |
-| `RESEARCH_APP_URL` | `http://127.0.0.1:3333` | Knowledge ingest target |
-| `FLARESOLVERR_URL` | `http://127.0.0.1:8191` | FlareSolverr base URL |
-| `BRYAN_MONITOR_INTERVAL_MS` | `60000` | Poll interval |
-| `BRYAN_MONITOR_ONCE` | `0` | Set `1` for a single poll |
-| `BRYAN_MONITOR_DETAIL_LIMIT` | `5` | Max new detail pages per poll |
-
-Seen IDs live in `.data/monitors/bryan-seen.json`. Ask the research tool (project **Bryan County**, Auto-retrieve on) about new MTGs, grantors, etc.
-
-### 2026 YTD historical backfill
-
-Search result pages already include grantor/grantee/legal/book. Paginate and ingest:
+### Python venv (OCR + site corpora)
 
 ```bash
-# resumes from .data/monitors/bryan-2026-backfill.json
-pnpm bryan:backfill:2026
-BRYAN_BACKFILL_MAX_PAGES=5 pnpm bryan:backfill:2026   # smoke
-BRYAN_BACKFILL_START=2026-01-01 BRYAN_BACKFILL_END=2026-11-16 pnpm bryan:backfill:2026
+pnpm bryan:monitor:setup
+# installs into .venv-monitors from scripts/requirements-bryan.txt
+# later: uv pip install --python .venv-monitors/bin/python <pkg>
 ```
 
-~9.6k Bryan filings in 2026 YTD (~642 pages × 15). Progress checkpoint: `.data/monitors/bryan-2026-backfill.json`.
+---
 
-Ingest API: `POST /api/monitors/bryan/ingest` with `{ filings: BryanFilingDetail[] }`.
+## External data: download & ingest
 
-### Instrument / document type glossary
+**Pattern:** most pipelines write files under `.data/<name>/`, then POST into the knowledge store via the running app on `:3333`. Agent tools (`search_*`) read those projects or `.data` folders.
 
-OKCountyRecords stores a short **instrument-type code** on each filing (often truncated in their UI). The research app keeps that code in each Bryan knowledge note as `Type: …`.
+Unless noted, run **download/crawl first**, then **ingest** with `pnpm dev` already up.
 
-**Naming patterns**
+### Recommended starter set
 
-| Pattern | Meaning |
+| Goal | Commands | Knowledge project / path |
+| --- | --- | --- |
+| Bryan County deeds (live) | FlareSolverr + `BRYAN_MONITOR_ONCE=1 pnpm bryan:monitor` | **Bryan County** |
+| OK / TX earthquakes | `pnpm seismic:download && pnpm seismic:ingest` | **OK TX Seismic** → `.data/seismic/` |
+| OK / TX tornadoes | `pnpm tornado:download && pnpm tornado:ingest` | **OK TX Tornadoes** → `.data/tornadoes/` |
+| Profiles seed (optional) | `pnpm profiles:backfill` | Profiles SQLite → `.data/profiles/` |
+
+### Oklahoma County Records (OKCR)
+
+Requires FlareSolverr + app on `:3333`. Results-table scrapes include grantor/grantee/legal/book (legal may show `N more…` until enriched from the detail page).
+
+| Script | Purpose |
 | --- | --- |
-| `REL …` | Release of the thing that follows (lien/mortgage cleared) |
-| `ASSN` / `ASSGMENT` | Assignment (transfer of rights in an existing instrument) |
-| `AMEND` / `MOD` | Amendment or modification |
-| `…-CORR` / `CORR …` | Corrected re-recording of a prior instrument |
-| `AFF` / `AFFI` | Affidavit |
-| `2ND` / `3RD` | Second / third of that instrument class |
+| `pnpm bryan:monitor` | Real-time Bryan poll (detail pages) |
+| `pnpm bryan:backfill:2026` | Bryan 2026 YTD search pages |
+| `pnpm bryan:backfill:2016-current` | Bryan historical range |
+| `pnpm okcr:backfill:county` | Single county (`OKCR_SITE=…`, date range env) |
+| `pnpm okcr:backfill:east-i35` | East-of-I-35 county orchestrator |
+| `pnpm okcr:backfill:rest-ok` | Rest-of-OK orchestrator |
+| `pnpm okcr:enrich-legals` | Expand truncated `N more…` legals from detail pages (`PROFILE_SLUG=firm:…`) |
+| `pnpm profiles:associate-deeds` | Link OKCR instruments to firm/person profiles |
 
-**Core types you asked about**
+Checkpoints: `.data/monitors/{site}-backfill-*.json`, `bryan-seen.json`.  
+Ingest API: `POST /api/monitors/bryan/ingest` with `{ filings: [...] , projectName? }`.  
+Instrument codes: [`docs/okcr-instrument-glossary.md`](docs/okcr-instrument-glossary.md).
 
-| Code | Definition |
+Useful env: `RESEARCH_APP_URL`, `FLARESOLVERR_URL`, `OKCR_SITES`, `OKCR_FROM_SITE`, `OKCR_FROM_YEAR`, `BRYAN_BACKFILL_START`, `BRYAN_BACKFILL_END`, `BRYAN_BACKFILL_MAX_PAGES`.
+
+### Dallas County deeds (TX publicsearch)
+
+```bash
+pnpm dallas:download    # → .data/dallas-deeds/  (Playwright)
+pnpm dallas:ingest      # → knowledge project "Dallas County Deeds"
+```
+
+### Seismic & tornadoes
+
+```bash
+pnpm seismic:download && pnpm seismic:ingest   # USGS ComCat M≥2.5 since 2016, OK+TX
+pnpm tornado:download && pnpm tornado:ingest   # SPC tracks + NCEI narratives since 2016
+```
+
+### Authority timelines & entity dossiers
+
+```bash
+pnpm authority:download      # ICE / CBP / DHS / WH / etc. → .data/authority-timelines/
+pnpm authority:dea           # DEA via Playwright when needed
+pnpm authority:aggregate
+pnpm authority:ingest        # knowledge project "Authority Initiatives"
+
+pnpm entities:seed && pnpm entities:enrich && pnpm entities:link
+pnpm entities:digest && pnpm entities:ingest   # "Entity Dossiers"
+```
+
+### Research Drive (local folder mirror)
+
+Stage files under `.data/research-drive/` (manual sync; Drive folder is auth-walled).
+
+```bash
+pnpm research-drive:ocr          # digests → .data/research-drive/ocr/
+pnpm research-drive:ocr:once     # smoke (--limit 5)
+pnpm research-drive:ingest       # knowledge project "Research Drive"
+pnpm research-drive:translate-thai
+```
+
+Serve a single file in-app: `GET /api/research-drive/file?path=…`.
+
+### TWDB Trinity Aquifer
+
+```bash
+pnpm twdb:trinity                # download + organize + ingest
+pnpm twdb:trinity:restructure    # layout only
+pnpm twdb:trinity:ingest         # ingest only → searchable via search_twdb_trinity
+```
+
+### Site corpora (Python crawlers)
+
+Use `.venv-monitors` (see setup above). Typical flags: `--crawl-only` / `--pages-only`, `--assets-only`, `--videos-only`, `--ingest-only`.
+
+| Corpus | Commands | Data dir |
+| --- | --- | --- |
+| Digital Earth / ISDE | `pnpm digitalearth:crawl` … `pnpm digitalearth:all` / `:ingest` | `.data/digitalearth-isde/` |
+| Petersburg Quantum Weeks | `pnpm pqw:pages` … `pnpm pqw:all` / `:ingest` | `.data/pqw-itmo/` |
+| META 2025 | `pnpm meta25:crawl` … `pnpm meta25:all` / `:ingest` | `.data/meta25/` |
+| Physics Congress 2026 | `pnpm physics-congress:pages` … `:all` / `:ingest` | `.data/physics-congress/` |
+| Photonic quantum | `pnpm photonic-quantum:ingest` | (ingest helper) |
+| IWM conflict timeline | `pnpm iwm:build` / `pnpm iwm:crawl` | `.data/iwm-conflict-timeline/` |
+| Regional history | `pnpm regional:build` | `.data/regional-history/` |
+
+### News RSS
+
+```bash
+pnpm news:rss                    # one pass
+pnpm news:rss:loop               # long-running
+pnpm news:rss:backfill-full
+pnpm news:rss:consolidate
+pnpm news:rss:format
+pnpm news:rss:tx-ok-crime        # TX/OK crime feed catalog
+pnpm tx-ok-crime:ingest
+```
+
+### YouTube / concealment scrubs & questions playlist
+
+Scrub artifacts live under `.data/concealment-scrubs/`. MindUnveiled OCR: `pnpm mu:ocr` / `pnpm mu:ocr:once`.
+
+```bash
+pnpm questions:monitor:seed      # mark current playlist IDs seen
+pnpm questions:monitor:once      # one daily check
+pnpm questions:monitor           # 24h loop
+```
+
+### Offline Wikipedia (Kiwix)
+
+```bash
+# After a ZIM exists under .data/wikipedia/ (large download; see run_wikipedia_zim_download.sh)
+pnpm wikipedia:serve             # kiwix-serve on :8765
+```
+
+Agent tool: `search_wikipedia`. Env: `KIWIX_SERVE_ORIGIN` / `RESEARCH_KIWIX_ORIGIN` (default `http://127.0.0.1:8765`).
+
+### Chat history imports
+
+```bash
+pnpm grok-qa:import              # → knowledge "Grok Q&A"
+pnpm gemini-qa:import            # → knowledge "Gemini Q&A"
+```
+
+### Profiles from news (chat or dashboard)
+
+1. Ingest news into knowledge (`pnpm news:rss`, topic consolidate/format, or paste text in chat).
+2. In **AI Chat**, select the news project (optional Auto-retrieve) and ask to create profiles for named people/orgs, or paste the article and say “upsert profiles with employment dates and HQ.”
+3. Open **Profiles** to review Overview (aliases, identifiers, summary) and Timeline (career chapters, events). Edit links, locations, and timeline rows in the dashboard as needed.
+
+### Profiles bulk imports
+
+Many one-shot seeders exist as `pnpm profiles:import-*` (hospitals, oil companies, nonprofits, cabinets, dynasties, etc.). Enrichment:
+
+```bash
+pnpm profiles:backfill
+pnpm profiles:enrich
+pnpm profiles:align
+pnpm profiles:associate-deeds
+pnpm profiles:download-free-org-bulk
+pnpm profiles:backfill-org-free-enrich
+pnpm sec:ciks-since-2016
+pnpm firm:id-filter
+```
+
+Land deeds on a profile overview: `GET/POST /api/profiles/{id|slug}/land-deeds`.
+
+---
+
+## HTTP API (built-in)
+
+Base URL: `http://127.0.0.1:3333`. Knowledge and most write routes are **localhost-only** unless `ALLOW_LOCAL_AI=1` and (for knowledge) `RESEARCH_KNOWLEDGE_REMOTE=1`.
+
+### Status & chat
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/status` | Ollama reachability, models, knowledge summary |
+| `POST` | `/api/chat` | Research chat `{ question, model?, history?, projectId?, persistChat?, persistFetches?, ragAuto?, aboutNodeGraph?, canvasSnapshot? }` |
+| `GET` `PUT` `DELETE` | `/api/chat/session` | Chat session persistence |
+
+### Knowledge store
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` `POST` | `/api/knowledge/projects` | List / create projects |
+| `PATCH` `DELETE` | `/api/knowledge/projects/[id]` | Rename / delete |
+| `GET` `POST` | `/api/knowledge` | List docs (`?projectId=`) / create note |
+| `GET` `DELETE` | `/api/knowledge/[id]` | Get / delete document |
+| `POST` | `/api/knowledge/search` | `{ projectId, query, limit?, sourceType? }` |
+| `POST` | `/api/knowledge/chat` | Persist Q&A turn |
+| `POST` | `/api/knowledge/fetches` | Persist fetch_url bodies from toolTrace |
+| `POST` | `/api/knowledge/attachments` | Attach files into knowledge |
+| `POST` | `/api/knowledge/reindex` | Re-embed `{ projectId? }` |
+
+Wipe store: delete the folder from `GET /api/status` → `knowledge.path` (default `.data/knowledge/`).
+
+### Monitors & charts
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/monitors/bryan/ingest` | Batch-ingest OKCR filings into a knowledge project |
+| `POST` | `/api/charts` | Create chart artifact |
+| `GET` | `/api/charts/[id]` | Serve chart image (PNG default) |
+
+### Profiles
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` `POST` | `/api/profiles` | Search / create profiles (`?q=`) |
+| `GET` `PATCH` `DELETE` | `/api/profiles/[id]` | Detail by id or slug (e.g. `firm:bok-financial-corporation`) |
+| `GET` `POST` | `/api/profiles/[id]/timeline` | Timeline entries |
+| `POST` | `/api/profiles/[id]/employment` | Employment spans |
+| `GET` | `/api/profiles/[id]/disclosures` | FINRA disclosure panel data |
+| `POST` | `/api/profiles/[id]/enrich` | Enrich one profile |
+| `POST` | `/api/profiles/[id]/finra-dates` | Backfill FINRA employment dates |
+| `GET` `POST` | `/api/profiles/[id]/land-deeds` | Preview / write `## Land Deeds` from OKCR |
+| `GET` `POST` | `/api/profiles/[id]/legal-docs` | Legal-doc corpus for a profile |
+| `GET` | `/api/profiles/[id]/nearby` | Nearby entities / locations |
+| `POST` `PATCH` `DELETE` | `/api/profiles/links` | Connected-profile links |
+| `GET` `PATCH` | `/api/profiles/alignments` | Alignment evidence |
+| `POST` | `/api/profiles/enrich` | Bulk enrich |
+| `GET` `POST` | `/api/profiles/finra-sync` | FINRA sync helpers |
+| `POST` | `/api/profiles/merge` | Merge duplicate profiles |
+| `POST` | `/api/profiles/sync` | Sync connections / summary helpers |
+| `POST` | `/api/profiles/resolve-historic-events` | Resolve historic_event peers |
+
+### Research Drive files
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/research-drive/file` | Stream a file under `.data/research-drive/` |
+
+---
+
+## Agent tools (chat)
+
+The model can call tools such as: `fetch_url`, `current_time`, `search_knowledge`, `search_profiles`, `upsert_profile`, `search_finra_sidecar`, `lookup_brokercheck`, `lookup_firm_connections`, `inspect_canvas_graph`, `chart_filings`, `make_logo`, `search_authority_timelines`, `search_entity_dossiers`, `search_concealment_scrubs`, `search_wikipedia`, `search_twdb_trinity`, `search_digital_earth`, `search_pqw_itmo`, `search_meta25`, `search_physics_congress`, `search_cdc_covid_timeline`, `search_dod_covid_timeline`, `search_iwm_conflict_timeline`, `search_regional_history`, `search_gemini_qa`.
+
+Design notes: [`docs/knowledge-store-design.md`](docs/knowledge-store-design.md), [`docs/entity-alignment-design.md`](docs/entity-alignment-design.md).
+
+---
+
+## UI routes
+
+| Path | Purpose |
 | --- | --- |
-| **MTG** | **Mortgage** — lien securing a loan against real property (borrower typically grantor; lender grantee). |
-| **WD** | **Warranty deed** — deed transferring ownership with warranties of clear title. |
-| **REL MTG** | **Release of mortgage** — lender releases the mortgage lien after payoff (or partial release context). |
-| **UCC** | **Uniform Commercial Code financing statement** — personal-property / fixture security-interest filing (UCC-1 style), not a land deed. |
+| `/` | Research chat + knowledge panel |
+| `/profiles` | Entity profiles browser |
+| `/profiles/firm/<slug>` | Firm profile (slug without `firm:` prefix in path) |
+| `/profiles/person/<slug>` | Person profile |
 
-**Complete codes seen in the Bryan County 2026 knowledge store**
+---
 
-Counts are approximate from the local project at glossary authoring time (~9.4k docs, 172 distinct codes). Definitions are the conventional Oklahoma / real-property expansions for these OKCR abbreviations (OKCR’s own dropdown often shows only the truncated code).
+## Environment variables
 
-| Code | ~Count | Definition |
-| --- | ---: | --- |
-| `2ND MTG` | 1 | Second mortgage |
-| `ADD CHAN` | 3 | Addendum / change (to a prior instrument) |
-| `ADMIN DEED` | 2 | Administrator’s deed (estate conveyance) |
-| `AFF HEIRSHIP` | 115 | Affidavit of heirship |
-| `AFF J T CORRECT` | 3 | Corrected affidavit of joint tenancy |
-| `AFF SUCC TRUSTE` | 10 | Affidavit of successor trustee |
-| `AFF.JT` | 162 | Affidavit of joint tenancy |
-| `AFFI FOR TODD` | 30 | Affidavit for transfer-on-death deed (TODD) |
-| `AFFI OF IDENTIT` | 12 | Affidavit of identity |
-| `AFFI OF MARITAL` | 2 | Affidavit of marital status |
-| `AFFI OF MARKETA` | 82 | Affidavit of marketable title |
-| `AFFI OF NAME CH` | 3 | Affidavit of name change |
-| `AFFI OF SCRIVEN` | 5 | Scrivener’s affidavit (clerical correction) |
-| `AFFI OF TRUST` | 1 | Affidavit of trust |
-| `AFFI TERM LIFE` | 3 | Affidavit terminating life estate |
-| `AFFID` | 90 | Affidavit (generic) |
-| `AGREE` | 41 | Agreement |
-| `ALLT PAT` | 3 | Allotment / patent (land patent related) |
-| `AMEND AGREEMENT` | 3 | Amended agreement |
-| `AMEND COVENANTS` | 4 | Amended covenants / restrictions |
-| `AMEND MEMO TRUS` | 2 | Amended memorandum of trust |
-| `AMEND PHY LN` | 1 | Amended physicians / physical lien |
-| `AMEND RESTRICTI` | 1 | Amended restrictions |
-| `AMEND TO MORTGA` | 1 | Amendment to mortgage |
-| `AMEND UCC` | 1 | UCC amendment |
-| `AMENDED MTG` | 2 | Amended mortgage |
-| `AMENDED NOTI` | 1 | Amended notice |
-| `APPT OF TRUSTEE` | 1 | Appointment of trustee |
-| `ASSGMENT` | 148 | Assignment |
-| `ASSN CORR` | 8 | Corrected assignment |
-| `ASSN MTG` | 124 | Assignment of mortgage |
-| `ASSN OF LEASE` | 36 | Assignment of lease |
-| `ASSN REN` | 108 | Assignment of rents |
-| `ASSN REN CORR` | 1 | Corrected assignment of rents |
-| `ASSUMPTION AGRE` | 1 | Assumption agreement |
-| `BOND` | 1 | Bond |
-| `CERT OF TRUST` | 7 | Certificate of trust |
-| `CERT SUCC TRUST` | 2 | Certificate of successor trustee |
-| `CERTIFIC` | 1 | Certificate (generic) |
-| `CON DEED` | 3 | Conservator’s deed / condominium deed (context-dependent; often conservator) |
-| `CONTRACT` | 2 | Contract |
-| `CONVEY` | 1 | Conveyance |
-| `CONVEYAN` | 1 | Conveyance |
-| `CORR AFFIDAVIT` | 4 | Corrected affidavit |
-| `CORR DEED` | 8 | Corrected deed |
-| `CORR LIEN` | 1 | Corrected lien |
-| `CORR MEMO TRUST` | 1 | Corrected memorandum of trust |
-| `COUNTY DEED` | 1 | County deed |
-| `COVENANT` | 3 | Covenant |
-| `DECLARAT` | 1 | Declaration |
-| `DECREE` | 4 | Decree (court) |
-| `DEED` | 88 | Deed (generic) |
-| `DEED IN LIEU OF` | 1 | Deed in lieu of foreclosure |
-| `DEED OF TRUST` | 4 | Deed of trust |
-| `DEFAULT JUDG` | 2 | Default judgment |
-| `DISCHARGE` | 2 | Discharge |
-| `DISMISAL` | 3 | Dismissal |
-| `DISTRIBUTE DEED` | 1 | Distribution deed (estate) |
-| `DIVORCE` | 14 | Divorce decree / related filing |
-| `EASE` | 145 | Easement |
-| `EASE-CORR` | 3 | Corrected easement |
-| `EASEMENT/NC` | 2 | Easement (non-certified / NC series) |
-| `FEDERAL LIEN` | 9 | Federal tax / federal lien |
-| `Fict Names` | 19 | Fictitious name filing |
-| `GIFT DEED` | 1 | Gift deed |
-| `IRS LIEN` | 2 | IRS tax lien |
-| `J.ENTRY` | 21 | Journal entry (court) |
-| `JUDG` | 328 | Judgment |
-| `JUDGE-NF` | 14 | Judgment (non-final / related court judgment code) |
-| `LEASE` | 9 | Lease |
-| `LIEN` | 35 | Lien (generic) |
-| `LIEN REL` | 17 | Lien release |
-| `LIS PEND` | 25 | Lis pendens (notice of pending lawsuit affecting title) |
-| `MD` | 91 | Mineral deed |
-| `MD CORR` | 2 | Corrected mineral deed |
-| `MEC LIEN` | 13 | Mechanics’ / materialmen’s lien |
-| `MEMO` | 24 | Memorandum |
-| `MEMO LEASE AGRE` | 2 | Memorandum of lease agreement |
-| `MEMO OF LEAS` | 12 | Memorandum of lease |
-| `MEMO OF SUC TRU` | 2 | Memorandum of successor trustee |
-| `MEMO TRU` | 61 | Memorandum of trust |
-| `MEMO TRUST AMEN` | 1 | Amended memorandum of trust |
-| `MERGER` | 1 | Merger |
-| `MIN CONVEY` | 18 | Mineral conveyance |
-| `MOD AGRE` | 16 | Modification agreement |
-| `MOD DEED OF TRU` | 1 | Modification of deed of trust |
-| `MOD MTG.` | 143 | Modification of mortgage |
-| `MTG` | 1279 | **Mortgage** |
-| `MTG DEED` | 1 | Mortgage deed |
-| `MTG-CORR` | 16 | Corrected mortgage |
-| `NOTICE` | 56 | Notice |
-| `NOTICE OF DECRE` | 3 | Notice of decree |
-| `NOTICE OF FRAUDULENT CONVEYANCE` | 1 | Notice of fraudulent conveyance |
-| `OGL LEAS` | 458 | Oil & gas lease |
-| `OGL-CORR` | 2 | Corrected oil & gas lease |
-| `OPTION` | 3 | Option |
-| `ORDER` | 102 | Court / administrative order |
-| `ORDER AMENDED` | 5 | Amended order |
-| `ORDER NUNC P` | 4 | Order nunc pro tunc |
-| `ORDIANCE` | 23 | Ordinance |
-| `PAR ASSN` | 1 | Partial assignment |
-| `PAR REL` | 79 | Partial release |
-| `PAR REL CORR` | 2 | Corrected partial release |
-| `PER REP DEED` | 21 | Personal representative’s deed |
-| `PHY LIEN` | 89 | Physicians lien (medical lien against recovery / property interest) |
-| `PLAT` | 14 | Plat (subdivision map) |
-| `POW ATTY` | 56 | Power of attorney |
-| `QCD` | 423 | **Quitclaim deed** — transfers interest with few/no title warranties |
-| `QCD-CORR` | 30 | Corrected quitclaim deed |
-| `QCMD` | 59 | Quitclaim mineral deed |
-| `QCMD-CORR` | 1 | Corrected quitclaim mineral deed |
-| `QUIET TI` | 1 | Quiet title |
-| `R-OF-W` | 71 | Right-of-way |
-| `RATIF OGL` | 13 | Ratification of oil & gas lease |
-| `RATIFIC` | 9 | Ratification |
-| `RECONVEY` | 7 | Reconveyance |
-| `REL` | 248 | Release (generic) |
-| `REL AMEND MORT` | 5 | Release of amended mortgage |
-| `REL EASE` | 2 | Release of easement |
-| `REL JUDGE NC` | 5 | Release of judgment (NC series) |
-| `REL JUDJ` | 103 | Release of judgment |
-| `REL LIS PEND` | 23 | Release of lis pendens |
-| `REL MTG` | 935 | **Release of mortgage** |
-| `REL MTG CORR` | 2 | Corrected release of mortgage |
-| `REL PHY LIEN` | 62 | Release of physicians lien |
-| `REL TAX WARR` | 631 | Release of tax warrant |
-| `RENEWAL` | 138 | Renewal |
-| `RENEWAL / NC` | 4 | Renewal (NC series) |
-| `RENEWED NOTICE` | 1 | Renewed notice |
-| `RES CONV` | 2 | Restrictive covenant / reservation conveyance (context-dependent) |
-| `RESALE DEED` | 13 | Resale deed (often tax-resale) |
-| `RESIGNATION TRU` | 1 | Resignation of trustee |
-| `RESOLUT` | 3 | Resolution |
-| `RESTRICT` | 1 | Restrictions |
-| `REV POA` | 3 | Revocation of power of attorney |
-| `REV TODD` | 1 | Revocation of transfer-on-death deed |
-| `REVOC` | 1 | Revocation |
-| `REVOC OF TODD` | 10 | Revocation of transfer-on-death deed |
-| `SAME NAME AFFID` | 1 | Same-name affidavit |
-| `SATISFACTION` | 18 | Satisfaction (of mortgage/lien) |
-| `SCRIVENERS AFFI` | 3 | Scrivener’s affidavit |
-| `SHERF D` | 17 | Sheriff’s deed |
-| `SHERR DEED CORR` | 2 | Corrected sheriff’s deed |
-| `STATMENT` | 1 | Statement |
-| `STIP INT` | 1 | Stipulation of interest |
-| `SUB AGRE` | 6 | Subordination agreement |
-| `SUB MTG` | 5 | Subordination of mortgage / subordinate mortgage |
-| `TAX WAR` | 756 | Tax warrant |
-| `TERM` | 2 | Termination |
-| `TERM LE` | 1 | Termination of lease |
-| `TR D DEED` | 126 | Trustee’s deed |
-| `TR D DEED CORR` | 6 | Corrected trustee’s deed |
-| `TR DEATH MD` | 1 | Transfer-on-death mineral deed |
-| `TREAS TRANSCRIP` | 1 | Treasurer’s transcript |
-| `TRUSTEE DEED` | 20 | Trustee’s deed |
-| `TRUSTEE QCMD` | 1 | Trustee quitclaim mineral deed |
-| `TRUSTEES MD` | 1 | Trustee’s mineral deed |
-| `UCC` | 68 | **UCC financing statement** |
-| `UCC AMEND` | 20 | UCC amendment |
-| `UCC ASSN` | 5 | UCC assignment |
-| `UCC CORR` | 1 | Corrected UCC |
-| `UCC REL` | 19 | UCC release / termination-related release |
-| `UCC-CONT` | 6 | UCC continuation |
-| `UNEMP TW` | 2 | Unemployment tax warrant / related tax warrant code |
-| `UNKNOWN` | 5 | Type missing / unparsed in stored note |
-| `VACATIO` | 1 | Vacation (e.g. of plat/easement/street) |
-| `WAIVER L` | 1 | Waiver of lien |
-| `WAVIER OF INTER` | 4 | Waiver of interest |
-| `WD` | 1090 | **Warranty deed** |
-| `WD AMENDED` | 1 | Amended warranty deed |
-| `WD-CORR` | 27 | Corrected warranty deed |
-| `WITHDRAW` | 11 | Withdrawal |
+See `.env.example` for the full list. Common ones:
 
-OKCountyRecords’ Bryan search UI lists **~455** instrument-type codes site-wide; only codes that appear in ingested filings are listed above. Truncated labels (e.g. `AFFI OF IDENTIT`) are shown exactly as stored.
+| Variable | Purpose |
+| --- | --- |
+| `OLLAMA_BASE_URL` | Default `http://127.0.0.1:11434` |
+| `RESEARCH_OLLAMA_NUM_CTX` | Chat/tools context (default `32768`) |
+| `RESEARCH_TOOL_RESULT_MAX_CHARS` | Cap tool JSON fed to the model (default `8000`) |
+| `RESEARCH_FACTCHECK` | `bespoke-minicheck` post-check (`1`/`0`) |
+| `ALLOW_LOCAL_AI` | Allow non-localhost access when `1` |
+| `RESEARCH_FETCH_HOSTS` | Extra `fetch_url` hosts |
+| `RESEARCH_OPEN_FETCH` | `1` = any public HTTPS host (default on); private IPs still blocked |
+| `NEXT_PUBLIC_FINRA_APP_ORIGIN` | Live FINRA visualizer origin |
+| `RESEARCH_DATA_DIR` | Knowledge root (default `.data/knowledge`) |
+| `RESEARCH_EMBED_MODEL` | Default `nomic-embed-text` |
+| `RESEARCH_RAG_AUTO` / `RESEARCH_RAG_TOP_K` | Auto-inject knowledge into chat |
+| `RESEARCH_KNOWLEDGE_REMOTE` | Expose `/api/knowledge` off loopback (**dangerous**) |
+| `FLARESOLVERR_URL` | Default `http://127.0.0.1:8191` |
+| `RESEARCH_APP_URL` | Ingest target for monitors (default `http://127.0.0.1:3333`) |
+| `KIWIX_SERVE_ORIGIN` | Offline Wikipedia (default `http://127.0.0.1:8765`) |
+
+---
+
+## Data layout (local)
+
+| Path | Contents |
+| --- | --- |
+| `.data/knowledge/` | SQLite knowledge store + embeddings |
+| `.data/profiles/` | Profiles SQLite |
+| `.data/monitors/` | OKCR / Bryan / RSS checkpoints |
+| `.data/seismic/`, `.data/tornadoes/`, `.data/dallas-deeds/` | Mirror downloads |
+| `.data/authority-timelines/`, `.data/entity-dossiers/` | Authority / dossier corpora |
+| `.data/research-drive/` | User research files + OCR digests |
+| `.data/concealment-scrubs/` | YouTube scrub outputs |
+| `.data/wikipedia/` | Kiwix ZIM files |
+| `.data/charts/` | Generated chart images |
+| `.data/INVENTORY_2016_current.md` | Local inventory notes |
+
+---
 
 ## Notes
 
-- Cloud Ollama tags (`*:cloud`) are filtered out of the picker.
-- Skip paid cloud models; this app is meant for free local models.
-- No dependency on a local FINRA dev server (`:4444`).
+- Cloud Ollama tags (`*:cloud`) are filtered out of the picker; prefer free local models.
+- OKCR results-table legals can end with `N more…`; enrich with `pnpm okcr:enrich-legals` or open the instrument detail page.
+- News RSS digests (`pnpm news:rss*`) land in knowledge projects you can select in chat, then ask the model to promote people/orgs into Profiles.
+- Long-running jobs may use wrappers under `~/.grok/long-running-background-tasks/` (optional; not required for a fresh clone).

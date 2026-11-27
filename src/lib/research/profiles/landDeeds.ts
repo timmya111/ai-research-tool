@@ -57,7 +57,12 @@ export function parseRecordedToIso(raw: string | null | undefined): string | nul
 	return null;
 }
 
-function truncateLegal(legal: string, max = 72): string {
+/**
+ * Normalize legal description text for overview bullets.
+ * Keep full PLSS / subdivision lists — OKCR results-table scrapes often end with
+ * "N more…" until enriched from the detail page; do not re-truncate here.
+ */
+function truncateLegal(legal: string, max = 12_000): string {
 	const t = String(legal || '')
 		.replace(/\s+/g, ' ')
 		.trim();
