@@ -4770,6 +4770,12 @@ export default function ProfilesClient({
 		setAliasDraft('');
 		setIdentValueDraft('');
 		setLocationDraft('');
+		setLocationRoleDraft(
+			detail.profile.profileType === 'person' ? 'residence'
+			: detail.profile.profileType === 'historic_event' ? 'event_site'
+			: 'hq',
+		);
+		setLocationConfirmDraft(true);
 		setEditingAliasId(null);
 		setEditingLocationId(null);
 		setDeleteConfirmOpen(false);
@@ -5005,7 +5011,7 @@ export default function ProfilesClient({
 
 			const originalLocs = new Map(detail.locations.map((l) => [l.id, l]));
 			for (const row of locationRowsDraft) {
-				if (row.deleted && row.id) {
+				if ((row.deleted || !row.raw.trim()) && row.id) {
 					latest = await patchProfile(profileKey, { deleteLocation: row.id });
 					profileKey = latest.profile.slug || latest.profile.id;
 					continue;
@@ -5034,6 +5040,17 @@ export default function ProfilesClient({
 					});
 					profileKey = latest.profile.slug || latest.profile.id;
 				}
+			}
+			if (locationDraft.trim()) {
+				latest = await patchProfile(profileKey, {
+					addLocation: {
+						raw: locationDraft.trim(),
+						role: locationRoleDraft,
+						confirmed: locationConfirmDraft,
+					},
+				});
+				profileKey = latest.profile.slug || latest.profile.id;
+				setLocationDraft('');
 			}
 
 			for (const identId of pendingDeleteIdentIds) {
@@ -7101,7 +7118,100 @@ export default function ProfilesClient({
 													</>
 												);
 											})()}
-											{detail.profile.primaryLocation ?
+											{profileEditing ?
+												(() => {
+													const activeRows = locationRowsDraft.filter((r) => !r.deleted);
+													const primaryText = detail.profile.primaryLocation || '';
+													const origPrimaryLoc =
+														primaryText ?
+															detail.locations.find((l) => l.raw === primaryText) ||
+															detail.locations.find((l) => primaryText.includes(l.raw) || l.raw.includes(primaryText))
+														:	null;
+													const primaryRow =
+														(origPrimaryLoc ? activeRows.find((r) => r.id === origPrimaryLoc.id) : null) ||
+														activeRows.find((r) => r.role === 'hq' || r.role === 'residence') ||
+														activeRows[0] ||
+														null;
+													const defaultRole: LocationRole =
+														typeDraft === 'person' ? 'residence'
+														: typeDraft === 'historic_event' ? 'event_site'
+														: 'hq';
+													const ensureOrUpdatePrimary = (patch: Partial<{ raw: string; role: LocationRole; confirmed: boolean }>) => {
+														if (primaryRow) {
+															setLocationRowsDraft((rows) =>
+																rows.map((r) => (r.key === primaryRow.key ? { ...r, ...patch } : r)),
+															);
+														} else {
+															setLocationRowsDraft((rows) => [
+																{
+																	key: `new-${crypto.randomUUID()}`,
+																	id: null,
+																	raw: patch.raw ?? '',
+																	role: patch.role ?? defaultRole,
+																	confirmed: patch.confirmed ?? true,
+																	deleted: false,
+																},
+																...rows,
+															]);
+														}
+													};
+													return (
+														<div className='mb-1.5 flex flex-wrap items-center gap-1.5 text-xs'>
+															<span
+																aria-hidden
+																className='opacity-75'>
+																📍
+															</span>
+															<input
+																aria-label='Primary location'
+																value={primaryRow ? primaryRow.raw : ''}
+																onChange={(e) => ensureOrUpdatePrimary({ raw: e.target.value })}
+																placeholder='Location (e.g. City, ST or street address)…'
+																className='min-w-[15rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs'
+															/>
+															<select
+																aria-label='Location role'
+																value={primaryRow ? primaryRow.role : defaultRole}
+																onChange={(e) => ensureOrUpdatePrimary({ role: e.target.value as LocationRole })}
+																className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]'>
+																{LOCATION_ROLES.map((r) => (
+																	<option
+																		key={r}
+																		value={r}>
+																		{r.replace(/_/g, ' ')}
+																	</option>
+																))}
+															</select>
+															<label className='flex items-center gap-1 text-[11px] opacity-85'>
+																<input
+																	type='checkbox'
+																	checked={primaryRow ? primaryRow.confirmed : true}
+																	onChange={(e) => ensureOrUpdatePrimary({ confirmed: e.target.checked })}
+																/>
+																Confirmed
+															</label>
+															{primaryRow ?
+																<button
+																	type='button'
+																	title='Remove this location'
+																	onClick={() =>
+																		setLocationRowsDraft((rows) =>
+																			rows.map((r) => (r.key === primaryRow.key ? { ...r, deleted: true } : r)),
+																		)
+																	}
+																	className='cursor-pointer rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 dark:text-rose-200'>
+																	Remove
+																</button>
+															:	null}
+															{activeRows.length > 1 ?
+																<span className='text-[11px] opacity-65'>
+																	(+{activeRows.length - 1} more below)
+																</span>
+															:	null}
+														</div>
+													);
+												})()
+											: detail.profile.primaryLocation ?
 												(() => {
 													const primary = detail.profile.primaryLocation;
 													const match = detail.locations.find((l) => l.raw === primary) || detail.locations.find((l) => primary.includes(l.raw) || l.raw.includes(primary));

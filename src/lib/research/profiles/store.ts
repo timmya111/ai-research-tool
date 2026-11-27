@@ -989,23 +989,42 @@ export function updateLocation(
 	const nextRaw = input.raw != null ? String(input.raw).trim() : String(existing.raw || '');
 	if (!nextRaw) return false;
 
+	const rawChanged =
+		input.raw != null && String(input.raw).trim() !== String(existing.raw || '').trim();
 	const norm = normalizeLocationRecord({
 		raw: nextRaw,
-		city: input.city !== undefined ? input.city : existing.city != null ? String(existing.city) : null,
+		city:
+			input.city !== undefined
+				? input.city
+				: rawChanged
+					? null
+					: existing.city != null
+						? String(existing.city)
+						: null,
 		county:
 			input.county !== undefined
 				? input.county
-				: existing.county != null
-					? String(existing.county)
-					: null,
+				: rawChanged
+					? null
+					: existing.county != null
+						? String(existing.county)
+						: null,
 		state:
-			input.state !== undefined ? input.state : existing.state != null ? String(existing.state) : null,
+			input.state !== undefined
+				? input.state
+				: rawChanged
+					? null
+					: existing.state != null
+						? String(existing.state)
+						: null,
 		country:
 			input.country !== undefined
 				? input.country
-				: existing.country != null
-					? String(existing.country)
-					: null,
+				: rawChanged
+					? null
+					: existing.country != null
+						? String(existing.country)
+						: null,
 	});
 	if (isTooGenericLocation(norm)) return false;
 
