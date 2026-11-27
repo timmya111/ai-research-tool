@@ -2589,6 +2589,33 @@ function SummarySectionCard({ label, children, accent = false }: { label: string
 	);
 }
 
+const SUMMARY_MONTH_INDEX: Record<string, number> = {
+	jan: 1,
+	january: 1,
+	feb: 2,
+	february: 2,
+	mar: 3,
+	march: 3,
+	apr: 4,
+	april: 4,
+	may: 5,
+	jun: 6,
+	june: 6,
+	jul: 7,
+	july: 7,
+	aug: 8,
+	august: 8,
+	sep: 9,
+	sept: 9,
+	september: 9,
+	oct: 10,
+	october: 10,
+	nov: 11,
+	november: 11,
+	dec: 12,
+	december: 12,
+};
+
 /** Newest date wins. Prefers day/month precision; closed ranges use the later end; open “–present” uses the start so recent dated events stay above long-running roles. */
 function summaryYearSortKey(yearLabel: string): number {
 	const raw = String(yearLabel || '').trim();
@@ -2601,10 +2628,29 @@ function summaryYearSortKey(yearLabel: string): number {
 	if (iso) return Number(iso[1]) * 10_000 + Number(iso[2]) * 100 + Number(iso[3]);
 	const us = raw.match(/\b(\d{2})-(\d{2})-((?:1[6-9]|20)\d{2})\b/);
 	if (us) return Number(us[3]) * 10_000 + Number(us[1]) * 100 + Number(us[2]);
+	const monDayYear = raw.match(
+		/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+((?:1[6-9]|20)\d{2})\b/i,
+	);
+	if (monDayYear) {
+		const m = SUMMARY_MONTH_INDEX[monDayYear[1].toLowerCase().replace(/\.$/, '')] || 0;
+		return Number(monDayYear[3]) * 10_000 + m * 100 + Number(monDayYear[2]);
+	}
+	const monYear = raw.match(
+		/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:1[6-9]|20)\d{2})\b/i,
+	);
+	if (monYear) {
+		const m = SUMMARY_MONTH_INDEX[monYear[1].toLowerCase().replace(/\.$/, '')] || 0;
+		return Number(monYear[2]) * 10_000 + m * 100;
+	}
+	const seasonYear = raw.match(/\b(Spring|Summer|Fall|Autumn|Winter)\s+((?:1[6-9]|20)\d{2})\b/i);
+	if (seasonYear) {
+		const m = /spring/i.test(seasonYear[1]) ? 3 : /summer/i.test(seasonYear[1]) ? 6 : /winter/i.test(seasonYear[1]) ? 12 : 9;
+		return Number(seasonYear[2]) * 10_000 + m * 100;
+	}
 	const yyyyMm = raw.match(/\b((?:1[6-9]|20)\d{2})-(\d{2})\b/);
-	if (yyyyMm) return Number(yyyyMm[1]) * 10_000 + Number(yyyyMm[2]) * 100 + 99;
+	if (yyyyMm) return Number(yyyyMm[1]) * 10_000 + Number(yyyyMm[2]) * 100;
 	const mmYyyy = raw.match(/\b(\d{2})-((?:1[6-9]|20)\d{2})\b/);
-	if (mmYyyy) return Number(mmYyyy[2]) * 10_000 + Number(mmYyyy[1]) * 100 + 99;
+	if (mmYyyy) return Number(mmYyyy[2]) * 10_000 + Number(mmYyyy[1]) * 100;
 	// BCE / BC → negative sort key so modern years stay above ancient ones.
 	const bce = raw.match(/^(\d{3,4})\s*(?:BCE|BC)\b/i);
 	if (bce) return -Number(bce[1]) * 10_000;
@@ -4191,7 +4237,12 @@ export default function ProfilesClient({
 			setSelectedId(String(data.profile.id));
 			setMainView('profile');
 			await loadList();
-			setBanner(`Created profile "${data.profile.name}".`);
+			const syncedCount = Number(data?.timelineSync?.upsertedOwn || 0);
+			setBanner(
+				syncedCount > 0
+					? `Created profile "${data.profile.name}" with ${syncedCount} timeline milestones.`
+					: `Created profile "${data.profile.name}".`,
+			);
 		} catch (e: unknown) {
 			setError(e instanceof Error ? e.message : String(e));
 		} finally {

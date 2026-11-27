@@ -18,6 +18,11 @@ import {
 	upsertProfileLink,
 	upsertSourceRecord,
 } from '@/lib/research/profiles/store';
+import { formatHistoricEventSummaryToTimeline } from '@/lib/research/profiles/historicEventTimeline';
+import {
+	ensureSummaryTimelineNewestFirst,
+	syncSummaryTimelineToEntries,
+} from '@/lib/research/profiles/syncSummaryTimeline';
 import { getProfileTimeline } from '@/lib/research/profiles/timeline';
 import {
 	LOCATION_ROLES,
@@ -622,11 +627,36 @@ export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
 					: String(args.endDate).trim();
 
 		const summaryRaw = args.summary != null ? String(args.summary).trim() : undefined;
-		const summary =
+		let summary =
 			summaryRaw != null
 				? preserveTimelineSectionsInSummary(existing?.summary, summaryRaw)
 				: undefined;
 		const metaIn = coerceUpsertMetadata(args.metadata);
+		let effectiveStartDate = startDate;
+		if (profileType === 'historic_event' && summary) {
+			const sourceTag =
+				typeof metaIn.newsFeedId === 'string' && metaIn.newsFeedId.trim()
+					? metaIn.newsFeedId.trim()
+					: null;
+			const sourceUrl =
+				typeof metaIn.sourceUrl === 'string' && metaIn.sourceUrl.trim()
+					? metaIn.sourceUrl.trim()
+					: null;
+			const formatted = formatHistoricEventSummaryToTimeline(summary, {
+				title: name,
+				startDate: effectiveStartDate ?? existing?.startDate ?? null,
+				sourceTag,
+				sourceUrl,
+			});
+			if (formatted.changed) {
+				summary = formatted.summary;
+				if (effectiveStartDate === undefined && !existing?.startDate && formatted.inferredStartDate) {
+					effectiveStartDate = formatted.inferredStartDate;
+				}
+				metaIn.overviewStyle = metaIn.overviewStyle || 'lead_plus_timeline_rail';
+				metaIn.formatMode = metaIn.formatMode || 'dated_expressive';
+			}
+		}
 
 		if (dryRun) {
 			return {
@@ -669,7 +699,7 @@ export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
 					profileType,
 					status,
 					summary,
-					startDate,
+					startDate: effectiveStartDate,
 					endDate,
 					metadata: {
 						...metaIn,
@@ -683,7 +713,7 @@ export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
 					slug: requestedSlug,
 					status,
 					summary,
-					startDate,
+					startDate: effectiveStartDate,
 					endDate,
 					metadata: {
 						...metaIn,
@@ -695,6 +725,24 @@ export async function upsertProfileTool(args: UpsertProfileToolArgs): Promise<{
 
 		if (!profile) {
 			throw new Error(`Failed to upsert profile for ${name}`);
+		}
+
+		if (summary && profile.summary.trim()) {
+			const reorder = await ensureSummaryTimelineNewestFirst(profile.summary, { useOllama: false });
+			if (reorder.changed && reorder.summary !== profile.summary) {
+				profile = updateProfileFields(profile.id, { summary: reorder.summary }) || profile;
+			}
+			const synced = syncSummaryTimelineToEntries(profile.id, { summary: profile.summary });
+			if (synced.parsed > 0) {
+				profile =
+					updateProfileFields(profile.id, {
+						metadata: {
+							overviewStyle: 'lead_plus_timeline_rail',
+							timelineSyncedAt: new Date().toISOString(),
+							timelineSyncedCount: synced.upsertedOwn,
+						},
+					}) || profile;
+			}
 		}
 
 		// Ensure corpus tagging on updates (updateProfileFields does not auto-append corpora)

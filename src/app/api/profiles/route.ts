@@ -9,8 +9,14 @@ import {
 	getProfileDetail,
 	getProfileStats,
 	listProfiles,
+	updateProfileFields,
 	upsertProfile,
 } from '@/lib/research/profiles/store';
+import { formatHistoricEventSummaryToTimeline } from '@/lib/research/profiles/historicEventTimeline';
+import {
+	ensureSummaryTimelineNewestFirst,
+	syncSummaryTimelineToEntries,
+} from '@/lib/research/profiles/syncSummaryTimeline';
 import {
 	PROFILE_TYPES,
 	type AliasKind,
@@ -163,17 +169,89 @@ export async function POST(request: Request) {
 			);
 		}
 
-		const profile = upsertProfile({
+		const autoFormatDisabled =
+			body.autoFormatTimeline === false ||
+			body.autoFormatTimeline === 0 ||
+			body.autoFormatTimeline === '0' ||
+			body.autoFormatTimeline === 'false';
+		let initialSummary = body.summary ? String(body.summary) : '';
+		let initialStartDate = body.startDate ? String(body.startDate) : null;
+		let autoFormattedHistoric = false;
+		if (effectiveType === 'historic_event' && initialSummary.trim() && !autoFormatDisabled) {
+			const sourceTag =
+				typeof metaInput.newsFeedId === 'string' && metaInput.newsFeedId.trim()
+					? metaInput.newsFeedId.trim()
+					: null;
+			const sourceUrl =
+				typeof metaInput.sourceUrl === 'string' && metaInput.sourceUrl.trim()
+					? metaInput.sourceUrl.trim()
+					: null;
+			const formatted = formatHistoricEventSummaryToTimeline(initialSummary, {
+				title: name,
+				startDate: initialStartDate,
+				sourceTag,
+				sourceUrl,
+			});
+			if (formatted.changed) {
+				initialSummary = formatted.summary;
+				autoFormattedHistoric = true;
+				if (!initialStartDate && formatted.inferredStartDate) {
+					initialStartDate = formatted.inferredStartDate;
+				}
+				metaInput.overviewStyle = metaInput.overviewStyle || 'lead_plus_timeline_rail';
+				metaInput.formatMode = metaInput.formatMode || 'dated_expressive';
+				metaInput.formattedBy = metaInput.formattedBy || 'auto-historic-timeline';
+			}
+		}
+
+		let profile = upsertProfile({
 			profileType: effectiveType,
 			name,
 			slug: body.slug ? String(body.slug) : undefined,
 			status: (body.status ? String(body.status) : 'pinned') as ProfileStatus,
-			summary: body.summary ? String(body.summary) : '',
-			startDate: body.startDate ? String(body.startDate) : null,
+			summary: initialSummary,
+			startDate: initialStartDate,
 			endDate: body.endDate ? String(body.endDate) : null,
 			metadata: Object.keys(metaInput).length ? metaInput : undefined,
 			sourceCorpus: body.sourceCorpus ? String(body.sourceCorpus) : 'manual',
 		});
+
+		let timelineSync: ReturnType<typeof syncSummaryTimelineToEntries> | null = null;
+		const syncDisabled =
+			body.syncTimelineFromSummary === false ||
+			body.syncTimelineFromSummary === 0 ||
+			body.syncTimelineFromSummary === '0' ||
+			body.syncTimelineFromSummary === 'false';
+		if (!syncDisabled && profile.summary.trim()) {
+			let summaryForSync = profile.summary;
+			const reorder = await ensureSummaryTimelineNewestFirst(summaryForSync, { useOllama: false });
+			if (reorder.changed && reorder.summary !== summaryForSync) {
+				const rewritten = updateProfileFields(profile.id, { summary: reorder.summary });
+				if (rewritten) {
+					profile = rewritten;
+					summaryForSync = rewritten.summary || reorder.summary;
+				} else {
+					summaryForSync = reorder.summary;
+				}
+			}
+			timelineSync = syncSummaryTimelineToEntries(profile.id, {
+				summary: summaryForSync,
+				mirrorToRelated: body.mirrorTimelineToRelated !== false,
+			});
+			if (timelineSync.parsed > 0 || autoFormattedHistoric || reorder.changed) {
+				const nextMeta = {
+					...(profile.metadata || {}),
+					overviewStyle: 'lead_plus_timeline_rail',
+					formatMode:
+						typeof (profile.metadata || {}).formatMode === 'string'
+							? (profile.metadata as { formatMode?: string }).formatMode
+							: 'dated_expressive',
+					timelineSyncedAt: new Date().toISOString(),
+					timelineSyncedCount: timelineSync.upsertedOwn,
+				};
+				profile = updateProfileFields(profile.id, { metadata: nextMeta }) || profile;
+			}
+		}
 
 		if (identity?.known) {
 			addIdentifier({
@@ -264,6 +342,7 @@ export async function POST(request: Request) {
 			{
 				ok: true,
 				profile,
+				...(timelineSync ? { timelineSync, autoFormattedHistoric } : {}),
 				...(identity
 					? {
 							identityFilter: {

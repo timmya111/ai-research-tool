@@ -423,29 +423,9 @@ async function resolveArticleText(item) {
 
 function buildSummary({ feed, item, article }) {
 	const body = (article.text || item.description || '').trim();
-	const startDate = toIsoDate(item.pubDate) || 'Undated';
-	const paras = body ? body.split(/\n\n+/).map((p) => p.trim()).filter(Boolean) : [];
-	let leadIdx = 0;
-	if (
-		paras.length > 1 &&
-		/^(A |An |The )/.test(paras[0]) &&
-		/\(Photo by|\bPhoto:\b/i.test(paras[0]) &&
-		paras[1].length > 80
-	) {
-		leadIdx = 1;
-	}
-	const lead = paras[leadIdx] || String(item.title || 'News event').trim();
-	const claim =
-		(lead.split(/(?<=[.!?])\s+/)[0] || lead || item.title || 'News event')
-			.replace(/\s+/g, ' ')
-			.trim()
-			.slice(0, 320);
-	const before = paras.slice(0, leadIdx);
-	const after = paras.slice(leadIdx + 1);
 	const lines = [];
-	if (before.length) lines.push(...before, '');
-	lines.push(lead, '', '## Timeline', `- **${startDate}** — ${claim}`, '');
-	if (after.length) lines.push(after.join('\n\n'), '');
+	if (body) lines.push(body, '');
+	else lines.push(String(item.title || 'News event').trim(), '');
 	lines.push(`Source: ${feed.name}`, item.link);
 	return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, SUMMARY_MAX);
 }
@@ -759,12 +739,13 @@ async function pollOnce() {
 					let formatStatus = null;
 					if (AUTO_FORMAT && created?.id && !DRY_RUN) {
 						try {
-							// Ingest already fetched full text — default skip rescrape for speed.
+							// Ingest already fetched full text — pass raw article directly so formatOne never loses paragraphs.
 							const fresh = loadProfileByRef({ id: created.id }) || created;
 							const fmt = await formatOne(fresh, {
 								quiet: true,
 								rescrape: AUTO_FORMAT_RESCRAPE,
 								related: false,
+								rawBody: article.text || item.description || '',
 							});
 							formatStatus = fmt?.status || 'ok';
 							console.log(

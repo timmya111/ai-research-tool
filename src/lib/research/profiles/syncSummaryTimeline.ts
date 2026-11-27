@@ -92,6 +92,41 @@ export function parseTimelineDateLabel(raw: string): {
 		return { eventDate: null, endDate: null };
 	}
 
+	// Exact single dates (ISO YYYY-MM-DD, US MM-DD-YYYY / MM/DD/YYYY, YYYY-MM, MM-YYYY)
+	// MUST be checked BEFORE range matching so "11-25-2026" is not misread as "11-25" – "2026".
+	const exactIsoDay = s.match(/^((?:1[6-9]|20)\d{2})-(\d{2})-(\d{2})$/);
+	if (exactIsoDay) {
+		return { eventDate: `${exactIsoDay[1]}-${exactIsoDay[2]}-${exactIsoDay[3]}`, endDate: null };
+	}
+
+	const exactUsDay = s.match(/^(\d{1,2})[-/](\d{1,2})[-/]((?:1[6-9]|20)\d{2})$/);
+	if (exactUsDay) {
+		const mm = Number(exactUsDay[1]);
+		const dd = Number(exactUsDay[2]);
+		if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+			return {
+				eventDate: `${exactUsDay[3]}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`,
+				endDate: null,
+			};
+		}
+	}
+
+	const exactIsoMonth = s.match(/^((?:1[6-9]|20)\d{2})-(\d{2})$/);
+	if (exactIsoMonth) {
+		const mm = Number(exactIsoMonth[2]);
+		if (mm >= 1 && mm <= 12) {
+			return { eventDate: `${exactIsoMonth[1]}-${exactIsoMonth[2]}`, endDate: null };
+		}
+	}
+
+	const exactUsMonth = s.match(/^(\d{2})-((?:1[6-9]|20)\d{2})$/);
+	if (exactUsMonth) {
+		const mm = Number(exactUsMonth[1]);
+		if (mm >= 1 && mm <= 12) {
+			return { eventDate: `${exactUsMonth[2]}-${exactUsMonth[1]}`, endDate: null };
+		}
+	}
+
 	const decadeRange = s.match(
 		/^(?:(?:Late|Early|Mid)(?:-|\s+))?((?:1[6-9]|20)\d)0s\s*[–—-]\s*(?:(?:Late|Early|Mid)(?:-|\s+))?((?:1[6-9]|20)\d)0s$/i,
 	);
@@ -153,43 +188,50 @@ export function parseTimelineDateLabel(raw: string): {
 }
 
 /**
- * Extract dated bullets under Timeline / Chronology / Milestones / Key dates headings.
+ * Extract dated bullets under Timeline / Chronology / Milestones / Key dates headings,
+ * or from an implicit chronology (dated bullets without a ## Timeline heading, including
+ * multi-line follow-up prose attached to `* YYYY: Title`).
  */
 export function parseSummaryTimelineItems(summary: string): ParsedSummaryTimelineItem[] {
 	const lines = String(summary || '').split(/\n/);
 	const items: ParsedSummaryTimelineItem[] = [];
-	let inTimeline = false;
+	const spans = findTimelineSectionSpans(lines);
+	const effectiveSpans =
+		spans.length > 0 ? spans : (() => {
+			const implicit = findImplicitChronologySpan(lines);
+			return implicit ? [implicit] : [];
+		})();
 
-	for (const rawLine of lines) {
-		const line = rawLine.trim();
-		if (!line) continue;
+	for (const span of effectiveSpans) {
+		const body = lines.slice(span.bodyStart, span.bodyEnd);
+		const blocks = splitTimelineBlocks(body);
+		for (const block of blocks) {
+			const firstLine = block.lines[0]?.trim() || '';
+			const bullet = firstLine.match(BULLET_RE);
+			if (!bullet) continue;
+			const firstBody = bullet[1]!.trim();
+			const dated = firstBody.match(DATED_BULLET_RE);
+			if (!dated) continue;
 
-		const heading = line.match(HEADING_RE);
-		if (heading) {
-			const title = stripMd(heading[1] || '');
-			inTimeline = /timeline|chronolog|milestones?|key dates|history/i.test(title);
-			continue;
+			const rawDateLabel = stripMd(dated[1] || '');
+			const firstText = stripMd(dated[2] || '');
+			const extraProse = block.lines
+				.slice(1)
+				.map((l) => stripMd(l))
+				.filter(Boolean)
+				.join(' ')
+				.trim();
+			const combinedText = extraProse ? `${firstText} — ${extraProse}` : firstText;
+			if (!combinedText) continue;
+			const { eventDate, endDate } = parseTimelineDateLabel(rawDateLabel);
+			items.push({
+				eventDate,
+				endDate,
+				title: titleFromBody(firstText || combinedText),
+				summary: combinedText.slice(0, 2000),
+				rawDateLabel,
+			});
 		}
-
-		if (!inTimeline) continue;
-
-		const bullet = line.match(BULLET_RE);
-		if (!bullet) continue;
-		const body = bullet[1]!.trim();
-		const dated = body.match(DATED_BULLET_RE);
-		if (!dated) continue;
-
-		const rawDateLabel = stripMd(dated[1] || '');
-		const text = stripMd(dated[2] || '');
-		if (!text) continue;
-		const { eventDate, endDate } = parseTimelineDateLabel(rawDateLabel);
-		items.push({
-			eventDate,
-			endDate,
-			title: titleFromBody(text),
-			summary: text.slice(0, 2000),
-			rawDateLabel,
-		});
 	}
 
 	return items;

@@ -16,6 +16,10 @@ import {
 	updateProfileFields,
 } from '@/lib/research/profiles/store';
 import {
+	formatHistoricEventSummaryToTimeline,
+	summaryAlreadyHasTimelinedView,
+} from '@/lib/research/profiles/historicEventTimeline';
+import {
 	ensureSummaryTimelineNewestFirst,
 	syncSummaryTimelineToEntries,
 } from '@/lib/research/profiles/syncSummaryTimeline';
@@ -298,8 +302,52 @@ export async function PATCH(request: Request, context: Ctx) {
 				error?: string;
 			};
 		}) | null = null;
+		const autoFormatDisabled =
+			body.autoFormatTimeline === false ||
+			body.autoFormatTimeline === 0 ||
+			body.autoFormatTimeline === '0' ||
+			body.autoFormatTimeline === 'false';
 		if (!syncDisabled && (body.summary != null || syncForced)) {
 			let summaryForSync = updated.summary || '';
+			let autoFormattedHistoric = false;
+			if (
+				!autoFormatDisabled &&
+				updated.profileType === 'historic_event' &&
+				summaryForSync.trim() &&
+				!summaryAlreadyHasTimelinedView(summaryForSync)
+			) {
+				const metaObj = (updated.metadata || {}) as Record<string, unknown>;
+				const sourceTag =
+					typeof metaObj.newsFeedId === 'string' && metaObj.newsFeedId.trim()
+						? metaObj.newsFeedId.trim()
+						: null;
+				const sourceUrl =
+					typeof metaObj.sourceUrl === 'string' && metaObj.sourceUrl.trim()
+						? metaObj.sourceUrl.trim()
+						: null;
+				const formatted = formatHistoricEventSummaryToTimeline(summaryForSync, {
+					title: updated.name,
+					startDate: updated.startDate,
+					sourceTag,
+					sourceUrl,
+				});
+				if (formatted.changed) {
+					const patchFields: { summary: string; startDate?: string | null } = {
+						summary: formatted.summary,
+					};
+					if (!updated.startDate && formatted.inferredStartDate) {
+						patchFields.startDate = formatted.inferredStartDate;
+					}
+					const rewritten = updateProfileFields(updated.id, patchFields);
+					if (rewritten) {
+						updated = rewritten;
+						summaryForSync = rewritten.summary || formatted.summary;
+					} else {
+						summaryForSync = formatted.summary;
+					}
+					autoFormattedHistoric = true;
+				}
+			}
 			const reorder = await ensureSummaryTimelineNewestFirst(summaryForSync, {
 				useOllama: !ollamaReorderDisabled,
 			});
@@ -318,13 +366,13 @@ export async function PATCH(request: Request, context: Ctx) {
 					mirrorToRelated: body.mirrorTimelineToRelated !== false,
 				}),
 				reorder: {
-					changed: reorder.changed,
-					method: reorder.method,
+					changed: reorder.changed || autoFormattedHistoric,
+					method: reorder.changed ? reorder.method : autoFormattedHistoric ? 'deterministic' : 'none',
 					datedCount: reorder.datedCount,
 					...(reorder.error ? { error: reorder.error } : {}),
 				},
 			};
-			if (timelineSync.parsed > 0 || reorder.changed) {
+			if (timelineSync.parsed > 0 || reorder.changed || autoFormattedHistoric) {
 				const meta = {
 					...(updated.metadata || {}),
 					overviewStyle: 'lead_plus_timeline_rail',

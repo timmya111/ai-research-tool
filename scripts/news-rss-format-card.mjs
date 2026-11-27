@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { classifySoftJournalism } from './lib/news-rss-soft-journalism.mjs';
 import { fetchArticleBody } from './lib/news-rss-article-body.mjs';
+import { extractArticleMilestones, formatFlexibleDateLabel } from './lib/historic-event-milestones.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -287,14 +288,18 @@ function firstSentences(text, maxChars = 280, { pack = false } = {}) {
 }
 
 function isoToLong(iso) {
-	const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-	if (!m) return null;
-	const month = Number(m[2]);
-	const day = Number(m[3]);
-	if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-	// Year-only placeholders (…-01-01 from "enacted in 2013") render as the year.
-	if (month === 1 && day === 1) return m[1];
-	return `${MONTHS[month - 1]} ${day}, ${m[1]}`;
+	const s = String(iso || '').trim();
+	if (!s) return null;
+	const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+	if (m) {
+		const month = Number(m[2]);
+		const day = Number(m[3]);
+		if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+		// Year-only placeholders (…-01-01 from "enacted in 2013") render as the year.
+		if (month === 1 && day === 1) return m[1];
+		return `${MONTHS[month - 1]} ${day}, ${m[1]}`;
+	}
+	return formatFlexibleDateLabel(s);
 }
 
 const MONTH_MAP = {
@@ -486,8 +491,13 @@ function cleanArticleBody(summary) {
 		.replace(/\bPhoto:\s*Airbus U\.S\. Space\s*(?:&|and)\s*Defense\s*/gi, '')
 		.replace(/\bPhoto:\s*[A-Z][\w .,&-]{2,60}(?=\s*(?:Private equity|Cerberus|[A-Z][a-z]+ (?:is|has|said|announced)))/g, '')
 		// Drop prior format-card chrome if re-running on an already rewritten summary.
+		// IMPORTANT: If a basic stub injected a single-bullet ## Timeline in the middle of raw
+		// article paragraphs (from historic-events-basic-timeline), remove ONLY the stub header+bullet
+		// so the remaining article body is NEVER truncated.
 		.replace(/\s*Fact-checked against the local Wikipedia library[\s\S]*$/i, '')
-		.replace(/\n## (?:Timeline|Local Wikipedia cross-check|Source articles)\b[\s\S]*$/i, '')
+		.replace(/\n## (?:Local Wikipedia cross-check|Source articles)\b[\s\S]*$/i, '')
+		.replace(/\n## Timeline\n(?:[-*•]\s+[^\n]+\n?){1,2}(?=\n+[^\n#\-*•])/i, '\n\n')
+		.replace(/\n## Timeline\b[\s\S]*$/i, '')
 		// Interview transcripts: drop "Firstname Lastname" speaker cues at line starts.
 		.replace(
 			/^(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\s+(?=(?:Well|Let’s|Let's|And|But|However|Exactly|So|Why|What|The|It|Federal|Military|Although|Hahahaha|Separately|They|He|She|I |You |We ))/gm,
@@ -1232,17 +1242,35 @@ function extractMilestones(profile) {
 	const body = isolatePrimaryStory(profile.summary, profile);
 	const name = profile.name || '';
 	const head = `${name}\n${body.slice(0, 800)}`;
-	let bullets = [];
 
+	// Specialized structured extractors (ASCE report cards, numbered provisions, federal COLA)
+	let special = [];
 	if (/asce|report card|infrastructure grade/i.test(head)) {
-		bullets = bullets.concat(extractAsceReportCard(body, profile));
+		special = special.concat(extractAsceReportCard(body, profile));
 	}
 	if (/\b\d{1,2}[.)]\s+\S/.test(body) && /don’t|don't|never|provision|refuse|accept/i.test(body)) {
-		bullets = bullets.concat(extractNumberedProvisions(body, profile));
+		special = special.concat(extractNumberedProvisions(body, profile));
 	}
 	if (/\bCOLA\b|cost-?of-?living|skinny COLA|\bFERS\b|\bCSRS\b/i.test(head)) {
-		bullets = bullets.concat(extractColaFederalClaims(body, profile));
+		special = special.concat(extractColaFederalClaims(body, profile));
 	}
+
+	if (special.length >= 3) {
+		const picked = prioritizeBullets(dedupeBullets(special), profile).slice(0, MAX_BULLETS);
+		return picked.sort((a, b) => String(b.iso || '').localeCompare(String(a.iso || '')));
+	}
+
+	// Primary general article milestone extractor: breaks article into current-date beats
+	// plus distinct historical calendar milestones (Month YYYY, Month DD, YYYY, multi-date clauses),
+	// ignores future horizon dates ("until December 2028"), and orders newest → oldest.
+	const articleMilestones = extractArticleMilestones(body, profile, {
+		maxBullets: Math.max(MAX_BULLETS, 10),
+	});
+	if (articleMilestones.length > 0) {
+		return articleMilestones;
+	}
+
+	let bullets = [...special];
 	if (
 		/shooting|homicide|arrest|robbery|barricad|shots fired|juvenile|aggravated assault|SWAT|murder|gun with|switch recovered|stay of execution|Fort Hood|crime|police department|APD|HPD|OKC|east Austin|Third Ward/i.test(
 			head,
@@ -1251,20 +1279,12 @@ function extractMilestones(profile) {
 	) {
 		bullets = bullets.concat(extractLocalCrimeClaims(body, profile));
 	}
-	if (
-		/detonat|lead azide|ammunition plant|evacuat|appeals court|stockpile|bomb-making|hazardous|sentinel|vandenberg|ribbon[- ]cutting|military construction|LGM-35A|ACME|classified information|declassif|breaks ground|broken ground|groundbreaking|data center|Gilbane|Empire AI|cyberattack|breached|CIA|open[- ]source intelligence|car bomb|wounding more than|guerrilla|Farc|FARC|peace deal|drone(?:s)? dropped|explosives? on the police|narcoterrorism|Cerberus|acquires?|acquiring|satellite manufacturing|Space Systems business|OneWeb|private equity|Jensen Huang|Nvidia|reinstate|reinstated|cheers and applause/i.test(
-			head,
-		) ||
-		bullets.length < 3
-	) {
+	if (bullets.length < 3) {
 		bullets = bullets.concat(extractBreakingClaims(body, profile));
 	}
-	// Always merge dated sentences / section heads; dedupe keeps claim highlights preferred.
 	bullets = bullets.concat(extractGenericMilestones(body, profile));
-
 	bullets = prioritizeBullets(dedupeBullets(bullets), profile);
-	if (bullets.length === 0 || isSparseDateArticle(body, bullets, profile)) {
-		// No usable dates inside the article → wrap reduced paragraphs under the content/publication date.
+	if (bullets.length === 0) {
 		const sparse = extractSparseDateParagraphs(body, profile);
 		if (sparse.length) bullets = sparse;
 	}
@@ -1276,8 +1296,7 @@ function extractMilestones(profile) {
 			kind: 'dated',
 		});
 	}
-	// Select by relevance/precision, then render Timeline in chronological order.
-	return bullets.slice(0, MAX_BULLETS).sort((a, b) => String(a.iso || '').localeCompare(String(b.iso || '')));
+	return bullets.slice(0, MAX_BULLETS).sort((a, b) => String(b.iso || '').localeCompare(String(a.iso || '')));
 }
 
 const WIKI_STOP_TITLE_WORDS = new Set(
@@ -1686,27 +1705,42 @@ function buildFormattedSummary(profile, bullets, wikiNotes, { relatedCount = 0, 
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, '')
 		.slice(0, 80);
-	const timelineLines = bullets
-		.map((b) => {
-			// Prefer a date found in the claim; otherwise use the source/publication date on the card.
-			const iso = b.iso || startIso || profile.startDate || null;
-			const label = isoToLong(iso) || iso || (profile.startDate ? isoToLong(profile.startDate) || profile.startDate : null) || 'Undated';
-			const claim = (b.text || b.title || '').replace(/\s+/g, ' ').trim();
-			// Sparse paragraph mode: no title prefix — the reduced paragraph is the entry.
-			const titleBit =
-				b.kind === 'paragraph' || !b.title
-					? ''
-					: !claim.toLowerCase().startsWith(String(b.title).toLowerCase().slice(0, 24))
-						? `${b.title} — `
-						: '';
-			return {
-				kind: b.kind,
-				claimKey: claim.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 80),
-				line: `- **${label}** — ${titleBit}${claim}${feedTag}`,
-			};
-		})
-		// Drop the first sparse paragraph when it merely repeats the lead.
-		.filter((row, idx) => !(sparseParagraphMode && idx === 0 && leadKey && row.claimKey.startsWith(leadKey.slice(0, 48))))
+	const mappedRows = bullets.map((b) => {
+		// Prefer a date found in the claim; otherwise use the source/publication date on the card.
+		const iso = b.iso || startIso || profile.startDate || null;
+		const label =
+			b.dateLabel ||
+			isoToLong(iso) ||
+			iso ||
+			(profile.startDate ? isoToLong(profile.startDate) || profile.startDate : null) ||
+			'Undated';
+		const claim = (b.text || b.title || '').replace(/\s+/g, ' ').trim();
+		// Paragraph / milestone mode: no title prefix — the milestone text is the entry.
+		const titleBit =
+			b.kind === 'paragraph' || !b.title
+				? ''
+				: !claim.toLowerCase().startsWith(String(b.title).toLowerCase().slice(0, 24))
+					? `${b.title} — `
+					: '';
+		return {
+			kind: b.kind,
+			claimKey: claim.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 80),
+			line: `- **${label}** — ${titleBit}${claim}${feedTag}`,
+		};
+	});
+	// Drop the first sparse paragraph only when it merely repeats the lead AND other bullets exist
+	// (never drop the last remaining bullet and leave ## Timeline empty).
+	const timelineLines = mappedRows
+		.filter(
+			(row, idx) =>
+				!(
+					mappedRows.length > 1 &&
+					sparseParagraphMode &&
+					idx === 0 &&
+					leadKey &&
+					row.claimKey.startsWith(leadKey.slice(0, 48))
+				),
+		)
 		.map((row) => row.line);
 
 	const wikiLines = wikiNotes.length
@@ -1879,7 +1913,7 @@ async function rescrapeSourceBodies(profile, related = [], { quiet = false } = {
 	return scraped;
 }
 
-async function formatOne(profile, { related: wantRelated = false, quiet = false, rescrape = true } = {}) {
+async function formatOne(profile, { related: wantRelated = false, quiet = false, rescrape = true, rawBody = null } = {}) {
 	if (!quiet) console.log(`[format-card] ${profile.slug} dryRun=${DRY_RUN} kiwix=${KIWIX} rescrape=${rescrape}`);
 
 	let related = [];
@@ -1893,10 +1927,12 @@ async function formatOne(profile, { related: wantRelated = false, quiet = false,
 	}
 
 	let scrapeMeta = null;
-	let combinedSummary = [profile, ...related]
-		.map((p) => cleanArticleBody(p.summary))
-		.filter(Boolean)
-		.join('\n\n');
+	let combinedSummary = rawBody
+		? [cleanArticleBody(rawBody), ...related.map((p) => cleanArticleBody(p.summary))].filter(Boolean).join('\n\n')
+		: [profile, ...related]
+				.map((p) => cleanArticleBody(p.summary))
+				.filter(Boolean)
+				.join('\n\n');
 
 	if (rescrape) {
 		const scraped = await rescrapeSourceBodies(profile, related, { quiet });
@@ -1946,7 +1982,7 @@ async function formatOne(profile, { related: wantRelated = false, quiet = false,
 			[profile.sourceUrl, ...related.map((r) => r.sourceUrl)].filter(Boolean).map((u) => String(u).split('?')[0]),
 		),
 	];
-	const { summary, startDate, endDate } = buildFormattedSummary(profile, bullets, wikiNotes, {
+	const { summary, startDate, endDate } = buildFormattedSummary(extractProfile, bullets, wikiNotes, {
 		relatedCount: related.length + 1,
 		sourceUrls,
 	});
