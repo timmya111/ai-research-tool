@@ -670,7 +670,14 @@ export function findExistingProfileDuplicate(
 				}
 			}
 			const top = ranked[0]!;
-			if (ranked.length === 1) {
+			// Do not cross-category match solely via a short alias/acronym when the input is a multi-word full org name
+			// (e.g. "Atlantic Credit & Finance Inc." with alias "ACF" must not collide with nonprofit "Action Against Hunger" / ACF).
+			const inputWordCount = norm.split(' ').filter(Boolean).length;
+			const topWords = new Set(top.normalizedName.split(' ').filter((w) => w.length >= 3));
+			const sharedLongWord = norm
+				.split(' ')
+				.some((w) => w.length >= 3 && !GENERIC_ORG_DEDUPE_WORDS.has(w) && topWords.has(w));
+			if (ranked.length === 1 && (inputWordCount <= 1 || sharedLongWord)) {
 				return attachPrimaryLoc(
 					top,
 					`already exists under ${top.profileType.replace(/_/g, ' ')}`,

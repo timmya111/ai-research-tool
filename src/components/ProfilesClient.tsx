@@ -3914,6 +3914,46 @@ export default function ProfilesClient({
 		}>;
 	} | null>(null);
 	const [linkingNearbyId, setLinkingNearbyId] = useState<string | null>(null);
+	const [legalDocsReport, setLegalDocsReport] = useState<{
+		sources: Record<string, { status: string; recordsFound: number; docsDownloaded: number; docsOcrd: number; note?: string }>;
+		cfpbSummary: {
+			totalMatching: number;
+			byState: Record<string, number>;
+			topIssues: Array<{ issue: string; count: number }>;
+			narrativesFound: number;
+		} | null;
+		documents: Array<{
+			id: string;
+			source: 'cfpb' | 'govinfo' | 'oscn' | 'courtlistener';
+			title: string;
+			courtOrSource: string;
+			caseOrRecordId: string;
+			dateIssued: string | null;
+			jurisdiction: string;
+			sourceUrl: string;
+			pdfPath: string | null;
+			extractionMethod: string;
+			ocrModel: string | null;
+			textChars: number;
+			textExcerpt: string;
+			edges: Array<{ targetEntity: string; edgeType: string }>;
+			matchedVia?: string | null;
+		}>;
+		edges: Array<{
+			sourceFirm: string;
+			targetEntity: string;
+			targetType: string;
+			edgeType: string;
+			jurisdiction: string;
+			courtOrSource: string;
+			caseOrRecordId?: string;
+			evidenceSummary: string;
+		}>;
+	} | null>(null);
+	const [fetchingLegalDocs, setFetchingLegalDocs] = useState(false);
+	const [expandedOcrDocId, setExpandedOcrDocId] = useState<string | null>(null);
+	const [ocrDocTextById, setOcrDocTextById] = useState<Record<string, string>>({});
+	const [loadingOcrDocId, setLoadingOcrDocId] = useState<string | null>(null);
 
 	const syncUrl = useCallback((next: { profile?: string | null; view?: 'profile' | 'alignments' }, mode: 'push' | 'replace' = 'push') => {
 		if (typeof window === 'undefined') return;
@@ -4108,7 +4148,92 @@ export default function ProfilesClient({
 		setConnSearchOpen(false);
 		setConnLinkDrafts([]);
 		setNearbyData(null);
+		setLegalDocsReport(null);
+		setExpandedOcrDocId(null);
+		setOcrDocTextById({});
 	}, [selectedId]);
+
+	// Load any cached legal documents & OCR manifest for the active profile.
+	useEffect(() => {
+		const key = detail?.profile?.slug || detail?.profile?.id;
+		if (!key || detail?.profile?.profileType === 'historic_event') {
+			setLegalDocsReport(null);
+			return;
+		}
+		let cancelled = false;
+		void (async () => {
+			try {
+				const res = await fetch(`/api/profiles/${encodeURIComponent(key)}/legal-docs`, { cache: 'no-store' });
+				const data = await res.json();
+				if (!cancelled && res.ok && data?.ok && data.report) {
+					setLegalDocsReport(data.report);
+				} else if (!cancelled) {
+					setLegalDocsReport(null);
+				}
+			} catch {
+				/* non-fatal */
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [detail?.profile?.id, detail?.profile?.slug, detail?.profile?.profileType]);
+
+	async function handleFetchLegalDocs() {
+		const key = detail?.profile?.slug || detail?.profile?.id;
+		if (!key) return;
+		setFetchingLegalDocs(true);
+		setError(null);
+		try {
+			const res = await fetch(`/api/profiles/${encodeURIComponent(key)}/legal-docs`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					states: ['OK', 'TX'],
+					maxDocsPerSource: 8,
+					downloadPdfs: true,
+					syncToProfile: true,
+				}),
+			});
+			const data = await res.json();
+			if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to fetch court docs');
+			setLegalDocsReport(data);
+			if (selectedId) await loadDetail(selectedId);
+			setBanner(
+				`Fetched ${data.documents?.length || 0} legal document(s) & synced ${data.profileSync?.timelineEntriesUpserted || 0} filing milestones.`,
+			);
+		} catch (e: unknown) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setFetchingLegalDocs(false);
+		}
+	}
+
+	async function handleToggleOcrDoc(docId: string) {
+		if (expandedOcrDocId === docId) {
+			setExpandedOcrDocId(null);
+			return;
+		}
+		setExpandedOcrDocId(docId);
+		if (ocrDocTextById[docId]) return;
+		const key = detail?.profile?.slug || detail?.profile?.id;
+		if (!key) return;
+		setLoadingOcrDocId(docId);
+		try {
+			const res = await fetch(
+				`/api/profiles/${encodeURIComponent(key)}/legal-docs?docId=${encodeURIComponent(docId)}`,
+				{ cache: 'no-store' },
+			);
+			const data = await res.json();
+			if (res.ok && data?.ok && data.doc?.fullText) {
+				setOcrDocTextById((prev) => ({ ...prev, [docId]: String(data.doc.fullText) }));
+			}
+		} catch {
+			/* non-fatal */
+		} finally {
+			setLoadingOcrDocId(null);
+		}
+	}
 
 	// Load Same Building Complex & Nearby profiles whenever the selected profile, locations, or links change.
 	const activeDetailProfileId = detail?.profile?.id || null;
@@ -8987,6 +9112,166 @@ export default function ProfilesClient({
 																		);
 																	})}
 																</div>
+															</div>
+														:	null}
+
+														{/* Court Filings, CFPB Complaints & OCR Documents */}
+														{detail.profile.profileType !== 'historic_event' ?
+															<div className='rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3'>
+																<div className='flex flex-wrap items-center justify-between gap-2'>
+																	<h3 className='m-0 text-xs font-semibold uppercase opacity-75'>
+																		Court Filings, CFPB &amp; OCR Documents
+																		{legalDocsReport?.documents?.length ? ` (${legalDocsReport.documents.length})` : ''}
+																	</h3>
+																	<button
+																		type='button'
+																		disabled={fetchingLegalDocs}
+																		onClick={() => void handleFetchLegalDocs()}
+																		className='cursor-pointer rounded border border-[#F97316]/50 bg-[#F97316]/12 px-2 py-0.5 text-[10px] font-semibold text-[#F97316] hover:bg-[#F97316]/20 disabled:opacity-50'>
+																		{fetchingLegalDocs ? 'Fetching & OCRing…' : legalDocsReport?.documents?.length ? 'Refresh Court Docs & OCR' : 'Fetch Court Docs & OCR'}
+																	</button>
+																</div>
+
+																{legalDocsReport && legalDocsReport.documents.length > 0 ?
+																	<div className='mt-2.5 space-y-3'>
+																		{/* CFPB State & Issue Breakdown */}
+																		{legalDocsReport.cfpbSummary ?
+																			<div className='rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-[11px]'>
+																				<div className='flex flex-wrap items-center gap-1.5'>
+																					<span className='font-semibold'>
+																						CFPB Complaints: {legalDocsReport.cfpbSummary.totalMatching.toLocaleString()}
+																					</span>
+																					{Object.entries(legalDocsReport.cfpbSummary.byState)
+																						.sort((a, b) => b[1] - a[1])
+																						.slice(0, 8)
+																						.map(([st, cnt]) => (
+																							<span
+																								key={st}
+																								className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px]'>
+																								{st}: {cnt}
+																							</span>
+																						))}
+																				</div>
+																				{legalDocsReport.cfpbSummary.topIssues.length > 0 ?
+																					<div className='mt-1 text-[10px] opacity-75'>
+																						Top issues:{' '}
+																						{legalDocsReport.cfpbSummary.topIssues
+																							.slice(0, 4)
+																							.map((i) => `${i.issue} (${i.count})`)
+																							.join(' · ')}
+																					</div>
+																				:	null}
+																			</div>
+																		:	null}
+
+																		{/* Extracted Typed Litigation / Counterparty Edges */}
+																		{legalDocsReport.edges.filter((e) => e.edgeType !== 'CFPB_COMPLAINT_LINKED_STATE').length > 0 ?
+																			<div>
+																				<div className='mb-1 text-[10px] font-semibold uppercase opacity-65'>
+																					Extracted Filing Relationships
+																				</div>
+																				<div className='flex flex-wrap gap-1.5'>
+																					{legalDocsReport.edges
+																						.filter((e) => e.edgeType !== 'CFPB_COMPLAINT_LINKED_STATE')
+																						.slice(0, 16)
+																						.map((edge, idx) => (
+																							<span
+																								key={`${edge.targetEntity}-${edge.edgeType}-${idx}`}
+																								title={edge.evidenceSummary}
+																								className='inline-flex items-center gap-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[10px]'>
+																								<span className='font-semibold'>{edge.targetEntity}</span>
+																								<span className='opacity-65'>
+																									· {edge.edgeType.toLowerCase().replace(/_/g, ' ')}
+																								</span>
+																								{edge.jurisdiction ?
+																									<span className='rounded bg-[var(--app-bg)] px-1 font-mono text-[9px] opacity-75'>
+																										{edge.jurisdiction}
+																									</span>
+																								:	null}
+																							</span>
+																						))}
+																				</div>
+																			</div>
+																		:	null}
+
+																		{/* Downloaded & OCR'd Court Documents */}
+																		<div className='space-y-1.5'>
+																			{legalDocsReport.documents.map((doc) => {
+																				const isOpen = expandedOcrDocId === doc.id;
+																				const fullText = ocrDocTextById[doc.id];
+																				return (
+																					<div
+																						key={doc.id}
+																						className='rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs'>
+																						<div className='flex flex-wrap items-center justify-between gap-2'>
+																							<div className='min-w-0 flex-1'>
+																								<div className='flex flex-wrap items-center gap-1.5'>
+																									<span className='rounded border border-sky-500/40 bg-sky-500/12 px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase text-sky-800 dark:text-sky-200'>
+																										{doc.source}
+																									</span>
+																									{doc.dateIssued ?
+																										<span className='font-mono text-[10px] opacity-70'>{doc.dateIssued}</span>
+																									:	null}
+																									<span className='font-semibold'>{doc.title}</span>
+																								</div>
+																								<div className='mt-0.5 flex flex-wrap items-center gap-2 text-[10px] opacity-70'>
+																									<span>{doc.courtOrSource}</span>
+																									<span>· {doc.caseOrRecordId}</span>
+																									<span>
+																										· {doc.extractionMethod} ({doc.textChars.toLocaleString()} chars)
+																									</span>
+																									{doc.pdfPath ?
+																										<span className='rounded border border-emerald-500/35 bg-emerald-500/10 px-1 py-0 text-[9px] font-semibold text-emerald-800 dark:text-emerald-200'>
+																											PDF cached
+																										</span>
+																									:	null}
+																									{doc.matchedVia ?
+																										<span className='rounded border border-amber-500/40 bg-amber-500/12 px-1 py-0 text-[9px] font-semibold text-amber-800 dark:text-amber-200'>
+																											{doc.matchedVia}
+																										</span>
+																									:	null}
+																								</div>
+																							</div>
+																							<div className='flex shrink-0 items-center gap-1.5'>
+																								<button
+																									type='button'
+																									onClick={() => void handleToggleOcrDoc(doc.id)}
+																									className='cursor-pointer rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]'>
+																									{isOpen ? 'Hide text' : 'Read OCR text'}
+																								</button>
+																								{doc.sourceUrl ?
+																									<a
+																										href={doc.sourceUrl}
+																										target='_blank'
+																										rel='noreferrer'
+																										className='text-[10px] font-semibold text-[#F97316] underline'>
+																										Source ↗
+																									</a>
+																								:	null}
+																							</div>
+																						</div>
+																						{isOpen ?
+																							<pre className='mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 font-mono text-[11px] leading-relaxed'>
+																								{loadingOcrDocId === doc.id && !fullText ?
+																									'Loading full extracted text…'
+																								:	fullText || doc.textExcerpt || 'No text extracted.'}
+																							</pre>
+																						:	null}
+																					</div>
+																				);
+																			})}
+																		</div>
+
+																		{legalDocsReport.sources?.courtlistener?.status === 'auth_required' ?
+																			<p className='m-0 text-[10px] opacity-60'>
+																				CourtListener / RECAP: {legalDocsReport.sources.courtlistener.note}
+																			</p>
+																		:	null}
+																	</div>
+																:	<p className='m-0 mt-1.5 text-[11px] opacity-65'>
+																		No cached court filings or CFPB documents yet. Click <strong>Fetch Court Docs &amp; OCR</strong> to query CFPB, GovInfo USCOURTS (PDFs), OSCN, and CourtListener/RECAP.
+																	</p>
+																}
 															</div>
 														:	null}
 
