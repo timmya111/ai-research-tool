@@ -3078,6 +3078,7 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			}>
 		>();
 		const peerIdentsById = new Map<string, Array<{ scheme: string; value: string }>>();
+		const peerAliasesById = new Map<string, string[]>();
 
 		const CHUNK = 500;
 		for (let i = 0; i < allPeerIds.length; i += CHUNK) {
@@ -3128,6 +3129,24 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				const list = peerIdentsById.get(pid) || [];
 				list.push({ scheme: String(ir.scheme), value: String(ir.value) });
 				peerIdentsById.set(pid, list);
+			}
+
+			const peerAliasRows = db
+				.prepare(
+					`SELECT profile_id, alias FROM profile_aliases
+           WHERE profile_id IN (${placeholders})
+             AND alias_kind IN ('name', 'former_name', 'other_name')`,
+				)
+				.all(...chunkIds) as Array<Record<string, unknown>>;
+			for (const ar of peerAliasRows) {
+				const pid = String(ar.profile_id);
+				const rawAlias = String(ar.alias || '').replace(/[\[\]]+/g, '').replace(/\s+/g, ' ').trim();
+				if (rawAlias.length < 5) continue;
+				const list = peerAliasesById.get(pid) || [];
+				if (list.length < 8 && !list.some((x) => x.toLowerCase() === rawAlias.toLowerCase())) {
+					list.push(rawAlias);
+					peerAliasesById.set(pid, list);
+				}
 			}
 		}
 
@@ -3190,6 +3209,8 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 				l.peerSecCik = peerSecIdent?.value || null;
 			}
 			l.peerPrimaryLocation = pickBestFullAddress(peerLocsById.get(peerId) || []);
+			const pAliases = peerAliasesById.get(peerId);
+			if (pAliases?.length) l.peerAliases = pAliases;
 		}
 	}
 

@@ -418,6 +418,8 @@ export type ProfileLink = {
 	peerGender?: 'female' | 'male' | null;
 	/** Peer FINRA / SEC registry fields (for CRD-prioritized Connected Profiles grouping) */
 	peerFinraCrd?: string | null;
+	/** Clean name / former_name / other_name aliases for inline peer linking */
+	peerAliases?: string[];
 	peerFinraBcScope?: string | null;
 	peerFinraIaScope?: string | null;
 	peerSecCik?: string | null;

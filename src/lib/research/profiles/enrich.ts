@@ -1202,13 +1202,64 @@ function applyValidatedWikipediaEnrichment(
 			}
 
 			// Link parent, subsidiaries, predecessor & successor
+			const GENERIC_INFOBOX_ORG_NAMES = new Set([
+				'employees',
+				'employee',
+				'employee owned',
+				'employee ownership',
+				'partners',
+				'managing partners',
+				'general partners',
+				'limited partners',
+				'shareholders',
+				'stockholders',
+				'members',
+				'policyholders',
+				'depositors',
+				'founders',
+				'management',
+				'management and employees',
+				'executives',
+				'board of directors',
+				'trustees',
+				'public',
+				'publicly traded',
+				'private',
+				'privately held',
+				'private equity',
+				'family',
+				'family owned',
+				'various',
+				'multiple',
+				'other',
+				'others',
+				'none',
+				'unknown',
+				'self',
+				'independent',
+				'owners',
+				'owner',
+				'investors',
+				'institutional investors',
+				'subsidiaries',
+				'divisions',
+				'parent',
+				'holdings',
+			]);
 			for (const k of ['parent', 'owner', 'subsidiaries', 'predecessor', 'successor']) {
 				const row = article.infobox[k];
 				if (!row) continue;
 				const orgs = (row.links.length ? row.links : row.items).slice(0, 4);
 				for (const oRaw of orgs) {
 					const clean = oRaw.replace(/\([^)]*\)/g, '').trim();
-					if (clean.length < 3 || clean.length > 75 || normalizeText(clean) === normalizeText(profileName)) continue;
+					const normClean = normalizeText(clean);
+					if (clean.length < 3 || clean.length > 75 || normClean === normalizeText(profileName)) continue;
+					if (
+						GENERIC_INFOBOX_ORG_NAMES.has(normClean) ||
+						/^(?:list of|see |various |multiple |former |other |publicly |privately |employee[- ]owned|\d+(?:\.\d+)?%)/i.test(clean)
+					) {
+						continue;
+					}
 					const orgProf = upsertProfile(
 						{
 							profileType: classifyOrgType(clean),

@@ -2215,7 +2215,13 @@ function buildProfileHighlightMatcher(
 		}
 	};
 
-	const registerPeer = (peerId: string, peerSlug: string | null | undefined, peerNameRaw: string | null | undefined, peerType?: string | null) => {
+	const registerPeer = (
+		peerId: string,
+		peerSlug: string | null | undefined,
+		peerNameRaw: string | null | undefined,
+		peerType?: string | null,
+		peerAliases?: string[] | null,
+	) => {
 		const peerName = String(peerNameRaw || '').trim();
 		if (!peerName || peerName.length < 5) return;
 		const targetKey = String(peerSlug || peerId || '').trim();
@@ -2227,6 +2233,11 @@ function buildProfileHighlightMatcher(
 		};
 		const isOrg = peerType !== 'person' && peerType !== 'historic_event' && peerType !== 'region';
 		registerPeerVariant(peerName, info, { minLen: 5, suffixOptional: isOrg });
+		// Base name before parenthetical qualifiers, e.g. "Salem Tube (TUBACEX America)" → "Salem Tube"
+		const parenBase = peerName.replace(/\s*\([^)]+\)\s*$/, '').trim();
+		if (parenBase.length >= 5 && parenBase.toLowerCase() !== peerName.toLowerCase()) {
+			registerPeerVariant(parenBase, info, { minLen: 5, suffixOptional: isOrg });
+		}
 		const peerStripped = peerName
 			.replace(
 				/,?\s+\b(?:incorporated|inc\.?|l\.?l\.?c\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?p\.?|l\.?p\.?|p\.?l\.?l\.?c\.?|p\.?c\.?|p\.?l\.?c\.?|n\.?a\.?|co\.?|company)\s*$/i,
@@ -2235,6 +2246,17 @@ function buildProfileHighlightMatcher(
 			.trim();
 		if (peerStripped.length >= 5 && peerStripped.toLowerCase() !== peerName.toLowerCase()) {
 			registerPeerVariant(peerStripped, info, { minLen: 5, suffixOptional: isOrg });
+		}
+		// Former / alternate names hydrated from profile_aliases (e.g. "Sankaty Advisors", "Brookside Capital")
+		if (Array.isArray(peerAliases)) {
+			for (const rawAl of peerAliases) {
+				const al = String(rawAl || '').trim();
+				if (!al || al.toLowerCase() === peerName.toLowerCase()) continue;
+				const words = al.split(/\s+/).filter(Boolean);
+				if (words.length >= 2 ? al.length >= 5 : al.length >= 7) {
+					registerPeerVariant(al, info, { minLen: 5, suffixOptional: isOrg });
+				}
+			}
 		}
 		// CamelCase compound brand variants like "ExxonMobil" → "Exxon Mobil"
 		if (/^[A-Z][a-z]+[A-Z][a-z]+$/.test(peerName)) {
@@ -2254,8 +2276,8 @@ function buildProfileHighlightMatcher(
 		const peerSlug = isOut ? l.toSlug : l.fromSlug;
 		const peerName = isOut ? l.toName : l.fromName;
 		const peerType = isOut ? l.toType : l.fromType;
-		registerPeer(peerId, peerSlug, peerName, peerType);
-		if (peerTerms.size >= 350) break;
+		registerPeer(peerId, peerSlug, peerName, peerType, l.peerAliases);
+		if (peerTerms.size >= 450) break;
 	}
 	for (const emp of detail.employmentHistory || []) {
 		if (emp.orgProfileId && emp.orgName) {
