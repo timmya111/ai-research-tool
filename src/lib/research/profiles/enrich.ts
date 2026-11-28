@@ -961,9 +961,14 @@ function applyValidatedWikipediaEnrichment(
 		if (article.birthName && normalizeText(article.birthName) !== normalizeText(profileName)) {
 			aliasCandidates.add(article.birthName);
 		}
+		const infoboxBleedRe =
+			/\b(?:Type\s+(?:Public|Private)|Traded\s+as|Industry\s+[A-Z]|Founded\s+\d{4}|Headquarters\s+[A-Z]|Predecessor\s+[A-Z]|President\s+[A-Z]|Established\s+\d{4})\b/;
 		for (const k of ['formerly', 'former name', 'other names', 'trading name', 'also known as']) {
 			for (const item of article.infobox[k]?.items || []) {
-				if (item.length >= 3 && item.length <= 90) aliasCandidates.add(item);
+				const trimmed = item.trim();
+				if (trimmed.length >= 3 && trimmed.length <= 75 && !infoboxBleedRe.test(trimmed)) {
+					aliasCandidates.add(trimmed);
+				}
 			}
 		}
 		for (const al of aliasCandidates) {
@@ -2690,10 +2695,7 @@ export async function enrichProfile(
 		outcomes.push(enrichFromKnowledgeSqlite(ctxAfterFree));
 	}
 
-	// Step 4: Bryan County UCC filings
-	if (opts.includeBryanUcc !== false) {
-		outcomes.push(enrichFromBryanUcc(ctxAfterFree));
-	}
+	// bryan_ucc removed from enrichment flow per user request.
 
 	const totalsAdded = emptyCounts();
 	const fieldsSet = new Set<string>();

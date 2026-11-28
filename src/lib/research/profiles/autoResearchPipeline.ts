@@ -1234,7 +1234,7 @@ function saveStatusMetadata(profileId: string, status: AutoResearchStatus): void
  */
 export async function runAutoProfileResearchPipeline(
 	profileId: string,
-	opts: { trigger?: 'create' | 'update' | 'manual'; force?: boolean } = {},
+	opts: { trigger?: 'create' | 'update' | 'manual'; force?: boolean; skipLocalEnrich?: boolean } = {},
 ): Promise<AutoResearchStatus | null> {
 	const state = getGlobalState();
 	if (state.running.has(profileId)) return null;
@@ -1298,17 +1298,19 @@ export async function runAutoProfileResearchPipeline(
 		status.model = autoModel;
 
 		// 2. Stage 1 — Local validation checks (built-in enrichProfile + DB duplicate/RSS cross-checks)
-		try {
-			const enrichReport = await enrichProfile(profileId, {
-				includeWikipedia: true,
-				includeBrokercheck: true,
-				includeKnowledge: true,
-				includeBryanUcc: true,
-				includeFreeOrgEnrich: true,
-			});
-			status.stages.localValidation.enrichValidatedSources = enrichReport?.validatedSources ?? 0;
-		} catch {
-			/* continue even if one local source errors */
+		if (!opts.skipLocalEnrich) {
+			try {
+				const enrichReport = await enrichProfile(profileId, {
+					includeWikipedia: true,
+					includeBrokercheck: true,
+					includeKnowledge: true,
+					includeBryanUcc: false,
+					includeFreeOrgEnrich: true,
+				});
+				status.stages.localValidation.enrichValidatedSources = enrichReport?.validatedSources ?? 0;
+			} catch {
+				/* continue even if one local source errors */
+			}
 		}
 
 		detail = getProfileDetail(profileId) || detail;
@@ -1319,8 +1321,40 @@ export async function runAutoProfileResearchPipeline(
 		const rssStateHits = checkLocalRssStateFiles(detail.profile.name);
 		status.stages.localValidation.rssFeedHits = rssStateHits.length;
 
-		// 3. Stage 2 — External APIs (Wikipedia / Wikidata / ProPublica)
-		const wikiHit = await lookupVerifiedWikipediaForProfile(detail);
+		// 3. Stage 2 — External & Local Offline Wikipedia / Wikidata / ProPublica APIs
+		let wikiHit = await lookupVerifiedWikipediaForProfile(detail);
+		if (!wikiHit) {
+			try {
+				const dateHit = await resolveEntityStartEndDates({
+					name: detail.profile.name,
+					profileType: detail.profile.profileType,
+					summary: detail.profile.summary,
+					existingQid: detail.identifiers.find((i) => i.scheme === 'wikidata')?.value || null,
+					existingWikiUrl:
+						detail.identifiers.find((i) => i.scheme === 'url' && /wikipedia\.org/i.test(i.value))?.value || null,
+					allowWebLookup: true,
+				});
+				if (dateHit.wikiTitle && dateHit.wikiExtract) {
+					wikiHit = {
+						title: dateHit.wikiTitle,
+						url: dateHit.wikiUrl || `https://en.wikipedia.org/wiki/${encodeURIComponent(dateHit.wikiTitle.replace(/ /g, '_'))}`,
+						qid: dateHit.qid,
+						extract: dateHit.wikiExtract,
+						inception: dateHit.startDate,
+						dissolved: dateHit.endDate,
+					};
+				} else if (dateHit.startDate || dateHit.endDate) {
+					if (!detail.profile.startDate && dateHit.startDate) {
+						updateProfileFields(profileId, { startDate: dateHit.startDate });
+					}
+					if (!detail.profile.endDate && dateHit.endDate) {
+						updateProfileFields(profileId, { endDate: dateHit.endDate });
+					}
+				}
+			} catch {
+				/* non-fatal */
+			}
+		}
 		if (wikiHit) {
 			status.stages.apiLookup.wikipedia = true;
 			status.stages.apiLookup.wikidataQid = wikiHit.qid;

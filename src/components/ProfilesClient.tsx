@@ -2007,11 +2007,42 @@ const HIGHLIGHT_STOP_TERMS = new Set([
 	'partners', 'holdings', 'financial', 'capital', 'services', 'management', 'fund',
 	'state', 'united states', 'america', 'american', 'national', 'federal', 'general',
 	'first', 'public', 'us', 'uk', 'ok', 'tx', 'ca', 'ny', 'co', 'na', 'pc', 'lp', 'llp',
+	'hired', 'found', 'founded', 'known', 'media', 'network', 'global', 'world', 'union',
+	'energy', 'power', 'market', 'markets', 'ventures', 'technologies', 'technology',
 ]);
 
-/** Section-Township-Range PLSS land area descriptors (e.g., "S24 T2S R10E NE", "S07 T2S R10E SW SW SE Partial"). */
-const PLSS_LAND_AREA_RE =
-	/\b(?:S\d{1,2}\s+T\d{1,2}[NS]?\s+R\d{1,2}[EW]?(?:\s+(?:NE|NW|SE|SW|N2|S2|E2|W2|NE4|NW4|SE4|SW4|Partial)){0,6}|(?:NE4|NW4|SE4|SW4|N2|S2|E2|W2)(?:\s+(?:NE4|NW4|SE4|SW4|N2|S2|E2|W2)){0,3}\s+S\d{1,2}\s+T\d{1,2}[NS]?\s+R\d{1,2}[EW]?)\b/gi;
+const INFOBOX_BLEED_ALIAS_RE =
+	/\b(?:Type\s+(?:Public|Private)|Traded\s+as|Industry\s+[A-Z]|Founded\s+\d{4}|Headquarters\s+[A-Z]|Predecessor\s+[A-Z]|President\s+[A-Z]|Established\s+\d{4})\b/;
+
+const HIGHLIGHT_RECORD_CORPUS_RE =
+	/(?:okcr|deed|land|knowledge-sqlite|legal-docs|bryan-ucc|govinfo|oscn|cfpb|courtlistener|finra|sec|edgar|filing|ocr)/i;
+
+function isStructuredRecordText(text: string): boolean {
+	if (!text) return false;
+	if (/\bI-\d{4}-\d{3,}\b/.test(text)) return true;
+	if (/\s→\s/.test(text)) return true;
+	PLSS_LAND_AREA_RE.lastIndex = 0;
+	return PLSS_LAND_AREA_RE.test(text);
+}
+
+function isHighlightableTimelineEntry(
+	entry: { angle?: string | null; entryKind?: string | null; sourceCorpus?: string | null },
+	title: string,
+	summary: string,
+): boolean {
+	if (entry.angle === 'land_records') return true;
+	if (entry.entryKind === 'filing') return true;
+	if (entry.sourceCorpus && HIGHLIGHT_RECORD_CORPUS_RE.test(entry.sourceCorpus)) return true;
+	return isStructuredRecordText(`${title} ${summary}`);
+}
+
+/** Section-Township-Range PLSS tracts + Subdivision/Block/Lot legal land descriptions (e.g., "S07 T2S R10E SW SW SE", "G H VILLAGE II B18 L36", "FRONTIER SHORES I L730"). */
+const PLSS_LAND_AREA_SRC =
+	'\\b(?:[Ss]\\d{1,2}\\s+[Tt]\\d{1,2}[NnSs]?\\s+[Rr]\\d{1,2}[EeWw]?(?:\\s+(?:NE|NW|SE|SW|N2|S2|E2|W2|NE4|NW4|SE4|SW4|ne|nw|se|sw|n2|s2|e2|w2|ne4|nw4|se4|sw4|L\\d+|Partial|partial)){0,6}|(?:NE4|NW4|SE4|SW4|N2|S2|E2|W2|ne4|nw4|se4|sw4|n2|s2|e2|w2)(?:\\s+(?:NE4|NW4|SE4|SW4|N2|S2|E2|W2|ne4|nw4|se4|sw4|n2|s2|e2|w2)){0,3}\\s+[Ss]\\d{1,2}\\s+[Tt]\\d{1,2}[NnSs]?\\s+[Rr]\\d{1,2}[EeWw]?)\\b';
+const SUBDIV_LOT_WORD_SRC =
+	"(?!Partial\\b|Legal\\b|Book\\b|Pages\\b|BOKF\\b|GRANTOR\\b|GRANTEE\\b|NOTICE\\b|MTG\\b|QCD\\b|WD\\b|REL\\b|OG\\b|UCC\\b|SEE\\b|INST\\b|B\\d+[A-Z]?\\b|L\\d+[A-Z]?\\b)[A-Z][A-Z0-9'’./-]{0,18}";
+const SUBDIV_LOT_AREA_SRC = `(?<![A-Za-z0-9])(?:${SUBDIV_LOT_WORD_SRC}\\s+){1,5}(?:(?:B\\d+[A-Z]?\\s+L\\d+[A-Z]?)|(?:BLK\\s*\\d+[A-Z]?\\s+LOT\\s*\\d+[A-Z]?)|(?:L\\d+[A-Z]?))(?:\\s+(?:Partial|E2|W2|N2|S2|NE|NW|SE|SW|[NSEW]\\s+\\d+['"]?)){0,3}(?![A-Za-z0-9])`;
+const PLSS_LAND_AREA_RE = new RegExp(`(?:${PLSS_LAND_AREA_SRC}|${SUBDIV_LOT_AREA_SRC})`, 'g');
 
 function escapeRegExpChars(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2035,7 +2066,7 @@ function buildProfileHighlightMatcher(detail: ProfileDetail | null): ProfileHigh
 		const low = clean.toLowerCase();
 		if (HIGHLIGHT_STOP_TERMS.has(low)) return;
 		const exactCase = Boolean(opts?.exactCase || (clean.length <= 3 && !clean.includes(' ')));
-		if (exactCase && !/^[A-Z0-9&.-]{2,6}$/.test(clean)) return;
+		if (exactCase && !/^[A-Za-z0-9&.-]{2,20}$/.test(clean)) return;
 		if (!exactCase && clean.length < (opts?.minLen ?? 4)) return;
 		const words = clean.split(/[\s,]+/).filter(Boolean);
 		if (words.length === 0) return;
@@ -2064,10 +2095,13 @@ function buildProfileHighlightMatcher(detail: ProfileDetail | null): ProfileHigh
 		const kind = String(a.aliasKind || 'name').toLowerCase();
 		if (!allowedAliasKinds.has(kind)) continue;
 		const val = String(a.alias || '').trim();
-		if (!val) continue;
+		if (!val || val.length > 75 || INFOBOX_BLEED_ALIAS_RE.test(val)) continue;
 		const isCode = kind === 'ticker' || kind === 'acronym';
 		const normalizedCode = isCode && val.includes(':') ? val.split(':').pop()!.trim() : val;
-		addTerm(normalizedCode, { exactCase: isCode && normalizedCode.length <= 3 });
+		const hadWikiDisambig = /\s*\([^)]+\)\s*$/.test(normalizedCode);
+		const strippedDisambig = normalizedCode.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
+		const singleWordDisambig = hadWikiDisambig && strippedDisambig && !strippedDisambig.includes(' ');
+		addTerm(normalizedCode, { exactCase: (isCode && normalizedCode.length <= 3) || Boolean(singleWordDisambig) });
 	}
 
 	for (const ident of detail.identifiers || []) {
@@ -2160,14 +2194,14 @@ function highlightProfileMatchesInHtml(html: string, matcher: ProfileHighlightMa
 			}
 			if (insideAnchor > 0 || insideMark > 0 || insideCode > 0) return tok;
 
-			// 1. Highlight active profile name/alias/ticker in vivid amber/orange
+			// 1. Highlight active profile name/alias/ticker in vivid amber/orange (no mid-tag line wrap)
 			matcher.regex.lastIndex = 0;
 			let out = tok.replace(matcher.regex, (matched) => {
 				if (matched.length <= 3 && !matcher.exactCaseTerms.has(matched)) return matched;
-				return `<mark style="background:rgba(249,115,22,0.34);color:#fef3c7;border:1px solid rgba(251,191,36,0.75);border-radius:4px;padding:0 4px;font-weight:700">${matched}</mark>`;
+				return `<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(249,115,22,0.34);color:#fef3c7;border:1px solid rgba(251,191,36,0.75);border-radius:4px;padding:0 5px;font-weight:700">${matched}</mark>`;
 			});
 
-			// 2. Highlight PLSS land area descriptors (e.g., S24 T2S R10E NE) in emerald mono chips
+			// 2. Highlight PLSS land tracts & subdivision Block/Lot descriptors in non-wrapping emerald mono chips
 			out = out
 				.split(/(<mark\b[^>]*>[\s\S]*?<\/mark>)/gi)
 				.map((seg) => {
@@ -2176,7 +2210,7 @@ function highlightProfileMatchesInHtml(html: string, matcher: ProfileHighlightMa
 					let sub = seg.replace(
 						PLSS_LAND_AREA_RE,
 						(area) =>
-							`<mark style="background:rgba(16,185,129,0.22);color:#a7f3d0;border:1px solid rgba(52,211,153,0.55);border-radius:4px;padding:0 4px;font-family:ui-monospace,monospace;font-style:normal;font-weight:600">${area}</mark>`,
+							`<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(16,185,129,0.22);color:#a7f3d0;border:1px solid rgba(52,211,153,0.55);border-radius:4px;padding:0 5px;font-family:ui-monospace,monospace;font-style:normal;font-weight:600">${area}</mark>`,
 					);
 					// 3. Highlight connected peer profile names in sky-blue
 					if (matcher.peerRegex) {
@@ -2187,7 +2221,7 @@ function highlightProfileMatchesInHtml(html: string, matcher: ProfileHighlightMa
 								matcher.peerRegex.lastIndex = 0;
 								return pSeg.replace(matcher.peerRegex, (peerHit) => {
 									if (peerHit.length <= 3 && !matcher.peerExactCaseTerms.has(peerHit)) return peerHit;
-									return `<mark style="background:rgba(56,189,248,0.22);color:#bae6fd;border:1px solid rgba(56,189,248,0.55);border-radius:4px;padding:0 4px;font-weight:600">${peerHit}</mark>`;
+									return `<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(56,189,248,0.22);color:#bae6fd;border:1px solid rgba(56,189,248,0.55);border-radius:4px;padding:0 5px;font-weight:600">${peerHit}</mark>`;
 								});
 							})
 							.join('');
@@ -2216,7 +2250,7 @@ function HighlightProfileText({ text, className }: { text: string; className?: s
 			areaParts.push(
 				<mark
 					key={`${keyPrefix}-area-${aHit++}`}
-					className='rounded border border-emerald-500/55 bg-emerald-400/20 px-1 font-mono text-[11px] font-semibold text-emerald-900 dark:border-emerald-400/55 dark:bg-emerald-400/20 dark:text-emerald-200'>
+					className='mx-0.5 my-0.5 inline-block whitespace-nowrap rounded border border-emerald-500/55 bg-emerald-400/20 px-1.5 align-baseline font-mono text-[11px] font-semibold text-emerald-900 dark:border-emerald-400/55 dark:bg-emerald-400/20 dark:text-emerald-200'>
 					{am[0]}
 				</mark>,
 			);
@@ -2248,7 +2282,7 @@ function HighlightProfileText({ text, className }: { text: string; className?: s
 		parts.push(
 			<mark
 				key={`hl-${hitIdx++}`}
-				className='rounded border border-amber-500/75 bg-amber-400/35 px-1 font-bold text-amber-950 dark:border-amber-400/75 dark:bg-[#F97316]/35 dark:text-amber-100'>
+				className='mx-0.5 my-0.5 inline-block whitespace-nowrap rounded border border-amber-500/75 bg-amber-400/35 px-1.5 align-baseline font-bold text-amber-950 dark:border-amber-400/75 dark:bg-[#F97316]/35 dark:text-amber-100'>
 				{matched}
 			</mark>,
 		);
@@ -2263,20 +2297,53 @@ function HighlightProfileText({ text, className }: { text: string; className?: s
 	return className ? <span className={className}>{parts}</span> : <>{parts}</>;
 }
 
+function highlightLandAreasOnlyInHtml(html: string): string {
+	if (!html) return html;
+	const tokens = html.split(/(<[^>]+>)/g);
+	let insideAnchor = 0;
+	let insideMark = 0;
+	let insideCode = 0;
+	return tokens
+		.map((tok) => {
+			if (!tok) return tok;
+			if (tok.startsWith('<')) {
+				if (/^<a\b/i.test(tok)) insideAnchor += 1;
+				else if (/^<\/a>/i.test(tok)) insideAnchor = Math.max(0, insideAnchor - 1);
+				else if (/^<mark\b/i.test(tok)) insideMark += 1;
+				else if (/^<\/mark>/i.test(tok)) insideMark = Math.max(0, insideMark - 1);
+				else if (/^<code\b/i.test(tok)) insideCode += 1;
+				else if (/^<\/code>/i.test(tok)) insideCode = Math.max(0, insideCode - 1);
+				return tok;
+			}
+			if (insideAnchor > 0 || insideMark > 0 || insideCode > 0) return tok;
+			PLSS_LAND_AREA_RE.lastIndex = 0;
+			return tok.replace(
+				PLSS_LAND_AREA_RE,
+				(area) =>
+					`<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(16,185,129,0.22);color:#a7f3d0;border:1px solid rgba(52,211,153,0.55);border-radius:4px;padding:0 5px;font-family:ui-monospace,monospace;font-style:normal;font-weight:600">${area}</mark>`,
+			);
+		})
+		.join('');
+}
+
 function SummaryMarkdown({
 	text,
 	inline = false,
 	className,
+	highlightMatches = false,
 }: {
 	text: string;
 	inline?: boolean;
 	className?: string;
+	highlightMatches?: boolean;
 }) {
 	const highlightMatcher = useContext(ProfileHighlightContext);
 	// Do not auto-bold year/date tokens inside summary prose — timeline rail date
 	// chips already carry the date styling via summaryTimelineDateLabel.
 	const rawHtml = styleResearchDriveCitationsInHtml(summaryMarkdownToHtml(String(text || ''), { inline }));
-	const html = highlightProfileMatchesInHtml(rawHtml, highlightMatcher);
+	const html = highlightMatches
+		? highlightProfileMatchesInHtml(rawHtml, highlightMatcher)
+		: highlightLandAreasOnlyInHtml(rawHtml);
 	if (!html) return null;
 	if (inline) {
 		return (
@@ -2303,7 +2370,8 @@ function TimelineEntryMarkdown({
 }) {
 	const highlightMatcher = useContext(ProfileHighlightContext);
 	const { body, citation } = splitTrailingResearchDriveCitation(text);
-	const isMatchedRow = textMatchesActiveProfile(body || text, highlightMatcher);
+	const isDeedOrFilingLine = isStructuredRecordText(body || text);
+	const isMatchedRow = isDeedOrFilingLine && textMatchesActiveProfile(body || text, highlightMatcher);
 	return (
 		<div
 			className={
@@ -2315,6 +2383,7 @@ function TimelineEntryMarkdown({
 				<SummaryMarkdown
 					text={body}
 					inline
+					highlightMatches={isDeedOrFilingLine}
 					className='block text-[12px] leading-relaxed text-white/90'
 				/>
 			:	null}
@@ -6657,7 +6726,9 @@ export default function ProfilesClient({
 					includeWikipedia: true,
 					includeBrokercheck: true,
 					includeKnowledge: true,
-					includeBryanUcc: true,
+					includeFreeOrgEnrich: true,
+					includeFullFlow: true,
+					includeLegalDocs: true,
 				}),
 			});
 			const data = await res.json();
@@ -6666,6 +6737,15 @@ export default function ProfilesClient({
 			setLastEnrichReport(report);
 			if (data.detail) setDetail(data.detail as ProfileDetail);
 			await loadList({ resetOffset: true });
+			const legalKey = (data.detail as ProfileDetail | undefined)?.profile?.slug || selectedId;
+			if (legalKey && (data.detail as ProfileDetail | undefined)?.profile?.profileType !== 'historic_event') {
+				void fetch(`/api/profiles/${encodeURIComponent(legalKey)}/legal-docs`, { cache: 'no-store' })
+					.then((r) => (r.ok ? r.json() : null))
+					.then((legalData) => {
+						if (legalData?.ok && legalData.report) setLegalDocsReport(legalData.report);
+					})
+					.catch(() => undefined);
+			}
 			if (profileTab === 'timeline') await loadTimeline(selectedId);
 			const summaryMsg =
 				report.validatedSources > 0 ?
@@ -8169,7 +8249,7 @@ export default function ProfilesClient({
 												type='button'
 												disabled={enriching || profileEditing}
 												onClick={() => void handleEnrichProfile()}
-												title='Search local offline Wikipedia, BrokerCheck (if CRD), county deeds, and UCC filings. Only merges validated matches (identifier or name/initials + address, firm, military base, or institution); name-only matches are held as review notes.'
+												title='Run full enrichment flow: local offline Wikipedia & start/end dates, BrokerCheck, county deeds, CFPB/court OCR, internet/PDF/data-layer crawl, AI milestone extraction & validated entity discovery (requires start/end dates before creating new profiles).'
 												className='cursor-pointer rounded-md border border-[#F97316]/50 bg-[#F97316]/15 px-2.5 py-1.5 text-xs font-semibold text-[#F97316] hover:bg-[#F97316]/25 disabled:opacity-50'>
 												{enriching ? 'Researching…' : 'Research & Fill Details'}
 											</button>
@@ -8685,14 +8765,6 @@ export default function ProfilesClient({
 											{(() => {
 												const meta = detail.profile.metadata || {};
 												const finraCrd = resolveProfileFinraCrd(detail.profile.profileType, meta, detail.identifiers);
-												const finraLinks =
-													finraCrd && (detail.profile.profileType === 'person' || detail.profile.profileType === 'firm') ?
-														finraSecSourceLinks({
-															profileType: detail.profile.profileType,
-															crd: finraCrd,
-															iaScope: meta.finraIaScope,
-														})
-													:	[];
 												const wikiUrl = typeof meta.wikipediaUrl === 'string' ? meta.wikipediaUrl.trim().toLowerCase() : '';
 												const normalizeHref = (raw: string) => {
 													const t = String(raw || '').trim();
@@ -8707,32 +8779,45 @@ export default function ProfilesClient({
 													}
 												};
 												const wikiNorm = wikiUrl ? normalizeHref(wikiUrl) : '';
-												// Drop finra_crd list rows when the Firm/Individual CRD badge already shows it.
 												const publicIds = detail.identifiers.filter((idItem) => {
 													const scheme = String(idItem.scheme || '').toLowerCase();
 													if (!PUBLIC_IDENTIFIER_SCHEMES.has(scheme)) return false;
 													if (isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value)) {
 														return false;
 													}
-													if (finraCrd && scheme === 'finra_crd') {
-														const v = String(idItem.value || '').trim();
-														if (v === finraCrd) return false;
-													}
 													return true;
 												});
+												const hasMetaOnlyCrd = Boolean(
+													finraCrd &&
+														!publicIds.some(
+															(idItem) =>
+																String(idItem.scheme || '').toLowerCase() === 'finra_crd' &&
+																String(idItem.value || '').trim() === finraCrd,
+														),
+												);
+												const totalPublicIdCount = publicIds.length + (hasMetaOnlyCrd ? 1 : 0);
 												const isNewsRssHistoric =
 													detail.profile.profileType === 'historic_event' && isNewsRssHistoricMetadata(meta);
 												const sourceLabels = collectProfileSourceLabels(detail.identifiers);
+												const wikiHost = typeof meta.wikipediaUrl === 'string' ? hostnameFromUrl(meta.wikipediaUrl) : null;
 												const preferredWebsiteRaw =
 													(typeof meta.website === 'string' && /^https?:\/\//i.test(meta.website) ? meta.website : null) ||
 													(typeof meta.companyUrl === 'string' && /^https?:\/\//i.test(meta.companyUrl) ? meta.companyUrl : null);
-												// News RSS citations are not org websites.
-												const preferredWebsite = isNewsRssHistoric ? null : preferredWebsiteRaw;
+												// News RSS citations are not org websites; don't duplicate Wikipedia as a separate website entry.
+												const preferredWebsiteHostRaw = preferredWebsiteRaw ? hostnameFromUrl(preferredWebsiteRaw) : null;
+												const isDupWikiWebsite =
+													Boolean(preferredWebsiteRaw) &&
+													((wikiNorm && normalizeHref(preferredWebsiteRaw!) === wikiNorm) ||
+														(wikiHost && preferredWebsiteHostRaw && preferredWebsiteHostRaw === wikiHost));
+												const preferredWebsite = isNewsRssHistoric || isDupWikiWebsite ? null : preferredWebsiteRaw;
 												const preferredWebsiteHost = preferredWebsite ? hostnameFromUrl(preferredWebsite) : null;
 												const preferredWebsiteNorm = preferredWebsite ? normalizeHref(preferredWebsite) : '';
-												// Drop URL chips already covered by the Wikipedia meta link or the profile's own website.
+												// Drop URL chips already covered by the Wikipedia meta entry or the profile's own website.
 												// News RSS article URLs stay as plain domain Sources text.
-												const seenUrlHosts = new Set<string>(preferredWebsiteHost ? [preferredWebsiteHost] : []);
+												const seenUrlHosts = new Set<string>([
+													...(preferredWebsiteHost ? [preferredWebsiteHost] : []),
+													...(wikiHost ? [wikiHost] : []),
+												]);
 												const urlIds = detail.identifiers.filter((idItem) => {
 													if (String(idItem.scheme || '').toLowerCase() !== 'url') return false;
 													if (isHiddenEpsteinSourceIdentifier(idItem.scheme, idItem.value)) {
@@ -8767,7 +8852,7 @@ export default function ProfilesClient({
 													}
 												}
 												const hasRegistryLinks =
-													finraLinks.length > 0 || typeof meta.finraVisualizerUrl === 'string' || typeof meta.wikipediaUrl === 'string' || Boolean(preferredWebsite);
+													typeof meta.wikipediaUrl === 'string' || Boolean(preferredWebsite);
 												const showAliases = true;
 												const hasSicMeta = (meta.sic != null && String(meta.sic).trim() !== '') || (typeof meta.sicDescription === 'string' && meta.sicDescription.trim() !== '');
 												const showCombinedSources = true;
@@ -8943,38 +9028,16 @@ export default function ProfilesClient({
 															<div className='rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3'>
 																<h3 className='m-0 mb-2 text-xs font-semibold uppercase opacity-75'>
 																	Sources &amp; Identifiers
-																	{publicIds.length > 0 ? ` (${publicIds.length})` : ''}
+																	{totalPublicIdCount > 0 ? ` (${totalPublicIdCount})` : ''}
 																</h3>
-																{hasRegistryLinks || finraCrd ?
+																{hasRegistryLinks ?
 																	<div className='mb-2 flex flex-wrap items-center gap-2.5'>
-																		{/* CRD + FINRA:/SEC: scope chips (and firm B·IA / District·Type·State·Size) live in the header above the name */}
-																		{finraLinks.map((link) => (
-																			<a
-																				key={link.href}
-																				href={link.href}
-																				target='_blank'
-																				rel='noreferrer'
-																				className={link.className}>
-																				{link.label}
-																			</a>
-																		))}
-																		{typeof meta.finraVisualizerUrl === 'string' ?
-																			<a
-																				href={meta.finraVisualizerUrl}
-																				target='_blank'
-																				rel='noreferrer'
-																				className='text-[11px] font-semibold text-[#F97316] underline'>
-																				FINRA Visualizer ↗
-																			</a>
-																		:	null}
 																		{typeof meta.wikipediaUrl === 'string' ?
-																			<a
-																				href={meta.wikipediaUrl}
-																				target='_blank'
-																				rel='noreferrer'
-																				className='text-[11px] font-semibold text-[#F97316] underline'>
-																				Wikipedia ↗
-																			</a>
+																			<span
+																				className='text-[11px] font-medium'
+																				title={meta.wikipediaUrl}>
+																				{wikiHost || 'en.wikipedia.org'}
+																			</span>
 																		:	null}
 																		{preferredWebsite ?
 																			<span
@@ -8987,11 +9050,17 @@ export default function ProfilesClient({
 																:	null}
 																{(
 																	publicIds.filter((idItem) => !pendingDeleteIdentIds.includes(idItem.id)).length > 0 ||
+																	hasMetaOnlyCrd ||
 																	pendingNewIdents.length > 0 ||
 																	meta.sic != null ||
 																	meta.sicDescription != null
 																) ?
 																	<ul className='m-0 list-none space-y-1 p-0 text-[11px]'>
+																		{hasMetaOnlyCrd && finraCrd ?
+																			<li key='meta-finra-crd'>
+																				<span className='opacity-70'>CRD:</span> <strong>{finraCrd}</strong>
+																			</li>
+																		:	null}
 																		{publicIds
 																			.filter((idItem) => !pendingDeleteIdentIds.includes(idItem.id))
 																			.map((idItem) => {
@@ -9049,7 +9118,9 @@ export default function ProfilesClient({
 																			</li>
 																		:	null}
 																	</ul>
-																:	<p className='m-0 mb-2 text-[11px] italic opacity-60'>No public identifiers yet.</p>}
+																: !(hasRegistryLinks || finraCrd || sourceLabels.length > 0 || urlIds.length > 0 || newsDomainLabels.length > 0) ?
+																	<p className='m-0 mb-2 text-[11px] italic opacity-60'>No sources or identifiers yet.</p>
+																:	null}
 																{profileEditing ?
 																	<div className='mt-2 flex flex-wrap gap-1 border-t border-[var(--app-border)] pt-2'>
 																		<select
@@ -9103,9 +9174,9 @@ export default function ProfilesClient({
 																		if (typeof meta.finraVisualizerUrl === 'string') {
 																			coveredLabels.add('finra');
 																		}
-																		if (finraLinks.length > 0) {
+																		if (finraCrd) {
 																			coveredLabels.add('finra');
-																			coveredLabels.add('sec');
+																			if (hasValidSecIaScope(meta.finraIaScope)) coveredLabels.add('sec');
 																		}
 																		// Full domains already listed for news RSS (bbc.co.uk) cover short labels (bbc).
 																		for (const domain of newsDomainLabels) {
@@ -9699,7 +9770,7 @@ export default function ProfilesClient({
 																				</div>
 																				{cardDesc ?
 																					<p className='mt-1 mb-0 line-clamp-2 text-[11px] leading-relaxed opacity-80'>
-																						<HighlightProfileText text={cardDesc} />
+																						{isStructuredRecordText(cardDesc) ? <HighlightProfileText text={cardDesc} /> : cardDesc}
 																					</p>
 																				:	null}
 																			</button>
@@ -10132,7 +10203,7 @@ export default function ProfilesClient({
 																				:	null}
 																				{showRelNote ?
 																					<p className='m-0 mt-1.5 text-[11px] leading-snug opacity-70'>
-																						<HighlightProfileText text={displayNote} />
+																						{isStructuredRecordText(displayNote) ? <HighlightProfileText text={displayNote} /> : displayNote}
 																					</p>
 																				:	null}
 																			</div>
@@ -10738,9 +10809,15 @@ export default function ProfilesClient({
 															const isEmpSpan =
 															entry.entryKind === 'employment' ||
 															String(entry.metadata?.kind || '') === 'employment_span';
+															const highlightEntry = isHighlightableTimelineEntry(
+															entry,
+															displayTitle,
+															displaySummary,
+															);
 															const isMatchedDeedOrFirm =
-															entry.angle === 'land_records' ||
-															textMatchesActiveProfile(`${displayTitle} ${displaySummary}`, profileHighlightMatcher);
+															highlightEntry &&
+															(entry.angle === 'land_records' ||
+															textMatchesActiveProfile(`${displayTitle} ${displaySummary}`, profileHighlightMatcher));
 															return (
 															<div
 															key={entry.id}
@@ -10776,9 +10853,9 @@ export default function ProfilesClient({
 															: 'Open related event profile'
 															}
 															className={`${titleClass} text-sky-700 underline decoration-sky-700/40 underline-offset-2 hover:text-sky-900 dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:text-sky-200`}>
-															<HighlightProfileText text={displayTitle} />
+															{highlightEntry ? <HighlightProfileText text={displayTitle} /> : displayTitle}
 															</button>
-															:	<div className={titleClass}><HighlightProfileText text={displayTitle} /></div>}
+															:	<div className={titleClass}>{highlightEntry ? <HighlightProfileText text={displayTitle} /> : displayTitle}</div>}
 															{entry.entryKind === 'employment' ?
 															<span className='rounded border border-emerald-500/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200'>
 															Employment
@@ -10809,9 +10886,11 @@ export default function ProfilesClient({
 															</div>
 															{displaySummary && displaySummary !== displayTitle ?
 															<p className='m-0 mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80'>
-															<HighlightProfileText
-															text={displaySummary.length > 900 ? `${displaySummary.slice(0, 900).trim()}…` : displaySummary}
-															/>
+															{highlightEntry ?
+																<HighlightProfileText
+																text={displaySummary.length > 900 ? `${displaySummary.slice(0, 900).trim()}…` : displaySummary}
+																/>
+															:	displaySummary.length > 900 ? `${displaySummary.slice(0, 900).trim()}…` : displaySummary}
 															</p>
 															:	null}
 															{isEmpSpan && entry.endDate ?
