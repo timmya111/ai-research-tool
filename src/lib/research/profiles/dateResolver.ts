@@ -932,5 +932,170 @@ export async function resolveEntityStartEndDates(input: {
 		}
 	}
 
+	// 4. Verified official registry fallback for orgs: Texas Comptroller / SOS Open Data + ProPublica Nonprofits
+	if (!startDate && input.profileType !== 'person' && input.profileType !== 'historic_event' && input.profileType !== 'region') {
+		const tx = await lookupTexasComptrollerEntity(input.name);
+		if (tx?.startDate) {
+			startDate = tx.startDate;
+			if (!endDate && tx.endDate) endDate = tx.endDate;
+			source = 'texas_comptroller';
+		}
+	}
+	if (!startDate && (input.profileType === 'nonprofit' || input.profileType === 'education' || input.profileType === 'medical_hospital')) {
+		const pp = await lookupProPublicaByNameOrEin(input.name);
+		if (pp?.rulingDate) {
+			startDate = pp.rulingDate;
+			source = 'propublica';
+		}
+	}
+
 	return { startDate, endDate, qid, wikiUrl, wikiTitle, wikiExtract, source };
+}
+
+export type TexasComptrollerEntity = {
+	taxpayerName: string;
+	startDate: string | null;
+	endDate: string | null;
+	active: boolean;
+	sosFileNumber: string | null;
+	taxpayerNumber: string | null;
+	address: string | null;
+	city: string | null;
+	state: string | null;
+};
+
+/**
+ * Query official Texas Comptroller / Secretary of State Open Data (`9cir-efmm`)
+ * with strict exact or exact-base corporate name validation.
+ */
+export async function lookupTexasComptrollerEntity(rawName: string): Promise<TexasComptrollerEntity | null> {
+	const cleanNorm = (s: string) =>
+		String(s || '')
+			.toLowerCase()
+			.replace(/&/g, ' and ')
+			.replace(/[^a-z0-9]+/g, ' ')
+			.replace(/\band\b/g, ' ')
+			.replace(/\s+/g, ' ')
+			.trim();
+	const targetNorm = cleanNorm(rawName);
+	const targetBase = cleanNorm(stripLegalSuffixes(rawName));
+	if (!targetBase || targetBase.length < 4) return null;
+	try {
+		const q = encodeURIComponent(stripLegalSuffixes(rawName).replace(/[^A-Za-z0-9\s&.-]/g, ' ').trim());
+		if (!q) return null;
+		const rows = (await fetchJsonSafe(
+			`https://data.texas.gov/resource/9cir-efmm.json?%24limit=12&%24q=${q}`,
+			7_000,
+		)) as Array<Record<string, unknown>> | null;
+		if (!Array.isArray(rows) || rows.length === 0) return null;
+
+		let best: Record<string, unknown> | null = null;
+		let bestScore = 0;
+		for (const r of rows) {
+			const n = String(r.taxpayer_name || '').trim();
+			if (!n) continue;
+			const rn = cleanNorm(n);
+			const rb = cleanNorm(stripLegalSuffixes(n));
+			let score = 0;
+			if (rn === targetNorm || rn.replace(/^the /, '') === targetNorm.replace(/^the /, '')) score = 100;
+			else if (rb === targetBase || rb.replace(/^the /, '') === targetBase.replace(/^the /, '')) score = 85;
+			else continue;
+			if (String(r.sos_status_code || '').toUpperCase() === 'A') score += 5;
+			if (r.sos_charter_date || r.responsibility_beginning_date) score += 5;
+			if (score > bestScore) {
+				bestScore = score;
+				best = r;
+			}
+		}
+		if (!best) return null;
+		const rawStart = String(best.sos_charter_date || best.responsibility_beginning_date || '').slice(0, 10);
+		const startDate = /^\d{4}-\d{2}-\d{2}$/.test(rawStart) ? rawStart : null;
+		const statusCode = String(best.sos_status_code || '').toUpperCase();
+		const active = statusCode === 'A' || statusCode === '';
+		const rawStatusDate = String(best.sos_status_date || '').slice(0, 10);
+		const endDate =
+			!active && startDate && /^\d{4}-\d{2}-\d{2}$/.test(rawStatusDate) && rawStatusDate > startDate
+				? rawStatusDate
+				: null;
+		const addrParts = [best.taxpayer_address, best.taxpayer_city, best.taxpayer_state, best.taxpayer_zip]
+			.map((x) => String(x || '').trim())
+			.filter(Boolean);
+		return {
+			taxpayerName: String(best.taxpayer_name || '').trim(),
+			startDate,
+			endDate,
+			active,
+			sosFileNumber: best.secretary_of_state_sos_or_coa_file_number
+				? String(best.secretary_of_state_sos_or_coa_file_number).trim()
+				: null,
+			taxpayerNumber: best.taxpayer_number ? String(best.taxpayer_number).trim() : null,
+			address: addrParts.length ? addrParts.join(', ') : null,
+			city: best.taxpayer_city ? String(best.taxpayer_city).trim() : null,
+			state: best.taxpayer_state ? String(best.taxpayer_state).trim() : null,
+		};
+	} catch {
+		return null;
+	}
+}
+
+export type ProPublicaOrgHit = {
+	name: string;
+	ein: string;
+	city?: string;
+	state?: string;
+	rulingDate?: string;
+	assets?: number;
+	income?: number;
+	url: string;
+};
+
+/**
+ * Query ProPublica Nonprofit Explorer API by EIN (exact) or strict normalized organization name.
+ */
+export async function lookupProPublicaByNameOrEin(
+	rawName: string,
+	existingEin?: string | null,
+): Promise<ProPublicaOrgHit | null> {
+	let digits = existingEin ? String(existingEin).replace(/\D/g, '') : '';
+	if (digits.length !== 9) {
+		const targetNorm = normalizeText(rawName).replace(/^the /, '');
+		const targetBase = stripLegalSuffixes(rawName).replace(/^the /, '');
+		if (!targetBase || targetBase.length < 4) return null;
+		const searchData = (await fetchJsonSafe(
+			`https://projects.propublica.org/nonprofits/api/v2/search.json?q=${encodeURIComponent(rawName)}`,
+			8_000,
+		)) as { organizations?: Array<Record<string, unknown>> } | null;
+		const orgs = Array.isArray(searchData?.organizations) ? searchData.organizations : [];
+		for (const o of orgs.slice(0, 8)) {
+			const on = normalizeText(String(o.name || '')).replace(/^the /, '');
+			const ob = stripLegalSuffixes(String(o.name || '')).replace(/^the /, '');
+			if (on === targetNorm || ob === targetBase) {
+				const einDigits = String(o.ein || '').replace(/\D/g, '').padStart(9, '0');
+				if (einDigits.length === 9) {
+					digits = einDigits;
+					break;
+				}
+			}
+		}
+	}
+	if (digits.length !== 9) return null;
+	const data = (await fetchJsonSafe(
+		`https://projects.propublica.org/nonprofits/api/v2/organizations/${digits}.json`,
+		8_000,
+	)) as { organization?: Record<string, unknown> } | null;
+	const org = data?.organization;
+	if (!org?.name) return null;
+	const rulingRaw = org.ruling_date ? String(org.ruling_date).trim() : '';
+	const rulingM = rulingRaw.match(/^(\d{4})-(\d{2})/);
+	const rulingDate = rulingM ? `${rulingM[1]}-${rulingM[2]}` : /^\d{4}/.test(rulingRaw) ? rulingRaw.slice(0, 4) : undefined;
+	return {
+		name: String(org.name),
+		ein: `${digits.slice(0, 2)}-${digits.slice(2)}`,
+		city: org.city ? String(org.city) : undefined,
+		state: org.state ? String(org.state) : undefined,
+		rulingDate,
+		assets: typeof org.asset_amount === 'number' ? org.asset_amount : undefined,
+		income: typeof org.income_amount === 'number' ? org.income_amount : undefined,
+		url: `https://projects.propublica.org/nonprofits/organizations/${digits}`,
+	};
 }

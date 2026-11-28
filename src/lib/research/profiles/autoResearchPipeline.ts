@@ -25,7 +25,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getProfilesDb } from '@/lib/research/profiles/db';
-import { resolveEntityStartEndDates } from '@/lib/research/profiles/dateResolver';
+import {
+	lookupProPublicaByNameOrEin,
+	lookupTexasComptrollerEntity,
+	resolveEntityStartEndDates,
+	type ProPublicaOrgHit,
+} from '@/lib/research/profiles/dateResolver';
 import { enrichProfile } from '@/lib/research/profiles/enrich';
 import {
 	buildProfileIdentityContext,
@@ -83,7 +88,7 @@ const UA = 'AI-Research-Tool/1.0 (local research; +http://localhost:3333)';
 const PIPELINE_CORPUS = 'auto-profile-pipeline';
 const COOLDOWN_MS = Math.max(15_000, Number(process.env.AUTO_RESEARCH_COOLDOWN_MS || 90_000));
 const MAX_CRAWL_URLS = Math.max(1, Math.min(6, Number(process.env.AUTO_RESEARCH_MAX_URLS || 4)));
-const MAX_ENTITIES = Math.max(2, Math.min(12, Number(process.env.AUTO_RESEARCH_MAX_ENTITIES || 8)));
+const MAX_ENTITIES = Math.max(4, Math.min(30, Number(process.env.AUTO_RESEARCH_MAX_ENTITIES || 20)));
 
 const VALID_ENTITY_TYPES = new Set<ProfileType>([
 	'person',
@@ -315,36 +320,76 @@ async function lookupVerifiedWikipediaForProfile(detail: ProfileDetail): Promise
 	return null;
 }
 
-async function lookupProPublica(detail: ProfileDetail): Promise<{
-	name: string;
-	ein: string;
-	city?: string;
-	state?: string;
-	rulingDate?: string;
-	assets?: number;
-	income?: number;
-	url: string;
-} | null> {
-	if (detail.profile.profileType !== 'nonprofit') return null;
+async function lookupProPublica(detail: ProfileDetail): Promise<ProPublicaOrgHit | null> {
+	const pType = detail.profile.profileType;
+	const sum = String(detail.profile.summary || '');
+	const eligible =
+		pType === 'nonprofit' ||
+		pType === 'education' ||
+		pType === 'medical_hospital' ||
+		(pType === 'firm' && /\b(?:501\(c\)|non-?profit|supporting organization|charitable|foundation|public charity|EIN\s*[:#-])/i.test(sum));
+	if (!eligible) return null;
 	const einIdent = detail.identifiers.find((i) => i.scheme === 'irs_ein')?.value || null;
-	const digits = einIdent ? einIdent.replace(/\D/g, '') : '';
-	if (digits.length !== 9) return null;
-	const data = (await fetchJsonSafe(
-		`https://projects.propublica.org/nonprofits/api/v2/organizations/${digits}.json`,
-		10_000,
-	)) as { organization?: Record<string, unknown> } | null;
-	const org = data?.organization;
-	if (!org?.name) return null;
-	return {
-		name: String(org.name),
-		ein: `${digits.slice(0, 2)}-${digits.slice(2)}`,
-		city: org.city ? String(org.city) : undefined,
-		state: org.state ? String(org.state) : undefined,
-		rulingDate: org.ruling_date ? String(org.ruling_date) : undefined,
-		assets: typeof org.asset_amount === 'number' ? org.asset_amount : undefined,
-		income: typeof org.income_amount === 'number' ? org.income_amount : undefined,
-		url: `https://projects.propublica.org/nonprofits/organizations/${digits}`,
-	};
+	const hit = await lookupProPublicaByNameOrEin(detail.profile.name, einIdent);
+	if (!hit) return null;
+	if (!detail.identifiers.some((i) => i.scheme === 'irs_ein' && i.value.replace(/\D/g, '') === hit.ein.replace(/\D/g, ''))) {
+		addIdentifier({ profileId: detail.profile.id, scheme: 'irs_ein', value: hit.ein, sourceCorpus: PIPELINE_CORPUS });
+	}
+	if (!detail.identifiers.some((i) => i.scheme === 'url' && i.value === hit.url)) {
+		addIdentifier({ profileId: detail.profile.id, scheme: 'url', value: hit.url, sourceCorpus: PIPELINE_CORPUS });
+	}
+	if (!detail.profile.startDate && hit.rulingDate) {
+		const normRuling = normalizeIsoDate(hit.rulingDate).date;
+		if (normRuling) updateProfileFields(detail.profile.id, { startDate: normRuling });
+	}
+	return hit;
+}
+
+/** Extract explicit strong IDs (EIN, CIK, CRD) and US street addresses directly from the profile summary. */
+function extractStrongIdsAndAddressesFromSummary(detail: ProfileDetail): void {
+	const sum = String(detail.profile.summary || '');
+	if (!sum.trim()) return;
+	const pid = detail.profile.id;
+
+	// 1. Explicit EIN / FEIN (XX-XXXXXXX)
+	for (const m of sum.matchAll(/\b(?:IRS\s+)?(?:F?EIN)\s*[:#-]?\s*(\d{2}-\d{7})\b/gi)) {
+		const ein = m[1]?.trim();
+		if (ein && !detail.identifiers.some((i) => i.scheme === 'irs_ein' && i.value.replace(/\D/g, '') === ein.replace(/\D/g, ''))) {
+			addIdentifier({ profileId: pid, scheme: 'irs_ein', value: ein, sourceCorpus: PIPELINE_CORPUS });
+		}
+	}
+
+	// 2. Explicit SEC CIK
+	for (const m of sum.matchAll(/\bSEC\s+CIK\s*[:#-]?\s*0*(\d{4,10})\b/gi)) {
+		const cik = m[1]?.trim();
+		if (cik && !detail.identifiers.some((i) => i.scheme === 'sec_cik')) {
+			addIdentifier({ profileId: pid, scheme: 'sec_cik', value: cik.padStart(10, '0'), sourceCorpus: PIPELINE_CORPUS });
+		}
+	}
+
+	// 3. Explicit US street addresses (e.g., "6012 FM 2729, Whitesboro, TX 76273", "3612 McKinney Ave., Suite 200, Dallas, TX 75204")
+	const streetRe =
+		/\b(\d{1,6}\s+(?:[NSEW]\.?\s+)?[A-Za-z0-9.\s'-]{2,42}?(?:St\.?|Street|Ave\.?|Avenue|Blvd\.?|Boulevard|Dr\.?|Drive|Rd\.?|Road|Ln\.?|Lane|Way|Pkwy\.?|Parkway|Hwy\.?|Highway|FM\s+\d+|Loop\s+\d+|Pl\.?|Place|Ct\.?|Court)(?:,?\s+(?:Suite|Ste\.?|Unit|Bldg\.?|Floor|Fl\.?|#)\s*[A-Za-z0-9-]+)?,\s*[A-Za-z.\s'-]{2,30},\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\s+\d{5}(?:-\d{4})?)\b/g;
+	const existingLocNorms = new Set(detail.locations.map((l) => normalizeText(l.raw)));
+	let addedLocs = 0;
+	for (const m of sum.matchAll(streetRe)) {
+		const rawAddr = m[1]!.replace(/\s+/g, ' ').trim();
+		const normAddr = normalizeText(rawAddr);
+		if (!normAddr || existingLocNorms.has(normAddr)) continue;
+		existingLocNorms.add(normAddr);
+		const partsM = rawAddr.match(/,\s*([A-Za-z.\s'-]{2,30}),\s*([A-Z]{2})\s+\d{5}/);
+		addLocation({
+			profileId: pid,
+			raw: rawAddr,
+			city: partsM?.[1]?.trim() || null,
+			state: partsM?.[2]?.trim() || null,
+			country: 'US',
+			role: detail.locations.length === 0 && addedLocs === 0 ? 'hq' : 'branch',
+			confirmed: true,
+			sourceCorpus: PIPELINE_CORPUS,
+		});
+		if (++addedLocs >= 3) break;
+	}
 }
 
 /** Stage 1a: Check local profiles.sqlite for duplicate/alias alignments + matching RSS historic_events. */
@@ -759,16 +804,16 @@ Return STRICT JSON ONLY with this exact shape:
 }
 
 Rules:
-- Milestones: extract 3 to 8 dated milestones sorted NEWEST first. NEVER invent dates or facts.
-- Entities: extract up to ${MAX_ENTITIES} specifically named actors/events (full names for people). Exclude "${p.name}" itself.
+- Milestones: extract 3 to 10 dated milestones sorted NEWEST first. NEVER invent dates or facts.
+- Entities: extract ALL specifically named people, companies, partnerships, management entities, universities, nonprofits, and agencies mentioned in the profile or crawled sources (up to ${MAX_ENTITIES}; full names for people). Exclude "${p.name}" itself.
 - Output ONLY valid JSON (no markdown fences, no commentary).
 
 === VERIFIED RESEARCH MATERIAL ===
-${evidenceBundle.slice(0, 10_500)}`;
+${evidenceBundle.slice(0, 16_000)}`;
 
 	const { message } = await ollamaChat({
 		model,
-		numCtx: 12288,
+		numCtx: 16384,
 		messages: [
 			{
 				role: 'system',
@@ -872,20 +917,34 @@ async function matchUpdateOrCreateDiscoveredEntity(
 	slug: string | null;
 }> {
 	const db = getProfilesDb();
-	// Collect verified start/end dates + Wikipedia/Wikidata IDs BEFORE merging or creating
+	// Collect verified start/end dates + Wikipedia/Wikidata/TX-SOS/ProPublica IDs BEFORE merging or creating
 	let wikiHit: WikiHit | null = null;
+	let txHit: Awaited<ReturnType<typeof lookupTexasComptrollerEntity>> = null;
+	let ppHit: ProPublicaOrgHit | null = null;
 	let resolvedDates = {
 		startDate: null as string | null,
 		endDate: null as string | null,
 	};
+	// Pull surrounding snippet from parent summary where this entity is mentioned (captures e.g. "Ron Williams (1946–2022)")
+	let parentMentionSnippet = '';
+	const parentSum = String(parentDetail.profile.summary || '');
+	const mentionIdx = parentSum.toLowerCase().indexOf(entity.name.toLowerCase());
+	if (mentionIdx >= 0) {
+		parentMentionSnippet = parentSum.slice(Math.max(0, mentionIdx - 80), Math.min(parentSum.length, mentionIdx + 240));
+	}
 	try {
 		const dateRes = await resolveEntityStartEndDates({
 			name: entity.name,
 			profileType: entity.profileType,
-			contextText: `${entity.role || ''} ${entity.affiliation || ''} ${entity.milestone || ''}`,
+			contextText: `${entity.role || ''} ${entity.affiliation || ''} ${entity.milestone || ''} ${parentMentionSnippet}`,
 			allowWebLookup: true,
 		});
 		resolvedDates = { startDate: dateRes.startDate, endDate: dateRes.endDate };
+		if (dateRes.source === 'texas_comptroller') {
+			txHit = await lookupTexasComptrollerEntity(entity.name);
+		} else if (dateRes.source === 'propublica') {
+			ppHit = await lookupProPublicaByNameOrEin(entity.name);
+		}
 		if (dateRes.wikiTitle && dateRes.wikiExtract) {
 			let acceptWiki = true;
 			if (entity.profileType === 'person') {
@@ -1184,6 +1243,22 @@ async function matchUpdateOrCreateDiscoveredEntity(
 	});
 	if (wikiHit?.qid) addIdentifier({ profileId: created.id, scheme: 'wikidata', value: wikiHit.qid, sourceCorpus: PIPELINE_CORPUS });
 	if (wikiHit?.url) addIdentifier({ profileId: created.id, scheme: 'url', value: wikiHit.url, sourceCorpus: PIPELINE_CORPUS });
+	if (txHit?.sosFileNumber) addIdentifier({ profileId: created.id, scheme: 'tx_sos_file', value: txHit.sosFileNumber, sourceCorpus: 'texas-comptroller' });
+	if (txHit?.taxpayerNumber) addIdentifier({ profileId: created.id, scheme: 'tx_taxpayer', value: txHit.taxpayerNumber, sourceCorpus: 'texas-comptroller' });
+	if (txHit?.address) {
+		addLocation({
+			profileId: created.id,
+			raw: txHit.address,
+			city: txHit.city || undefined,
+			state: txHit.state || undefined,
+			country: 'US',
+			role: 'hq',
+			confirmed: true,
+			sourceCorpus: 'texas-comptroller',
+		});
+	}
+	if (ppHit?.ein) addIdentifier({ profileId: created.id, scheme: 'irs_ein', value: ppHit.ein, sourceCorpus: 'propublica' });
+	if (ppHit?.url) addIdentifier({ profileId: created.id, scheme: 'url', value: ppHit.url, sourceCorpus: 'propublica' });
 	if (entity.location) addLocation({ profileId: created.id, raw: entity.location, role: 'associated', sourceCorpus: PIPELINE_CORPUS });
 
 	upsertProfileLink({
@@ -1374,8 +1449,49 @@ export async function runAutoProfileResearchPipeline(
 			}
 		}
 
+		// Extract explicit strong IDs (EIN, CIK) & street addresses from the profile's own summary
+		extractStrongIdsAndAddressesFromSummary(detail);
+		detail = getProfileDetail(profileId) || detail;
+
 		const pp = await lookupProPublica(detail);
 		if (pp) status.stages.apiLookup.propublica = true;
+
+		// Query official Texas Comptroller / SOS Open Data for verified TX SOS File #, Taxpayer #, charter date, and HQ address
+		let txSosHit: Awaited<ReturnType<typeof lookupTexasComptrollerEntity>> = null;
+		if (
+			detail.profile.profileType === 'firm' ||
+			detail.profile.profileType === 'nonprofit' ||
+			detail.profile.profileType === 'education' ||
+			detail.profile.profileType === 'medical_hospital'
+		) {
+			txSosHit = await lookupTexasComptrollerEntity(detail.profile.name);
+			if (txSosHit) {
+				if (txSosHit.sosFileNumber && !detail.identifiers.some((i) => i.scheme === 'tx_sos_file')) {
+					addIdentifier({ profileId, scheme: 'tx_sos_file', value: txSosHit.sosFileNumber, sourceCorpus: 'texas-comptroller' });
+				}
+				if (txSosHit.taxpayerNumber && !detail.identifiers.some((i) => i.scheme === 'tx_taxpayer')) {
+					addIdentifier({ profileId, scheme: 'tx_taxpayer', value: txSosHit.taxpayerNumber, sourceCorpus: 'texas-comptroller' });
+				}
+				if (!detail.profile.startDate && txSosHit.startDate) {
+					updateProfileFields(profileId, { startDate: txSosHit.startDate });
+				}
+				if (!detail.profile.endDate && txSosHit.endDate) {
+					updateProfileFields(profileId, { endDate: txSosHit.endDate });
+				}
+				if (txSosHit.address && detail.locations.length === 0) {
+					addLocation({
+						profileId,
+						raw: txSosHit.address,
+						city: txSosHit.city || null,
+						state: txSosHit.state || null,
+						country: 'US',
+						role: 'hq',
+						confirmed: true,
+						sourceCorpus: 'texas-comptroller',
+					});
+				}
+			}
+		}
 
 		// 4. Stage 3 — New Internet Crawl for websites, PDFs, and data layers
 		const crawl = await crawlInternetForProfile(detail);
@@ -1393,7 +1509,12 @@ export async function runAutoProfileResearchPipeline(
 		if (detail.profile.startDate) bundleParts.push(`Start Date: ${detail.profile.startDate}`);
 		if (detail.profile.endDate) bundleParts.push(`End Date: ${detail.profile.endDate}`);
 		if (detail.profile.summary.trim()) {
-			bundleParts.push(`Current Profile Summary:\n${detail.profile.summary.slice(0, 3200)}`);
+			bundleParts.push(`Current Profile Summary:\n${detail.profile.summary.slice(0, 8500)}`);
+		}
+		if (txSosHit) {
+			bundleParts.push(
+				`Texas Comptroller / SOS: ${txSosHit.taxpayerName} · SOS File ${txSosHit.sosFileNumber || 'n/a'} · Taxpayer ${txSosHit.taxpayerNumber || 'n/a'} · Charter ${txSosHit.startDate || 'n/a'} · Address ${txSosHit.address || 'n/a'}`,
+			);
 		}
 		if (detail.locations.length) {
 			bundleParts.push(`Locations: ${detail.locations.slice(0, 5).map((l) => l.raw).join('; ')}`);

@@ -46,6 +46,9 @@ export type IdentifierScheme =
 	/** Listing key is symbol + country + market. NYSE:BA is not LSE:BA. */
 	| 'ticker'
 	| 'irs_ein'
+	| 'tx_sos_file'
+	| 'tx_taxpayer'
+	| 'ok_sos_file'
 	/** CUSIP security identifier (entity / security matching). */
 	| 'cusip'
 	| 'ror'

@@ -327,6 +327,9 @@ export async function PATCH(request: Request, context: Ctx) {
 				'parent_sec_cik',
 				'ticker',
 				'irs_ein',
+				'tx_sos_file',
+				'tx_taxpayer',
+				'ok_sos_file',
 				'cusip',
 				'ror',
 				'orcid',
@@ -509,6 +512,10 @@ export async function PATCH(request: Request, context: Ctx) {
 			}
 		}
 
+		// Do NOT auto-run background research/entity discovery on profile edits.
+		// Auto-research runs only on profile creation (POST /api/profiles), explicit
+		// "Research & Fill Details" (POST /api/profiles/[id]/enrich), or when a caller
+		// explicitly passes autoResearch: true.
 		const skipAutoResearch =
 			body.skipAutoResearch === true ||
 			body.skipAutoResearch === 1 ||
@@ -524,23 +531,11 @@ export async function PATCH(request: Request, context: Ctx) {
 			metadataPatch.formattedBy === 'historic-events-basic-timeline' ||
 			metadataPatch.sparseTimelineEnrichedAt != null ||
 			metadataPatch.entityCrawledAt != null;
-		const substantiveUserChange =
-			forceAutoResearch ||
-			body.name != null ||
-			body.summary != null ||
-			body.startDate !== undefined ||
-			body.endDate !== undefined ||
-			body.addAlias != null ||
-			body.updateAlias != null ||
-			body.replaceOtherNames != null ||
-			body.addLocation != null ||
-			body.updateLocation != null ||
-			body.addIdentifier != null;
 		const autoResearchScheduled =
 			!skipAutoResearch &&
 			!isAutomatedBatchPatch &&
-			substantiveUserChange &&
-			shouldScheduleAutoResearch(updated.id, { force: forceAutoResearch });
+			forceAutoResearch &&
+			shouldScheduleAutoResearch(updated.id, { force: true });
 		if (autoResearchScheduled) {
 			const pid = updated.id;
 			after(async () => {
