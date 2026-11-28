@@ -3172,12 +3172,22 @@ export function getProfileDetail(idOrSlug: string): ProfileDetail | null {
 			const peerId = l.fromProfileId === profile.id ? l.toProfileId : l.fromProfileId;
 			l.peerCountryCodes = getPeerFlags(peerId);
 			const peerInfo = peerInfoById.get(peerId);
+			const peerIdents = peerIdentsById.get(peerId) || [];
+			const peerCrdIdent = peerIdents.find((i) => i.scheme === 'finra_crd');
+			const peerSecIdent = peerIdents.find((i) => i.scheme === 'sec_cik' || i.scheme === 'parent_sec_cik');
 			if (peerInfo) {
 				l.peerStartDate = peerInfo.startDate;
 				l.peerEndDate = peerInfo.endDate;
 				l.peerSummary = peerInfo.summary || null;
 				const fromMeta = normalizePersonGender(peerInfo.metadata?.gender ?? peerInfo.metadata?.sex);
 				l.peerGender = fromMeta || inferGenderFromPersonName(peerInfo.name);
+				l.peerFinraCrd = peerCrdIdent?.value || (peerInfo.metadata?.finraCrd ? String(peerInfo.metadata.finraCrd) : null);
+				l.peerFinraBcScope = peerInfo.metadata?.finraBcScope ? String(peerInfo.metadata.finraBcScope) : null;
+				l.peerFinraIaScope = peerInfo.metadata?.finraIaScope ? String(peerInfo.metadata.finraIaScope) : null;
+				l.peerSecCik = peerSecIdent?.value || (peerInfo.metadata?.secCik ? String(peerInfo.metadata.secCik) : null);
+			} else {
+				l.peerFinraCrd = peerCrdIdent?.value || null;
+				l.peerSecCik = peerSecIdent?.value || null;
 			}
 			l.peerPrimaryLocation = pickBestFullAddress(peerLocsById.get(peerId) || []);
 		}

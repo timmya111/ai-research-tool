@@ -4197,6 +4197,7 @@ export default function ProfilesClient({
 	const [empLocation, setEmpLocation] = useState('');
 	const [savingEmp, setSavingEmp] = useState(false);
 	const [connStatusFilter, setConnStatusFilter] = useState<'all' | 'current' | 'old'>('all');
+	const [disabledFinraOpen, setDisabledFinraOpen] = useState(false);
 	const [hydratingDates, setHydratingDates] = useState(false);
 	/** Connected-profile drafts while Edit is open (relation/role/dates/note + pending remove). */
 	const [connLinkDrafts, setConnLinkDrafts] = useState<
@@ -4504,6 +4505,7 @@ export default function ProfilesClient({
 		setConnNote('');
 		setConnSearchOpen(false);
 		setConnLinkDrafts([]);
+		setDisabledFinraOpen(false);
 		setNearbyData(null);
 		setLegalDocsReport(null);
 		setExpandedOcrDocId(null);
@@ -9726,6 +9728,50 @@ export default function ProfilesClient({
 												const filteredLinks =
 													connStatusFilter === 'all' ? connectedLinks : connectedLinks.filter((x) => x.connStatus === connStatusFilter);
 
+												const profileHasCrd = Boolean(
+													resolveProfileFinraCrd(detail.profile.profileType, detail.profile.metadata, detail.identifiers),
+												);
+												const isFinraOrSecLink = (l: ProfileDetail['links'][number]): boolean => {
+													if (l.peerFinraCrd || l.peerSecCik || l.peerFinraBcScope) return true;
+													if (hasValidSecIaScope(l.peerFinraIaScope)) return true;
+													if (l.relationType === 'registered_at') return true;
+													if (/(?:finra|brokercheck|sec[-_]|iapd)/i.test(String(l.sourceCorpus || ''))) return true;
+													if ((l.sources || []).some((s) => /(?:finra|brokercheck|sec[-_]|iapd)/i.test(String(s || '')))) return true;
+													return false;
+												};
+												const isDisabledFinraOrSecLink = (
+													l: ProfileDetail['links'][number],
+													connStatus: 'current' | 'old' | null,
+												): boolean => {
+													if (connStatus === 'old' || Boolean(l.endDate) || Boolean(l.peerEndDate)) return true;
+													const bc = l.peerFinraBcScope ? formatFinraScopeLabel(l.peerFinraBcScope) : '';
+													const ia = l.peerFinraIaScope ? formatFinraScopeLabel(l.peerFinraIaScope) : '';
+													const bcInactive = Boolean(bc && scopeLooksInactive(bc));
+													const iaActive = Boolean(ia && !scopeLooksInactive(ia));
+													if (bcInactive && !iaActive) return true;
+													if (!bc && ia && scopeLooksInactive(ia)) return true;
+													return false;
+												};
+												const finraSecActiveLinks: typeof filteredLinks = [];
+												const finraSecDisabledLinks: typeof filteredLinks = [];
+												const otherConnectedLinks: typeof filteredLinks = [];
+												if (profileHasCrd) {
+													for (const item of filteredLinks) {
+														if (isFinraOrSecLink(item.link)) {
+															if (isDisabledFinraOrSecLink(item.link, item.connStatus)) {
+																finraSecDisabledLinks.push(item);
+															} else {
+																finraSecActiveLinks.push(item);
+															}
+														} else {
+															otherConnectedLinks.push(item);
+														}
+													}
+												}
+												const useCrdConnGrouping =
+													profileHasCrd && (finraSecActiveLinks.length > 0 || finraSecDisabledLinks.length > 0);
+												const disabledSectionExpanded = disabledFinraOpen || connStatusFilter === 'old';
+
 												return (
 													<div className='space-y-4'>
 														{historicEventAndRegionLinks.length > 0 ?
@@ -10019,197 +10065,245 @@ export default function ProfilesClient({
 																		'No extra connections yet — employment and schools are listed above. Add other links below.'
 																	:	'No connected profiles yet. Search an existing profile below to link it.'}
 																</p>
-															:	<div className='mb-3 space-y-1.5'>
-																	{filteredLinks.map(({ link: l, connStatus }) => {
-																		const isOut = l.fromProfileId === detail.profile.id;
-																		const peerId = isOut ? l.toProfileId : l.fromProfileId;
-																		const peerName = isOut ? l.toName : l.fromName;
-																		const peerType = (isOut ? l.toType : l.fromType) || 'firm';
-																		const draft = draftById.get(l.id);
-																		const markedRemove = Boolean(draft?.deleted);
-																		const showRow = profileEditing || !markedRemove;
-																		if (!showRow) return null;
-																		const displayRelation = draft?.relationType || l.relationType;
-																		const displayRole = draft ? draft.roleLabel : l.roleLabel || '';
-																		const displayStart = draft ? draft.startDate : l.startDate || '';
-																		const displayEnd = draft ? draft.endDate : l.endDate || '';
-																		const displayNote = draft ? draft.evidenceNote : scrubEvidenceNoteSourceTags(l.evidenceNote);
-																		const connIsCurrent =
-																			connStatus === 'current' ? true
-																			: connStatus === 'old' ? false
-																			: displayRelation === 'employed_by' || displayRelation === 'registered_at' ? null
-																			: false;
-																		const spanStart =
-																			draft ?
-																				normalizeIsoDate(displayStart.trim()).date || displayStart.trim() || null
-																			:	l.startDate;
-																		const spanEnd =
-																			draft ?
-																				normalizeIsoDate(displayEnd.trim()).date || displayEnd.trim() || null
-																			:	l.endDate;
-																		const hasConnDateSpan = Boolean(
-																			formatDateSpan(
-																				spanStart,
-																				spanEnd,
-																				connIsCurrent,
-																				peerType === 'education',
-																			),
+															: (() => {
+																const renderConnectedLinkRow = ({ link: l, connStatus }: (typeof filteredLinks)[number]) => {
+																	const isOut = l.fromProfileId === detail.profile.id;
+																	const peerId = isOut ? l.toProfileId : l.fromProfileId;
+																	const peerName = isOut ? l.toName : l.fromName;
+																	const peerType = (isOut ? l.toType : l.fromType) || 'firm';
+																	const draft = draftById.get(l.id);
+																	const markedRemove = Boolean(draft?.deleted);
+																	const showRow = profileEditing || !markedRemove;
+																	if (!showRow) return null;
+																	const displayRelation = draft?.relationType || l.relationType;
+																	const displayRole = draft ? draft.roleLabel : l.roleLabel || '';
+																	const displayStart = draft ? draft.startDate : l.startDate || '';
+																	const displayEnd = draft ? draft.endDate : l.endDate || '';
+																	const displayNote = draft ? draft.evidenceNote : scrubEvidenceNoteSourceTags(l.evidenceNote);
+																	const connIsCurrent =
+																		connStatus === 'current' ? true
+																		: connStatus === 'old' ? false
+																		: displayRelation === 'employed_by' || displayRelation === 'registered_at' ? null
+																		: false;
+																	const spanStart =
+																		draft ?
+																			normalizeIsoDate(displayStart.trim()).date || displayStart.trim() || null
+																		:	l.startDate;
+																	const spanEnd =
+																		draft ?
+																			normalizeIsoDate(displayEnd.trim()).date || displayEnd.trim() || null
+																		:	l.endDate;
+																	const hasConnDateSpan = Boolean(
+																		formatDateSpan(
+																			spanStart,
+																			spanEnd,
+																			connIsCurrent,
+																			peerType === 'education',
+																		),
+																	);
+																	const roleClean =
+																		displayRole && !/^(?:current|previous)\s+registration$/i.test(displayRole.trim()) ?
+																			displayRole.trim()
+																		:	null;
+																	const showRelNote =
+																		!profileEditing &&
+																		Boolean(displayNote) &&
+																		(!roleClean || displayNote.toLowerCase() !== roleClean.toLowerCase()) &&
+																		!/^seed relatedslugs$/i.test(displayNote) &&
+																		!/^role:/i.test(displayNote) &&
+																		!isRedundantConnectedEvidenceNote(displayNote, roleClean);
+																	const patchDraft = (
+																		patch: Partial<{
+																			relationType: ProfileRelationType;
+																			roleLabel: string;
+																			startDate: string;
+																			endDate: string;
+																			evidenceNote: string;
+																			deleted: boolean;
+																		}>,
+																	) => {
+																		setConnLinkDrafts((rows) =>
+																			rows.map((r) => (r.id === l.id ? { ...r, ...patch } : r)),
 																		);
-																		const roleClean =
-																			displayRole && !/^(?:current|previous)\s+registration$/i.test(displayRole.trim()) ?
-																				displayRole.trim()
-																			:	null;
-																		const showRelNote =
-																			!profileEditing &&
-																			Boolean(displayNote) &&
-																			(!roleClean || displayNote.toLowerCase() !== roleClean.toLowerCase()) &&
-																			!/^seed relatedslugs$/i.test(displayNote) &&
-																			!/^role:/i.test(displayNote) &&
-																			!isRedundantConnectedEvidenceNote(displayNote, roleClean);
-																		const patchDraft = (
-																			patch: Partial<{
-																				relationType: ProfileRelationType;
-																				roleLabel: string;
-																				startDate: string;
-																				endDate: string;
-																				evidenceNote: string;
-																				deleted: boolean;
-																			}>,
-																		) => {
-																			setConnLinkDrafts((rows) =>
-																				rows.map((r) => (r.id === l.id ? { ...r, ...patch } : r)),
-																			);
-																		};
-																		return (
-																			<div
-																				key={l.id}
-																				className={
-																					`${
-																						markedRemove ? 'opacity-50 '
-																						: ''
-																					}${
-																						connStatus === 'current' ? EMP_CARD_CURRENT
-																						: connStatus === 'old' ?
-																							EMP_CARD_PREVIOUS
-																						:	'rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs'
-																					}`
-																				}>
-																				<div className='flex flex-wrap items-center justify-between gap-2'>
-																					<div className={`flex min-w-0 flex-wrap items-center gap-1.5 ${markedRemove ? 'line-through' : ''}`}>
-																						{!profileEditing && hasConnDateSpan ?
-																							<span
-																								className={
-																									connStatus === 'current' ? EMP_CHIP_CURRENT
-																									: connStatus === 'old' ?
-																										EMP_CHIP_PREVIOUS
-																									:	'shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold'
-																								}>
-																								<ProfileDateSpanText
-																									startDate={spanStart}
-																									endDate={spanEnd}
-																									isCurrent={connIsCurrent}
-																									isEducation={peerType === 'education'}
-																								/>
-																							</span>
-																						:	null}
-																						{!profileEditing && connStatus === 'old' ?
-																							<span className='shrink-0 rounded bg-zinc-500/20 px-1.5 py-0.5 text-[10px] font-semibold opacity-80'>Old</span>
-																						:	null}
-																						{!profileEditing ?
-																							<span className='text-[10px] opacity-60'>
-																								{isOut ? '→' : '←'} {displayRelation.replace(/_/g, ' ')}
-																							</span>
-																						:	null}
-																						<button
-																							type='button'
-																							onClick={() => jumpToProfile(peerId)}
-																							className='cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline'>
-																							{peerName}
-																						</button>
-																						<CountryFlags
-																							codes={l.peerCountryCodes}
-																							size='sm'
-																						/>
-																						<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}>{TYPE_META[peerType].label}</span>
-																						{!profileEditing && roleClean ?
-																							<span className='text-[11px] opacity-75'>({roleClean})</span>
-																						:	null}
-																						{l.peerPrimaryLocation ?
-																							<span className='text-[11px] opacity-70'>📍 {l.peerPrimaryLocation}</span>
-																						:	null}
-																					</div>
-																					{profileEditing ?
-																						<button
-																							type='button'
-																							onClick={() => patchDraft({ deleted: !markedRemove })}
-																							className='shrink-0 cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px] font-semibold opacity-80 hover:opacity-100'>
-																							{markedRemove ? 'Undo' : 'Remove'}
-																						</button>
+																	};
+																	return (
+																		<div
+																			key={l.id}
+																			className={
+																				`${
+																					markedRemove ? 'opacity-50 '
+																					: ''
+																				}${
+																					connStatus === 'current' ? EMP_CARD_CURRENT
+																					: connStatus === 'old' ?
+																						EMP_CARD_PREVIOUS
+																					:	'rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-xs'
+																				}`
+																			}>
+																			<div className='flex flex-wrap items-center justify-between gap-2'>
+																				<div className={`flex min-w-0 flex-wrap items-center gap-1.5 ${markedRemove ? 'line-through' : ''}`}>
+																					{!profileEditing && hasConnDateSpan ?
+																						<span
+																							className={
+																								connStatus === 'current' ? EMP_CHIP_CURRENT
+																								: connStatus === 'old' ?
+																									EMP_CHIP_PREVIOUS
+																								:	'shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold'
+																							}>
+																							<ProfileDateSpanText
+																								startDate={spanStart}
+																								endDate={spanEnd}
+																								isCurrent={connIsCurrent}
+																								isEducation={peerType === 'education'}
+																							/>
+																						</span>
+																					:	null}
+																					{!profileEditing && connStatus === 'old' ?
+																						<span className='shrink-0 rounded bg-zinc-500/20 px-1.5 py-0.5 text-[10px] font-semibold opacity-80'>Old</span>
+																					:	null}
+																					{!profileEditing ?
+																						<span className='text-[10px] opacity-60'>
+																							{isOut ? '→' : '←'} {displayRelation.replace(/_/g, ' ')}
+																						</span>
+																					:	null}
+																					<button
+																						type='button'
+																						onClick={() => jumpToProfile(peerId)}
+																						className='cursor-pointer border-0 bg-transparent p-0 text-xs font-semibold text-[#F97316] underline'>
+																						{peerName}
+																					</button>
+																					<CountryFlags
+																						codes={l.peerCountryCodes}
+																						size='sm'
+																					/>
+																					<span className={`rounded border px-1.5 py-0.2 text-[10px] ${TYPE_META[peerType].badge}`}>{TYPE_META[peerType].label}</span>
+																					{!profileEditing && roleClean ?
+																						<span className='text-[11px] opacity-75'>({roleClean})</span>
+																					:	null}
+																					{l.peerPrimaryLocation ?
+																						<span className='text-[11px] opacity-70'>📍 {l.peerPrimaryLocation}</span>
 																					:	null}
 																				</div>
-																				{profileEditing && draft && !markedRemove ?
-																					<div className='mt-2 grid gap-1.5 sm:grid-cols-6'>
-																						<select
-																							value={draft.relationType}
-																							onChange={(e) =>
-																								patchDraft({ relationType: e.target.value as ProfileRelationType })
-																							}
-																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-2'>
-																							{(
-																								CONNECTED_ADD_RELATIONS.includes(draft.relationType) ?
-																									CONNECTED_ADD_RELATIONS
-																								:	([draft.relationType, ...CONNECTED_ADD_RELATIONS] as ProfileRelationType[])
-																							).map((rel) => (
-																								<option
-																									key={rel}
-																									value={rel}>
-																									{rel.replace(/_/g, ' ')}
-																								</option>
-																							))}
-																						</select>
-																						<input
-																							value={draft.roleLabel}
-																							onChange={(e) => patchDraft({ roleLabel: e.target.value })}
-																							placeholder='Role / title'
-																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-2'
-																						/>
-																						<input
-																							value={draft.startDate}
-																							onChange={(e) => patchDraft({ startDate: e.target.value })}
-																							onBlur={(e) =>
-																								patchDraft({ startDate: formatDateDraftOnBlur(e.target.value) })
-																							}
-																							placeholder={DATE_INPUT_PLACEHOLDER}
-																							title={DATE_INPUT_TITLE}
-																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]'
-																						/>
-																						<input
-																							value={draft.endDate}
-																							onChange={(e) => patchDraft({ endDate: e.target.value })}
-																							onBlur={(e) =>
-																								patchDraft({ endDate: formatDateDraftOnBlur(e.target.value) })
-																							}
-																							placeholder={DATE_INPUT_PLACEHOLDER}
-																							title={DATE_INPUT_TITLE}
-																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]'
-																						/>
-																						<input
-																							value={draft.evidenceNote}
-																							onChange={(e) => patchDraft({ evidenceNote: e.target.value })}
-																							placeholder='Note'
-																							className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-6'
-																						/>
-																					</div>
-																				:	null}
-																				{showRelNote ?
-																					<p className='m-0 mt-1.5 text-[11px] leading-snug opacity-70'>
-																						{isStructuredRecordText(displayNote) ? <HighlightProfileText text={displayNote} /> : displayNote}
-																					</p>
+																				{profileEditing ?
+																					<button
+																						type='button'
+																						onClick={() => patchDraft({ deleted: !markedRemove })}
+																						className='shrink-0 cursor-pointer rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[10px] font-semibold opacity-80 hover:opacity-100'>
+																						{markedRemove ? 'Undo' : 'Remove'}
+																					</button>
 																				:	null}
 																			</div>
-																		);
-																	})}
-																</div>}
+																			{profileEditing && draft && !markedRemove ?
+																				<div className='mt-2 grid gap-1.5 sm:grid-cols-6'>
+																					<select
+																						value={draft.relationType}
+																						onChange={(e) =>
+																							patchDraft({ relationType: e.target.value as ProfileRelationType })
+																						}
+																						className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-2'>
+																						{(
+																							CONNECTED_ADD_RELATIONS.includes(draft.relationType) ?
+																								CONNECTED_ADD_RELATIONS
+																							:	([draft.relationType, ...CONNECTED_ADD_RELATIONS] as ProfileRelationType[])
+																						).map((rel) => (
+																							<option
+																								key={rel}
+																								value={rel}>
+																								{rel.replace(/_/g, ' ')}
+																							</option>
+																						))}
+																					</select>
+																					<input
+																						value={draft.roleLabel}
+																						onChange={(e) => patchDraft({ roleLabel: e.target.value })}
+																						placeholder='Role / title'
+																						className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-2'
+																					/>
+																					<input
+																						value={draft.startDate}
+																						onChange={(e) => patchDraft({ startDate: e.target.value })}
+																						onBlur={(e) =>
+																							patchDraft({ startDate: formatDateDraftOnBlur(e.target.value) })
+																						}
+																						placeholder={DATE_INPUT_PLACEHOLDER}
+																						title={DATE_INPUT_TITLE}
+																						className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]'
+																					/>
+																					<input
+																						value={draft.endDate}
+																						onChange={(e) => patchDraft({ endDate: e.target.value })}
+																						onBlur={(e) =>
+																							patchDraft({ endDate: formatDateDraftOnBlur(e.target.value) })
+																						}
+																						placeholder={DATE_INPUT_PLACEHOLDER}
+																						title={DATE_INPUT_TITLE}
+																						className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px]'
+																					/>
+																					<input
+																						value={draft.evidenceNote}
+																						onChange={(e) => patchDraft({ evidenceNote: e.target.value })}
+																						placeholder='Note'
+																						className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-1 text-[11px] sm:col-span-6'
+																					/>
+																				</div>
+																			:	null}
+																			{showRelNote ?
+																				<p className='m-0 mt-1.5 text-[11px] leading-snug opacity-70'>
+																					{isStructuredRecordText(displayNote) ? <HighlightProfileText text={displayNote} /> : displayNote}
+																				</p>
+																			:	null}
+																		</div>
+																	);
+																};
+
+																if (!useCrdConnGrouping) {
+																	return <div className='mb-3 space-y-1.5'>{filteredLinks.map(renderConnectedLinkRow)}</div>;
+																}
+
+																return (
+																	<div className='mb-3 space-y-3'>
+																		{finraSecActiveLinks.length > 0 ?
+																			<div className='space-y-1.5'>
+																				<div className='text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300'>
+																					FINRA / SEC Active ({finraSecActiveLinks.length.toLocaleString()})
+																				</div>
+																				{finraSecActiveLinks.map(renderConnectedLinkRow)}
+																			</div>
+																		:	null}
+
+																		{finraSecDisabledLinks.length > 0 ?
+																			<div className='rounded-md border border-[var(--app-border)] bg-[var(--app-surface)]/50'>
+																				<button
+																					type='button'
+																					onClick={() => setDisabledFinraOpen((v) => !v)}
+																					aria-expanded={disabledSectionExpanded}
+																					className='flex w-full cursor-pointer items-center justify-between gap-2 border-0 bg-transparent px-2.5 py-2 text-left text-[11px] font-semibold opacity-80 hover:opacity-100'>
+																					<span>
+																						{disabledSectionExpanded ? '▾' : '▸'} Disabled / Inactive FINRA &amp; SEC ({finraSecDisabledLinks.length.toLocaleString()})
+																					</span>
+																					<span className='text-[10px] font-normal opacity-65'>
+																						{disabledSectionExpanded ? 'Hide' : 'Show'}
+																					</span>
+																				</button>
+																				{disabledSectionExpanded ?
+																					<div className='space-y-1.5 border-t border-[var(--app-border)] p-2'>
+																						{finraSecDisabledLinks.map(renderConnectedLinkRow)}
+																					</div>
+																				:	null}
+																			</div>
+																		:	null}
+
+																		{otherConnectedLinks.length > 0 ?
+																			<div className='space-y-1.5'>
+																				<div className='text-[10px] font-semibold uppercase tracking-wide opacity-65'>
+																					Other Connected Profiles ({otherConnectedLinks.length.toLocaleString()})
+																				</div>
+																				{otherConnectedLinks.map(renderConnectedLinkRow)}
+																			</div>
+																		:	null}
+																	</div>
+																);
+															})()}
 
 															<form
 																onSubmit={(e) => void handleAddConnection(e)}
@@ -10550,7 +10644,8 @@ export default function ProfilesClient({
 															.map((e) => e.sourceUrl)
 															.filter(Boolean)
 															.filter((u, i, arr) => arr.indexOf(u) === i);
-															const showMeta = Boolean(group.label) || geos.length > 0 || urls.length > 0;
+															const multiEntryGroup = group.entries.length > 1;
+															const showMeta = Boolean(group.label) || (!multiEntryGroup && (geos.length > 0 || urls.length > 0));
 															return (
 															<article
 															key={`${prefix}${year}-${group.key}`}
@@ -10564,14 +10659,17 @@ export default function ProfilesClient({
 															{group.label ?
 															<span className='font-mono font-semibold opacity-90'>{group.label}</span>
 															:	null}
-															{geos.map((geo) => (
+															{!multiEntryGroup ?
+															geos.map((geo) => (
 															<span
 															key={String(geo)}
 															className='opacity-65'>
 															📍 {geo}
 															</span>
-															))}
-															{urls.map((url) => (
+															))
+															:	null}
+															{!multiEntryGroup ?
+															urls.map((url) => (
 															<a
 															key={String(url)}
 															href={String(url)}
@@ -10580,11 +10678,12 @@ export default function ProfilesClient({
 															className='text-sky-600 underline dark:text-sky-300'>
 															Source ↗
 															</a>
-															))}
+															))
+															:	null}
 															</div>
 															:	null}
-															<div className={group.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
-															{group.entries.map((entry) => renderPointCard(entry))}
+															<div className={multiEntryGroup ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
+															{group.entries.map((entry) => renderPointCard(entry, multiEntryGroup))}
 															</div>
 															</article>
 															);
@@ -10721,14 +10820,17 @@ export default function ProfilesClient({
 															<span className='font-mono font-semibold text-[#F97316] dark:text-[#FDBA74]'>
 															{node.label}
 															</span>
-															{geos.map((geo) => (
+															{node.entries.length <= 1 ?
+															geos.map((geo) => (
 															<span
 															key={String(geo)}
 															className='opacity-65'>
 															📍 {geo}
 															</span>
-															))}
-															{urls.map((url) => (
+															))
+															:	null}
+															{node.entries.length <= 1 ?
+															urls.map((url) => (
 															<a
 															key={String(url)}
 															href={String(url)}
@@ -10737,10 +10839,11 @@ export default function ProfilesClient({
 															className='text-sky-600 underline dark:text-sky-300'>
 															Source ↗
 															</a>
-															))}
+															))
+															:	null}
 															</div>
 															<div className={node.entries.length > 1 ? 'mt-1.5 space-y-2.5' : 'mt-0.5'}>
-															{node.entries.map((entry) => renderPointCard(entry))}
+															{node.entries.map((entry) => renderPointCard(entry, node.entries.length > 1))}
 															</div>
 															</article>
 															);
@@ -10780,7 +10883,7 @@ export default function ProfilesClient({
 															return <div className='space-y-5'>{nodes}</div>;
 															};
 
-															const renderPointCard = (entry: (typeof timeline.entries)[number]) => {
+															const renderPointCard = (entry: (typeof timeline.entries)[number], showInlineMeta = false) => {
 															const display = formatResearchDriveTimelineEntry({
 															title: entry.title,
 															summary: entry.summary,
@@ -10882,6 +10985,18 @@ export default function ProfilesClient({
 															<span className='rounded-full bg-[#F97316] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white'>
 															This event
 															</span>
+															:	null}
+															{showInlineMeta && entry.geoLabel ?
+															<span className='text-[11px] opacity-65'>📍 {entry.geoLabel}</span>
+															:	null}
+															{showInlineMeta && entry.sourceUrl ?
+															<a
+															href={String(entry.sourceUrl)}
+															target='_blank'
+															rel='noreferrer'
+															className='text-[11px] text-sky-600 underline dark:text-sky-300'>
+															Source ↗
+															</a>
 															:	null}
 															</div>
 															{displaySummary && displaySummary !== displayTitle ?

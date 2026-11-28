@@ -413,6 +413,11 @@ export type ProfileLink = {
 	peerPrimaryLocation?: string | null;
 	/** Peer person gender when known (`female` / `male`) — Family / Relatives kinship labels */
 	peerGender?: 'female' | 'male' | null;
+	/** Peer FINRA / SEC registry fields (for CRD-prioritized Connected Profiles grouping) */
+	peerFinraCrd?: string | null;
+	peerFinraBcScope?: string | null;
+	peerFinraIaScope?: string | null;
+	peerSecCik?: string | null;
 	/** Merged source corpora when multiple duplicate links to the same peer were collapsed */
 	sources?: string[];
 };

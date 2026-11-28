@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { parseTwdbDigest } from './twdbDigestParser';
 import { runAlignmentPass, type AlignmentPassReport } from '@/lib/research/profiles/align';
 import { withProfilesTransaction } from '@/lib/research/profiles/db';
 import {
@@ -1287,34 +1288,44 @@ function backfillDomainCorpora(dataRoot: string, tx: DatabaseSync): BackfillCorp
 		profiles += 2;
 		links += 1;
 
-		for (const doc of (twdbCat.documents as Array<Record<string, unknown>>).slice(0, 80)) {
+		for (const doc of (twdbCat.documents as Array<Record<string, unknown>>).slice(0, 150)) {
 			if (!doc?.ok) continue;
 			const facets = (doc.facets || {}) as Record<string, unknown>;
-			const years = Array.isArray(facets.years) ? facets.years.map(String) : [];
-			const pubYear = years[0] || null;
-			const title = String(facets.title || doc.url || doc.id);
+			const rawTitle = String(facets.title || doc.url || doc.id);
+			const digestRel = typeof doc.digest === 'string' ? doc.digest : null;
+			const digestPath = digestRel ? path.join(dataRoot, 'twdb-trinity-aquifer', digestRel) : null;
+			const digestMarkdown = digestPath && fs.existsSync(digestPath) ? fs.readFileSync(digestPath, 'utf8') : null;
+			const parsed = parseTwdbDigest({ rawTitle, digestMarkdown, facets });
 			const srId = upsertSourceRecord(
 				{
 					corpus: 'twdb-trinity-aquifer',
 					sourceRef: `file:.data/twdb-trinity-aquifer/catalog.json#${String(doc.id)}`,
 					sourceUrl: doc.url ? String(doc.url) : null,
-					title,
-					publishedDate: pubYear,
-					metadata: facets,
+					title: parsed.title,
+					publishedDate: parsed.eventDate,
+					excerpt: parsed.summary,
+					metadata: {
+						...facets,
+						district: parsed.district,
+						gmas: parsed.gmas,
+						counties: parsed.counties,
+						cities: parsed.cities,
+						author: parsed.author,
+					},
 				},
 				tx,
 			);
 			upsertTimelineEntry(
 				{
 					profileId: trinitySub.id,
-					eventDate: pubYear,
-					datePrecision: pubYear ? 'year' : 'unknown',
-					title,
-					summary: `TWDB ${String(facets.docType || 'report')} — topics: ${Array.isArray(facets.topics) ? facets.topics.join(', ') : ''}`,
+					eventDate: parsed.eventDate,
+					datePrecision: parsed.datePrecision,
+					title: parsed.title,
+					summary: parsed.summary,
 					angle: 'geophysical',
 					entryKind: 'publication',
-					geoKey: 'us:tx',
-					geoLabel: 'Texas',
+					geoKey: parsed.geoKey,
+					geoLabel: parsed.geoLabel,
 					sourceCorpus: 'twdb-trinity-aquifer',
 					sourceRecordId: srId,
 					dedupeHint: `twdb:${String(doc.id)}`,
