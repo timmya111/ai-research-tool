@@ -369,7 +369,7 @@ function extractStrongIdsAndAddressesFromSummary(detail: ProfileDetail): void {
 
 	// 3. Explicit US street addresses (e.g., "6012 FM 2729, Whitesboro, TX 76273", "3612 McKinney Ave., Suite 200, Dallas, TX 75204")
 	const streetRe =
-		/\b(\d{1,6}\s+(?:[NSEW]\.?\s+)?[A-Za-z0-9.\s'-]{2,42}?(?:St\.?|Street|Ave\.?|Avenue|Blvd\.?|Boulevard|Dr\.?|Drive|Rd\.?|Road|Ln\.?|Lane|Way|Pkwy\.?|Parkway|Hwy\.?|Highway|FM\s+\d+|Loop\s+\d+|Pl\.?|Place|Ct\.?|Court)(?:,?\s+(?:Suite|Ste\.?|Unit|Bldg\.?|Floor|Fl\.?|#)\s*[A-Za-z0-9-]+)?,\s*[A-Za-z.\s'-]{2,30},\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\s+\d{5}(?:-\d{4})?)\b/g;
+		/\b(\d{1,6}\s+(?:(?:FM|RM|CR|SH|RR|US\s+Hwy\.?|State\s+Hwy\.?|Hwy\.?|Highway|Loop|County\s+Rd\.?)\s+\d+[A-Za-z]?|(?:[NSEW]\.?\s+)?[A-Za-z0-9.\s'-]{2,42}?(?:St\.?|Street|Ave\.?|Avenue|Blvd\.?|Boulevard|Dr\.?|Drive|Rd\.?|Road|Ln\.?|Lane|Way|Pkwy\.?|Parkway|Hwy\.?|Highway|Pl\.?|Place|Ct\.?|Court))(?:,?\s+(?:Suite|Ste\.?|Unit|Bldg\.?|Floor|Fl\.?|#)\s*[A-Za-z0-9-]+)?,\s*[A-Za-z.\s'-]{2,30},\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\s+\d{5}(?:-\d{4})?)\b/g;
 	const existingLocNorms = new Set(detail.locations.map((l) => normalizeText(l.raw)));
 	let addedLocs = 0;
 	for (const m of sum.matchAll(streetRe)) {
