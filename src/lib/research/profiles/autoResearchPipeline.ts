@@ -1186,6 +1186,7 @@ async function matchUpdateOrCreateDiscoveredEntity(
 	}
 
 	// Gate: Do NOT auto-create a new profile until we have collected its verified start (and end, if applicable) dates.
+	// New historic_event profiles specifically require a full YYYY-MM-DD date.
 	const verifiedStartDate = resolvedDates.startDate
 		? normalizeIsoDate(resolvedDates.startDate).date
 		: wikiHit?.inception
@@ -1197,6 +1198,9 @@ async function matchUpdateOrCreateDiscoveredEntity(
 			? normalizeIsoDate(wikiHit.dissolved).date
 			: null;
 	if (!verifiedStartDate && entity.profileType !== 'region') {
+		return { action: 'skipped_missing_dates', slug: null };
+	}
+	if (entity.profileType === 'historic_event' && (!verifiedStartDate || !/^\d{4}-\d{2}-\d{2}$/.test(verifiedStartDate))) {
 		return { action: 'skipped_missing_dates', slug: null };
 	}
 

@@ -5673,6 +5673,16 @@ export default function ProfilesClient({
 	async function handleCreateProfile(e?: React.FormEvent, opts?: { forceCreate?: boolean }) {
 		e?.preventDefault();
 		if (!newName.trim()) return;
+		const normalizedNewStart = newStartDate.trim()
+			? normalizeIsoDate(newStartDate.trim()).date || newStartDate.trim()
+			: null;
+		if (newType === 'historic_event') {
+			const hasFullStart = Boolean(normalizedNewStart && /^\d{4}-\d{2}-\d{2}$/.test(normalizedNewStart));
+			if ((normalizedNewStart && !hasFullStart) || (!normalizedNewStart && !newSummary.trim())) {
+				setError('All new events require a full date (YYYY-MM-DD, e.g. 2015-02-20).');
+				return;
+			}
+		}
 		setCreating(true);
 		setError(null);
 		setDuplicateConflict(null);
@@ -7560,14 +7570,15 @@ export default function ProfilesClient({
 										  newType === 'government' ||
 										  newType === 'region' ?
 										'Founded / start (optional)'
-									:	'Start date (optional)'}
+									:	'Event date (YYYY-MM-DD required)'}
 								</span>
 								<input
 									value={newStartDate}
 									onChange={(e) => setNewStartDate(e.target.value)}
 									onBlur={() => setNewStartDate((v) => formatDateDraftOnBlur(v))}
-									placeholder={DATE_INPUT_PLACEHOLDER}
+									placeholder={newType === 'historic_event' ? 'YYYY-MM-DD (e.g. 2015-02-20)' : DATE_INPUT_PLACEHOLDER}
 									title={DATE_INPUT_TITLE}
+									required={newType === 'historic_event' && !newSummary.trim()}
 									className='rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-xs'
 								/>
 							</label>

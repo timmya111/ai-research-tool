@@ -6,6 +6,7 @@ import {
 } from '@/lib/research/profiles/autoResearchPipeline';
 import { resolveEntityStartEndDates } from '@/lib/research/profiles/dateResolver';
 import { resolveFirmIdentityOnCreate } from '@/lib/research/profiles/firmIdentityFilter';
+import { normalizeIsoDate } from '@/lib/research/profiles/normalize';
 import {
 	addAlias,
 	addIdentifier,
@@ -257,10 +258,13 @@ export async function POST(request: Request) {
 			}
 		}
 
-		let resolvedStartDate = initialStartDate;
-		let resolvedEndDate = body.endDate ? String(body.endDate) : null;
+		const isFullIsoDate = (v: string | null | undefined): boolean =>
+			Boolean(v && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()));
+		let resolvedStartDate = initialStartDate ? normalizeIsoDate(initialStartDate).date || initialStartDate.trim() : null;
+		let resolvedEndDate = body.endDate ? normalizeIsoDate(String(body.endDate)).date || String(body.endDate).trim() : null;
 		let autoDateMeta: { qid: string | null; wikiUrl: string | null } = { qid: null, wikiUrl: null };
-		if (!resolvedStartDate || !resolvedEndDate) {
+		const needsFullEventDate = effectiveType === 'historic_event' && !isFullIsoDate(resolvedStartDate);
+		if (!resolvedStartDate || !resolvedEndDate || needsFullEventDate) {
 			try {
 				const dateHit = await resolveEntityStartEndDates({
 					name,
@@ -268,12 +272,31 @@ export async function POST(request: Request) {
 					summary: initialSummary,
 					allowWebLookup: effectiveType !== 'region',
 				});
-				if (!resolvedStartDate && dateHit.startDate) resolvedStartDate = dateHit.startDate;
+				if (dateHit.startDate) {
+					if (!resolvedStartDate || (needsFullEventDate && isFullIsoDate(dateHit.startDate))) {
+						resolvedStartDate = dateHit.startDate;
+					}
+				}
 				if (!resolvedEndDate && dateHit.endDate) resolvedEndDate = dateHit.endDate;
 				autoDateMeta = { qid: dateHit.qid, wikiUrl: dateHit.wikiUrl };
 			} catch {
 				/* non-fatal — continue with user-provided dates */
 			}
+		}
+
+		if (
+			effectiveType === 'historic_event' &&
+			body.allowPartialDate !== true &&
+			!isFullIsoDate(resolvedStartDate)
+		) {
+			return NextResponse.json(
+				{
+					ok: false,
+					error:
+						'All new events require a full date (YYYY-MM-DD, e.g. 2015-02-20). Please provide an exact year, month, and day.',
+				},
+				{ status: 400, headers: { 'Cache-Control': 'no-store' } },
+			);
 		}
 
 		let profile = upsertProfile({

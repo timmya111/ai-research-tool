@@ -429,12 +429,36 @@ export function extractDatesFromProse(
 	}
 
 	if (profileType === 'historic_event') {
-		// Check explicit date range or single date in lead or entity name
-		const hay = `${entityName || ''} ${leadSingle.slice(0, 500)}`;
-		const spanM = hay.match(new RegExp(`(${DATE_TOKEN_RE})\\s*[–—-]\\s*(${DATE_TOKEN_RE})`, 'i'));
+		// Prefer full YYYY-MM-DD dates from the lead text before falling back to partial/year tokens in the title.
+		const hayLead = leadSingle.slice(0, 700);
+		const hay = `${entityName || ''} ${hayLead}`;
+		const spanM = hayLead.match(new RegExp(`(${DATE_TOKEN_RE})\\s*[–—-]\\s*(${DATE_TOKEN_RE})`, 'i'));
 		if (spanM) {
 			const s = parseDateToken(spanM[1]);
 			const e = parseDateToken(spanM[2]);
+			if (s && e && e >= s && /^\d{4}-\d{2}-\d{2}$/.test(s)) {
+				return { startDate: s, endDate: e };
+			}
+		}
+		const allMatches = hayLead.match(new RegExp(`\\b(?:${DATE_TOKEN_RE})\\b`, 'gi')) || [];
+		for (const rawTok of allMatches) {
+			const parsed = parseDateToken(rawTok);
+			if (parsed && /^\d{4}-\d{2}-\d{2}$/.test(parsed)) {
+				startDate = parsed;
+				break;
+			}
+		}
+		if (startDate) {
+			if (spanM) {
+				const e = parseDateToken(spanM[2]);
+				if (e && e >= startDate) endDate = e;
+			}
+			return { startDate, endDate };
+		}
+		const spanFallback = hay.match(new RegExp(`(${DATE_TOKEN_RE})\\s*[–—-]\\s*(${DATE_TOKEN_RE})`, 'i'));
+		if (spanFallback) {
+			const s = parseDateToken(spanFallback[1]);
+			const e = parseDateToken(spanFallback[2]);
 			if (s && e && e >= s) {
 				return { startDate: s, endDate: e };
 			}
