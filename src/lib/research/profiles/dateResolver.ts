@@ -104,8 +104,17 @@ export function parseWikipediaArticleHtml(
 	// 1. Parse RLCONF wgTitle & wgCategories
 	let title: string | null = null;
 	let categories: string[] = [];
-	const titleM = html.match(/"wgTitle"\s*:\s*"([^"]+)"/);
-	if (titleM) title = titleM[1]!.replace(/\\"/g, '"');
+	const titleM = html.match(/"wgTitle"\s*:\s*("(?:\\.|[^"\\])*")/);
+	if (titleM) {
+		try {
+			title = String(JSON.parse(titleM[1]!));
+		} catch {
+			title = titleM[1]!
+				.slice(1, -1)
+				.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+				.replace(/\\"/g, '"');
+		}
+	}
 	const catsM = html.match(/"wgCategories"\s*:\s*(\[[^\]]*\])/);
 	if (catsM) {
 		try {

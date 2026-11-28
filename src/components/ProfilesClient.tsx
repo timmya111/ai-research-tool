@@ -1993,11 +1993,19 @@ function styleResearchDriveCitationsInHtml(html: string): string {
 	);
 }
 
+type PeerHighlightTarget = {
+	target: string;
+	name: string;
+	href: string;
+};
+
 type ProfileHighlightMatcher = {
 	regex: RegExp;
 	exactCaseTerms: Set<string>;
 	peerRegex: RegExp | null;
 	peerExactCaseTerms: Set<string>;
+	peerTargets: Map<string, PeerHighlightTarget>;
+	onJumpProfile?: (idOrSlug: string) => void;
 };
 
 const ProfileHighlightContext = createContext<ProfileHighlightMatcher | null>(null);
@@ -2017,10 +2025,14 @@ const INFOBOX_BLEED_ALIAS_RE =
 const HIGHLIGHT_RECORD_CORPUS_RE =
 	/(?:okcr|deed|land|knowledge-sqlite|legal-docs|bryan-ucc|govinfo|oscn|cfpb|courtlistener|finra|sec|edgar|filing|ocr)/i;
 
+const RAW_URL_SPLIT_RE =
+	/(https?:\/\/[^\s<>"')]+|www\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}[^\s<>"')]*|\b[A-Za-z0-9.-]+\.(?:com|org|gov|edu|net|io|us|co)\/[^\s<>"')]+)/gi;
+const IS_RAW_URL_RE = /^(?:https?:\/\/|www\.|[A-Za-z0-9.-]+\.(?:com|org|gov|edu|net|io|us|co)\/)/i;
+
 function isStructuredRecordText(text: string): boolean {
 	if (!text) return false;
 	if (/\bI-\d{4}-\d{3,}\b/.test(text)) return true;
-	if (/\s→\s/.test(text)) return true;
+	if (/\b[A-Z][A-Z0-9.,'&/\s]{2,}\s→\s[A-Z][A-Z0-9.,'&/\s]{2,}\b/.test(text)) return true;
 	PLSS_LAND_AREA_RE.lastIndex = 0;
 	return PLSS_LAND_AREA_RE.test(text);
 }
@@ -2048,38 +2060,90 @@ function escapeRegExpChars(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function buildProfileHighlightMatcher(detail: ProfileDetail | null): ProfileHighlightMatcher | null {
+function profileSlugToHref(idOrSlug: string): string {
+	const raw = String(idOrSlug || '').trim();
+	const colonIdx = raw.indexOf(':');
+	if (colonIdx > 0) {
+		return `/profiles/${encodeURIComponent(raw.slice(0, colonIdx))}/${encodeURIComponent(raw.slice(colonIdx + 1))}`;
+	}
+	return `/profiles/${encodeURIComponent(raw)}`;
+}
+
+function escapeHtmlAttrValue(s: string): string {
+	return String(s || '')
+		.replace(/&/g, '&amp;')
+		.replace(/"/g, '&quot;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;');
+}
+
+function normalizePeerLookupKey(s: string): string {
+	return String(s || '')
+		.replace(/\s*\([^)]*\)\s*/g, ' ')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim();
+}
+
+function lookupPeerTarget(matched: string, matcher: ProfileHighlightMatcher): PeerHighlightTarget | null {
+	const direct = matcher.peerTargets.get(normalizePeerLookupKey(matched));
+	if (direct) return direct;
+	const stripped = matched
+		.replace(
+			/,?\s+\b(?:incorporated|inc\.?|l\.?l\.?c\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?p\.?|l\.?p\.?|p\.?l\.?l\.?c\.?|p\.?c\.?|p\.?l\.?c\.?|n\.?a\.?|co\.?|company)\s*$/i,
+			'',
+		)
+		.trim();
+	if (stripped) {
+		const hit = matcher.peerTargets.get(normalizePeerLookupKey(stripped));
+		if (hit) return hit;
+	}
+	return null;
+}
+
+function buildProfileHighlightMatcher(
+	detail: ProfileDetail | null,
+	onJumpProfile?: (idOrSlug: string) => void,
+): ProfileHighlightMatcher | null {
 	if (!detail?.profile?.name) return null;
 	const terms = new Map<string, { pattern: string; length: number; exactCase: boolean; raw: string }>();
 
 	const addTermInto = (
 		target: Map<string, { pattern: string; length: number; exactCase: boolean; raw: string }>,
 		raw: string,
-		opts?: { exactCase?: boolean; minLen?: number },
-	) => {
+		opts?: { exactCase?: boolean; minLen?: number; suffixOptional?: boolean },
+	): string | null => {
 		const clean = String(raw || '')
 			.replace(/\s*\([^)]*\)\s*/g, ' ')
 			.replace(/[,;:\s]+$/g, '')
 			.replace(/\s+/g, ' ')
 			.trim();
-		if (!clean || clean.length < 2) return;
+		if (!clean || clean.length < 2) return null;
 		const low = clean.toLowerCase();
-		if (HIGHLIGHT_STOP_TERMS.has(low)) return;
+		if (HIGHLIGHT_STOP_TERMS.has(low)) return null;
 		const exactCase = Boolean(opts?.exactCase || (clean.length <= 3 && !clean.includes(' ')));
-		if (exactCase && !/^[A-Za-z0-9&.-]{2,20}$/.test(clean)) return;
-		if (!exactCase && clean.length < (opts?.minLen ?? 4)) return;
+		if (exactCase && !/^[A-Za-z0-9&.-]{2,20}$/.test(clean)) return null;
+		if (!exactCase && clean.length < (opts?.minLen ?? 4)) return null;
 		const words = clean.split(/[\s,]+/).filter(Boolean);
-		if (words.length === 0) return;
-		const pattern = words.map((w) => escapeRegExpChars(w)).join('[\\s,]+');
+		if (words.length === 0) return null;
+		let pattern = words.map((w) => escapeRegExpChars(w)).join('[\\s,]+');
+		if (opts?.suffixOptional) {
+			pattern += '(?:,?\\s+(?:Inc\\.?|LLC|L\\.L\\.C\\.?|Corp\\.?|Corporation|Ltd\\.?|Limited|LP|L\\.P\\.?|LLP|Company|Co\\.?))?';
+		}
 		const key = exactCase ? `EXACT:${clean}` : `CI:${low}`;
 		if (!target.has(key)) {
 			target.set(key, { pattern, length: clean.length, exactCase, raw: clean });
 		}
+		return low;
 	};
 
-	const addTerm = (raw: string, opts?: { exactCase?: boolean }) => addTermInto(terms, raw, opts);
+	const addTerm = (raw: string, opts?: { exactCase?: boolean; suffixOptional?: boolean }) => addTermInto(terms, raw, opts);
 
-	addTerm(detail.profile.name);
+	const activeIsOrg =
+		detail.profile.profileType !== 'person' &&
+		detail.profile.profileType !== 'historic_event' &&
+		detail.profile.profileType !== 'region';
+	addTerm(detail.profile.name, { suffixOptional: activeIsOrg });
 	const stripped = detail.profile.name
 		.replace(
 			/,?\s+\b(?:incorporated|inc\.?|l\.?l\.?c\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?p\.?|l\.?p\.?|p\.?l\.?l\.?c\.?|p\.?c\.?|p\.?l\.?c\.?|n\.?a\.?|co\.?|company)\s*$/i,
@@ -2087,7 +2151,7 @@ function buildProfileHighlightMatcher(detail: ProfileDetail | null): ProfileHigh
 		)
 		.trim();
 	if (stripped && stripped.length >= 4 && stripped.toLowerCase() !== detail.profile.name.toLowerCase()) {
-		addTerm(stripped);
+		addTerm(stripped, { suffixOptional: activeIsOrg });
 	}
 
 	const allowedAliasKinds = new Set(['name', 'other_name', 'former_name', 'formerly', 'aka', 'legal_name', 'acronym', 'ticker']);
@@ -2116,26 +2180,73 @@ function buildProfileHighlightMatcher(detail: ProfileDetail | null): ProfileHigh
 	const exactCaseTerms = new Set(sorted.filter((t) => t.exactCase).map((t) => t.raw));
 	const union = sorted.map((t) => t.pattern).join('|');
 
-	// Also build secondary highlight matcher for connected peer profiles (capped at 60 distinctive names)
+	// Build clickable blue-tag matcher for connected peer profiles (capped at 120 distinctive names)
 	const peerTerms = new Map<string, { pattern: string; length: number; exactCase: boolean; raw: string }>();
-	for (const l of (detail.links || []).slice(0, 80)) {
-		const isOut = l.fromProfileId === detail.profile.id;
-		const peerName = String(isOut ? l.toName : l.fromName || '').trim();
-		if (!peerName || peerName.length < 5) continue;
-		const peerLow = peerName.toLowerCase();
-		if (terms.has(`CI:${peerLow}`)) continue;
-		addTermInto(peerTerms, peerName, { minLen: 5 });
+	const peerTargets = new Map<string, PeerHighlightTarget>();
+
+	const registerPeerVariant = (
+		variant: string,
+		info: PeerHighlightTarget,
+		opts?: { minLen?: number; suffixOptional?: boolean },
+	) => {
+		const normK = normalizePeerLookupKey(variant);
+		const low = variant.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/[,;:\s]+$/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+		if (!low || !normK || terms.has(`CI:${low}`)) return;
+		const addedLow = addTermInto(peerTerms, variant, opts);
+		if (addedLow && !peerTargets.has(normK)) {
+			peerTargets.set(normK, info);
+		}
+	};
+
+	const registerPeer = (peerId: string, peerSlug: string | null | undefined, peerNameRaw: string | null | undefined, peerType?: string | null) => {
+		const peerName = String(peerNameRaw || '').trim();
+		if (!peerName || peerName.length < 5) return;
+		const targetKey = String(peerSlug || peerId || '').trim();
+		if (!targetKey) return;
+		const info: PeerHighlightTarget = {
+			target: targetKey,
+			name: peerName,
+			href: profileSlugToHref(targetKey),
+		};
+		const isOrg = peerType !== 'person' && peerType !== 'historic_event' && peerType !== 'region';
+		registerPeerVariant(peerName, info, { minLen: 5, suffixOptional: isOrg });
 		const peerStripped = peerName
 			.replace(
 				/,?\s+\b(?:incorporated|inc\.?|l\.?l\.?c\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?p\.?|l\.?p\.?|p\.?l\.?l\.?c\.?|p\.?c\.?|p\.?l\.?c\.?|n\.?a\.?|co\.?|company)\s*$/i,
 				'',
 			)
 			.trim();
-		if (peerStripped.length >= 6 && peerStripped.includes(' ') && !terms.has(`CI:${peerStripped.toLowerCase()}`)) {
-			addTermInto(peerTerms, peerStripped, { minLen: 6 });
+		if (peerStripped.length >= 5 && peerStripped.toLowerCase() !== peerName.toLowerCase()) {
+			registerPeerVariant(peerStripped, info, { minLen: 5, suffixOptional: isOrg });
 		}
-		if (peerTerms.size >= 60) break;
+		// CamelCase compound brand variants like "ExxonMobil" → "Exxon Mobil"
+		if (/^[A-Z][a-z]+[A-Z][a-z]+$/.test(peerName)) {
+			const spaced = peerName.replace(/([a-z])([A-Z])/g, '$1 $2');
+			registerPeerVariant(spaced, info, { minLen: 6, suffixOptional: isOrg });
+		}
+		// "Railroad Commission of Texas" ↔ "Texas Railroad Commission"
+		const ofStateM = peerName.match(/^(.+?)\s+of\s+(Texas|Oklahoma|New Mexico|Kansas|Delaware|California|New York)$/i);
+		if (ofStateM) {
+			registerPeerVariant(`${ofStateM[2]} ${ofStateM[1]}`, info, { minLen: 8 });
+		}
+	};
+
+	for (const l of (detail.links || []).slice(0, 120)) {
+		const isOut = l.fromProfileId === detail.profile.id;
+		const peerId = isOut ? l.toProfileId : l.fromProfileId;
+		const peerSlug = isOut ? l.toSlug : l.fromSlug;
+		const peerName = isOut ? l.toName : l.fromName;
+		const peerType = isOut ? l.toType : l.fromType;
+		registerPeer(peerId, peerSlug, peerName, peerType);
+		if (peerTerms.size >= 120) break;
 	}
+	for (const emp of detail.employmentHistory || []) {
+		if (emp.orgProfileId && emp.orgName) {
+			registerPeer(emp.orgProfileId, null, emp.orgName, 'firm');
+		}
+		if (peerTerms.size >= 140) break;
+	}
+
 	const peerSorted = [...peerTerms.values()].sort((a, b) => b.length - a.length);
 	const peerExactCaseTerms = new Set(peerSorted.filter((t) => t.exactCase).map((t) => t.raw));
 	let peerRegex: RegExp | null = null;
@@ -2153,6 +2264,8 @@ function buildProfileHighlightMatcher(detail: ProfileDetail | null): ProfileHigh
 			exactCaseTerms,
 			peerRegex,
 			peerExactCaseTerms,
+			peerTargets,
+			onJumpProfile,
 		};
 	} catch {
 		return null;
@@ -2172,6 +2285,138 @@ function textMatchesActiveProfile(text: string, matcher: ProfileHighlightMatcher
 		return true;
 	}
 	return false;
+}
+
+function renderPeerChipHtml(
+	peerHit: string,
+	matcher: ProfileHighlightMatcher,
+	variant: 'chip' | 'link' = 'chip',
+): string {
+	const info = lookupPeerTarget(peerHit, matcher);
+	if (variant === 'link') {
+		if (!info) return peerHit;
+		const linkStyle =
+			'color:#7dd3fc;font-weight:600;text-decoration:underline;text-underline-offset:2px;text-decoration-color:rgba(125,211,252,0.45);cursor:pointer';
+		return `<a href="${escapeHtmlAttrValue(info.href)}" data-jump-profile="${escapeHtmlAttrValue(info.target)}" title="Open profile: ${escapeHtmlAttrValue(info.name)}" style="${linkStyle}">${peerHit}</a>`;
+	}
+	const chipStyle =
+		'display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(56,189,248,0.22);color:#bae6fd;border:1px solid rgba(56,189,248,0.62);border-radius:5px;padding:0 6px;font-weight:600;text-decoration:none;cursor:pointer';
+	if (info) {
+		return `<a href="${escapeHtmlAttrValue(info.href)}" data-jump-profile="${escapeHtmlAttrValue(info.target)}" title="Open profile: ${escapeHtmlAttrValue(info.name)}" style="${chipStyle}">${peerHit}</a>`;
+	}
+	return `<mark style="${chipStyle}">${peerHit}</mark>`;
+}
+
+function mapNonUrlTextSegments(text: string, fn: (segment: string) => string): string {
+	return text
+		.split(RAW_URL_SPLIT_RE)
+		.map((part) => (!part || IS_RAW_URL_RE.test(part) ? part : fn(part)))
+		.join('');
+}
+
+type HighlightSpan = {
+	start: number;
+	end: number;
+	kind: 'active' | 'peer' | 'area';
+	text: string;
+};
+
+/**
+ * Collect non-overlapping highlight spans with longest-match priority so a longer
+ * connected peer name (e.g. "XTO CT TXOK NEWMEX LLC") is never chopped in half by
+ * a short active-profile alias (e.g. "XTO").
+ */
+function collectHighlightSpans(
+	text: string,
+	matcher: ProfileHighlightMatcher | null,
+	opts: { includeActive: boolean; includePeers: boolean; includeAreas: boolean },
+): HighlightSpan[] {
+	if (!text) return [];
+	const candidates: HighlightSpan[] = [];
+
+	if (opts.includeAreas) {
+		PLSS_LAND_AREA_RE.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		let count = 0;
+		while ((m = PLSS_LAND_AREA_RE.exec(text))) {
+			candidates.push({ start: m.index, end: m.index + m[0].length, kind: 'area', text: m[0] });
+			if (++count > 160) break;
+		}
+	}
+
+	if (opts.includePeers && matcher?.peerRegex) {
+		matcher.peerRegex.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		let count = 0;
+		while ((m = matcher.peerRegex.exec(text))) {
+			const hit = m[0];
+			if (hit.length <= 3 && !matcher.peerExactCaseTerms.has(hit)) {
+				if (m.index === matcher.peerRegex.lastIndex) matcher.peerRegex.lastIndex += 1;
+				continue;
+			}
+			candidates.push({ start: m.index, end: m.index + hit.length, kind: 'peer', text: hit });
+			if (++count > 200) break;
+		}
+	}
+
+	if (opts.includeActive && matcher) {
+		matcher.regex.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		let count = 0;
+		while ((m = matcher.regex.exec(text))) {
+			const hit = m[0];
+			if (hit.length <= 3 && !matcher.exactCaseTerms.has(hit)) {
+				if (m.index === matcher.regex.lastIndex) matcher.regex.lastIndex += 1;
+				continue;
+			}
+			candidates.push({ start: m.index, end: m.index + hit.length, kind: 'active', text: hit });
+			if (++count > 200) break;
+		}
+	}
+
+	if (candidates.length === 0) return [];
+	const kindRank = (k: HighlightSpan['kind']) => (k === 'area' ? 0 : k === 'peer' ? 1 : 2);
+	candidates.sort((a, b) => {
+		if (a.start !== b.start) return a.start - b.start;
+		const lenDiff = (b.end - b.start) - (a.end - a.start);
+		if (lenDiff !== 0) return lenDiff;
+		return kindRank(a.kind) - kindRank(b.kind);
+	});
+
+	const selected: HighlightSpan[] = [];
+	let cursor = 0;
+	for (const c of candidates) {
+		if (c.start < cursor) continue;
+		selected.push(c);
+		cursor = c.end;
+	}
+	return selected;
+}
+
+function renderSpansToHtml(
+	plain: string,
+	spans: HighlightSpan[],
+	matcher: ProfileHighlightMatcher | null,
+	peerVariant: 'chip' | 'link',
+): string {
+	if (spans.length === 0) return plain;
+	let out = '';
+	let cursor = 0;
+	for (const sp of spans) {
+		if (sp.start > cursor) out += plain.slice(cursor, sp.start);
+		if (sp.kind === 'active') {
+			out += `<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(249,115,22,0.34);color:#fef3c7;border:1px solid rgba(251,191,36,0.75);border-radius:4px;padding:0 5px;font-weight:700">${sp.text}</mark>`;
+		} else if (sp.kind === 'area') {
+			out += `<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(16,185,129,0.22);color:#a7f3d0;border:1px solid rgba(52,211,153,0.55);border-radius:4px;padding:0 5px;font-family:ui-monospace,monospace;font-style:normal;font-weight:600">${sp.text}</mark>`;
+		} else if (sp.kind === 'peer' && matcher) {
+			out += renderPeerChipHtml(sp.text, matcher, peerVariant);
+		} else {
+			out += sp.text;
+		}
+		cursor = sp.end;
+	}
+	if (cursor < plain.length) out += plain.slice(cursor);
+	return out;
 }
 
 function highlightProfileMatchesInHtml(html: string, matcher: ProfileHighlightMatcher | null): string {
@@ -2194,42 +2439,14 @@ function highlightProfileMatchesInHtml(html: string, matcher: ProfileHighlightMa
 			}
 			if (insideAnchor > 0 || insideMark > 0 || insideCode > 0) return tok;
 
-			// 1. Highlight active profile name/alias/ticker in vivid amber/orange (no mid-tag line wrap)
-			matcher.regex.lastIndex = 0;
-			let out = tok.replace(matcher.regex, (matched) => {
-				if (matched.length <= 3 && !matcher.exactCaseTerms.has(matched)) return matched;
-				return `<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(249,115,22,0.34);color:#fef3c7;border:1px solid rgba(251,191,36,0.75);border-radius:4px;padding:0 5px;font-weight:700">${matched}</mark>`;
+			return mapNonUrlTextSegments(tok, (plain) => {
+				const spans = collectHighlightSpans(plain, matcher, {
+					includeActive: true,
+					includePeers: true,
+					includeAreas: true,
+				});
+				return renderSpansToHtml(plain, spans, matcher, 'chip');
 			});
-
-			// 2. Highlight PLSS land tracts & subdivision Block/Lot descriptors in non-wrapping emerald mono chips
-			out = out
-				.split(/(<mark\b[^>]*>[\s\S]*?<\/mark>)/gi)
-				.map((seg) => {
-					if (!seg || /^<mark\b/i.test(seg)) return seg;
-					PLSS_LAND_AREA_RE.lastIndex = 0;
-					let sub = seg.replace(
-						PLSS_LAND_AREA_RE,
-						(area) =>
-							`<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(16,185,129,0.22);color:#a7f3d0;border:1px solid rgba(52,211,153,0.55);border-radius:4px;padding:0 5px;font-family:ui-monospace,monospace;font-style:normal;font-weight:600">${area}</mark>`,
-					);
-					// 3. Highlight connected peer profile names in sky-blue
-					if (matcher.peerRegex) {
-						sub = sub
-							.split(/(<mark\b[^>]*>[\s\S]*?<\/mark>)/gi)
-							.map((pSeg) => {
-								if (!pSeg || /^<mark\b/i.test(pSeg) || !matcher.peerRegex) return pSeg;
-								matcher.peerRegex.lastIndex = 0;
-								return pSeg.replace(matcher.peerRegex, (peerHit) => {
-									if (peerHit.length <= 3 && !matcher.peerExactCaseTerms.has(peerHit)) return peerHit;
-									return `<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(56,189,248,0.22);color:#bae6fd;border:1px solid rgba(56,189,248,0.55);border-radius:4px;padding:0 5px;font-weight:600">${peerHit}</mark>`;
-								});
-							})
-							.join('');
-					}
-					return sub;
-				})
-				.join('');
-			return out;
 		})
 		.join('');
 }
@@ -2239,65 +2456,79 @@ function HighlightProfileText({ text, className }: { text: string; className?: s
 	if (!text) {
 		return className ? <span className={className}>{text}</span> : <>{text}</>;
 	}
-	const renderAreas = (chunk: string, keyPrefix: string): ReactNode => {
-		PLSS_LAND_AREA_RE.lastIndex = 0;
-		const areaParts: ReactNode[] = [];
-		let aLast = 0;
-		let am: RegExpExecArray | null;
-		let aHit = 0;
-		while ((am = PLSS_LAND_AREA_RE.exec(chunk))) {
-			if (am.index > aLast) areaParts.push(chunk.slice(aLast, am.index));
-			areaParts.push(
-				<mark
-					key={`${keyPrefix}-area-${aHit++}`}
-					className='mx-0.5 my-0.5 inline-block whitespace-nowrap rounded border border-emerald-500/55 bg-emerald-400/20 px-1.5 align-baseline font-mono text-[11px] font-semibold text-emerald-900 dark:border-emerald-400/55 dark:bg-emerald-400/20 dark:text-emerald-200'>
-					{am[0]}
-				</mark>,
-			);
-			aLast = am.index + am[0].length;
-			if (aHit > 120) break;
+	const renderNonUrlSegment = (seg: string, segKey: string): ReactNode => {
+		const spans = collectHighlightSpans(seg, matcher, {
+			includeActive: Boolean(matcher),
+			includePeers: Boolean(matcher?.peerRegex),
+			includeAreas: true,
+		});
+		if (spans.length === 0) return seg;
+		const parts: ReactNode[] = [];
+		let cursor = 0;
+		let idx = 0;
+		for (const sp of spans) {
+			if (sp.start > cursor) parts.push(seg.slice(cursor, sp.start));
+			if (sp.kind === 'active') {
+				parts.push(
+					<mark
+						key={`${segKey}-hl-${idx++}`}
+						className='mx-0.5 my-0.5 inline-block whitespace-nowrap rounded border border-amber-500/75 bg-amber-400/35 px-1.5 align-baseline font-bold text-amber-950 dark:border-amber-400/75 dark:bg-[#F97316]/35 dark:text-amber-100'>
+						{sp.text}
+					</mark>,
+				);
+			} else if (sp.kind === 'area') {
+				parts.push(
+					<mark
+						key={`${segKey}-area-${idx++}`}
+						className='mx-0.5 my-0.5 inline-block whitespace-nowrap rounded border border-emerald-500/55 bg-emerald-400/20 px-1.5 align-baseline font-mono text-[11px] font-semibold text-emerald-900 dark:border-emerald-400/55 dark:bg-emerald-400/20 dark:text-emerald-200'>
+						{sp.text}
+					</mark>,
+				);
+			} else if (sp.kind === 'peer' && matcher) {
+				const info = lookupPeerTarget(sp.text, matcher);
+				if (info && matcher.onJumpProfile) {
+					parts.push(
+						<a
+							key={`${segKey}-peer-${idx++}`}
+							href={info.href}
+							title={`Open profile: ${info.name}`}
+							onClick={(e) => {
+								if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+								e.preventDefault();
+								e.stopPropagation();
+								matcher.onJumpProfile?.(info.target);
+							}}
+							className='mx-0.5 my-0.5 inline-block cursor-pointer whitespace-nowrap rounded border border-sky-500/60 bg-sky-400/20 px-1.5 align-baseline font-semibold text-sky-900 no-underline transition hover:bg-sky-400/35 dark:border-sky-400/60 dark:bg-sky-400/20 dark:text-sky-200 dark:hover:bg-sky-400/35'>
+							{sp.text}
+						</a>,
+					);
+				} else {
+					parts.push(
+						<mark
+							key={`${segKey}-peer-${idx++}`}
+							className='mx-0.5 my-0.5 inline-block whitespace-nowrap rounded border border-sky-500/55 bg-sky-400/20 px-1.5 align-baseline font-semibold text-sky-900 dark:border-sky-400/55 dark:bg-sky-400/20 dark:text-sky-200'>
+							{sp.text}
+						</mark>,
+					);
+				}
+			}
+			cursor = sp.end;
 		}
-		if (aHit === 0) return chunk;
-		if (aLast < chunk.length) areaParts.push(chunk.slice(aLast));
-		return areaParts;
+		if (cursor < seg.length) parts.push(seg.slice(cursor));
+		return parts;
 	};
-	if (!matcher) {
-		const rendered = renderAreas(text, 'no-m');
-		return className ? <span className={className}>{rendered}</span> : <>{rendered}</>;
-	}
-	const parts: ReactNode[] = [];
-	matcher.regex.lastIndex = 0;
-	let lastIdx = 0;
-	let m: RegExpExecArray | null;
-	let hitIdx = 0;
-	while ((m = matcher.regex.exec(text))) {
-		const matched = m[0];
-		if (matched.length <= 3 && !matcher.exactCaseTerms.has(matched)) {
-			if (m.index === matcher.regex.lastIndex) matcher.regex.lastIndex += 1;
-			continue;
-		}
-		if (m.index > lastIdx) {
-			parts.push(renderAreas(text.slice(lastIdx, m.index), `pre-${hitIdx}`));
-		}
-		parts.push(
-			<mark
-				key={`hl-${hitIdx++}`}
-				className='mx-0.5 my-0.5 inline-block whitespace-nowrap rounded border border-amber-500/75 bg-amber-400/35 px-1.5 align-baseline font-bold text-amber-950 dark:border-amber-400/75 dark:bg-[#F97316]/35 dark:text-amber-100'>
-				{matched}
-			</mark>,
-		);
-		lastIdx = m.index + matched.length;
-		if (hitIdx > 200) break;
-	}
-	if (hitIdx === 0) {
-		const rendered = renderAreas(text, 'tail');
-		return className ? <span className={className}>{rendered}</span> : <>{rendered}</>;
-	}
-	if (lastIdx < text.length) parts.push(renderAreas(text.slice(lastIdx), 'end'));
-	return className ? <span className={className}>{parts}</span> : <>{parts}</>;
+
+	const urlParts = text.split(RAW_URL_SPLIT_RE);
+	const rendered: ReactNode =
+		urlParts.length === 1
+			? renderNonUrlSegment(text, 'u0')
+			: urlParts.map((seg, idx) =>
+					!seg ? null : IS_RAW_URL_RE.test(seg) ? <span key={`url-${idx}`}>{seg}</span> : <span key={`txt-${idx}`}>{renderNonUrlSegment(seg, `u${idx}`)}</span>,
+				);
+	return className ? <span className={className}>{rendered}</span> : <>{rendered}</>;
 }
 
-function highlightLandAreasOnlyInHtml(html: string): string {
+function highlightPeersAndLandAreasInHtml(html: string, matcher: ProfileHighlightMatcher | null): string {
 	if (!html) return html;
 	const tokens = html.split(/(<[^>]+>)/g);
 	let insideAnchor = 0;
@@ -2316,12 +2547,14 @@ function highlightLandAreasOnlyInHtml(html: string): string {
 				return tok;
 			}
 			if (insideAnchor > 0 || insideMark > 0 || insideCode > 0) return tok;
-			PLSS_LAND_AREA_RE.lastIndex = 0;
-			return tok.replace(
-				PLSS_LAND_AREA_RE,
-				(area) =>
-					`<mark style="display:inline-block;white-space:nowrap;vertical-align:baseline;margin:1px 2px;background:rgba(16,185,129,0.22);color:#a7f3d0;border:1px solid rgba(52,211,153,0.55);border-radius:4px;padding:0 5px;font-family:ui-monospace,monospace;font-style:normal;font-weight:600">${area}</mark>`,
-			);
+			return mapNonUrlTextSegments(tok, (plain) => {
+				const spans = collectHighlightSpans(plain, matcher, {
+					includeActive: false,
+					includePeers: Boolean(matcher?.peerRegex),
+					includeAreas: true,
+				});
+				return renderSpansToHtml(plain, spans, matcher, 'link');
+			});
 		})
 		.join('');
 }
@@ -2343,12 +2576,23 @@ function SummaryMarkdown({
 	const rawHtml = styleResearchDriveCitationsInHtml(summaryMarkdownToHtml(String(text || ''), { inline }));
 	const html = highlightMatches
 		? highlightProfileMatchesInHtml(rawHtml, highlightMatcher)
-		: highlightLandAreasOnlyInHtml(rawHtml);
+		: highlightPeersAndLandAreasInHtml(rawHtml, highlightMatcher);
 	if (!html) return null;
+	const handleClick = (e: React.MouseEvent<HTMLElement>) => {
+		if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+		const el = (e.target as HTMLElement | null)?.closest?.('[data-jump-profile]') as HTMLElement | null;
+		const target = el?.getAttribute('data-jump-profile');
+		if (target && highlightMatcher?.onJumpProfile) {
+			e.preventDefault();
+			e.stopPropagation();
+			highlightMatcher.onJumpProfile(target);
+		}
+	};
 	if (inline) {
 		return (
 			<span
 				className={className}
+				onClick={handleClick}
 				dangerouslySetInnerHTML={{ __html: html }}
 			/>
 		);
@@ -2356,6 +2600,7 @@ function SummaryMarkdown({
 	return (
 		<div
 			className={className}
+			onClick={handleClick}
 			dangerouslySetInnerHTML={{ __html: html }}
 		/>
 	);
@@ -3445,7 +3690,10 @@ function lookupOutlineProfileLink(
 ): OverviewEventLink | null {
 	if (!links || !raw) return null;
 	const trimmed = String(raw).replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
-	if (!trimmed) return null;
+	if (!trimmed || trimmed.length > 90) return null;
+	// Full prose sentences (colons / periods with narrative text) should use inline SummaryMarkdown peer links,
+	// never wrap the entire sentence in a single outer <button>.
+	if (/:\s+\S/.test(trimmed) || trimmed.split(/\s+/).length > 10) return null;
 	if (links[trimmed]) return links[trimmed];
 	const noParen = trimmed.replace(/\s*\([^)]*\)\s*$/, '').trim();
 	if (noParen && links[noParen]) return links[noParen];
@@ -3456,7 +3704,13 @@ function lookupOutlineProfileLink(
 		const kNorm = norm(key);
 		if (!kNorm || kNorm.length < 4) continue;
 		if (kNorm === qNorm || (qNoParen && kNorm === qNoParen)) return hit;
-		if (qNorm.length >= 10 && (kNorm.startsWith(qNorm) || qNorm.startsWith(kNorm))) return hit;
+		if (
+			qNorm.length >= 10 &&
+			Math.abs(qNorm.length - kNorm.length) <= 14 &&
+			(kNorm.startsWith(qNorm) || qNorm.startsWith(kNorm))
+		) {
+			return hit;
+		}
 	}
 	return null;
 }
@@ -3510,7 +3764,12 @@ function SummaryOutlineRail({
 									className='cursor-pointer text-left text-[11px] font-semibold leading-snug text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100'>
 									{label}
 								</button>
-							:	<div className='text-[11px] font-semibold leading-snug text-[#FDBA74]'>{label}</div>
+							:	<div className='text-[11px] font-semibold leading-snug text-[#FDBA74]'>
+									<SummaryMarkdown
+										text={label}
+										inline
+									/>
+								</div>
 						:	null}
 						{showUrlLink && href ?
 							<a
@@ -3527,11 +3786,7 @@ function SummaryOutlineRail({
 								onClick={() => onOpenProfile(fullTextLink.slug || fullTextLink.id)}
 								title={`Open profile: ${fullTextLink.name}`}
 								className={`${label ? 'mt-0.5 ' : ''}block cursor-pointer text-left text-[12px] leading-relaxed text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-100`}>
-								<SummaryMarkdown
-									text={entry.text}
-									inline
-									className='inline text-[12px] leading-relaxed'
-								/>
+								{entry.text.replace(/\*\*/g, '')}
 							</button>
 						: hasDotLink && dotSegments && onOpenProfile ?
 							<div className={`${label ? 'mt-0.5 ' : ''}flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[12px] leading-relaxed text-white/90`}>
@@ -4833,7 +5088,11 @@ export default function ProfilesClient({
 		}
 	}
 
-	const profileHighlightMatcher = useMemo(() => buildProfileHighlightMatcher(detail), [detail]);
+	const jumpToProfileRef = useRef<(id: string) => void>(() => {});
+	const profileHighlightMatcher = useMemo(
+		() => buildProfileHighlightMatcher(detail, (idOrSlug) => jumpToProfileRef.current(idOrSlug)),
+		[detail],
+	);
 
 	const loadGlobalAlignments = useCallback(async () => {
 		setLoadingGlobalAlign(true);
@@ -6828,6 +7087,10 @@ export default function ProfilesClient({
 		},
 		[],
 	);
+
+	useEffect(() => {
+		jumpToProfileRef.current = jumpToProfile;
+	}, [jumpToProfile]);
 
 	// After a timeline-entry jump, scroll the matching destination entry into view.
 	useEffect(() => {
