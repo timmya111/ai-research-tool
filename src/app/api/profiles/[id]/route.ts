@@ -177,6 +177,24 @@ export async function PATCH(request: Request, context: Ctx) {
 			return NextResponse.json({ ok: false, error: 'Profile not found' }, { status: 404 });
 		}
 
+		// Auto-extract explicit EIN / FEIN (e.g., "EIN: 73-6101744") from updated summary prose
+		if (typeof body.summary === 'string' && body.summary.trim()) {
+			const einMatches = body.summary.matchAll(/\b(?:IRS\s+)?(?:F?EIN)\s*[:#-]?\s*(\d{2}-\d{7})\b/gi);
+			const seenEins = new Set<string>();
+			for (const em of einMatches) {
+				const ein = em[1]?.trim();
+				if (ein && !seenEins.has(ein)) {
+					seenEins.add(ein);
+					addIdentifier({
+						profileId: updated.id,
+						scheme: 'irs_ein',
+						value: ein,
+						sourceCorpus: 'manual',
+					});
+				}
+			}
+		}
+
 		if (typeof body.addAlias === 'string' && body.addAlias.trim()) {
 			addAlias({ profileId: updated.id, alias: body.addAlias.trim(), sourceCorpus: 'manual' });
 		} else if (body.addAlias && typeof body.addAlias === 'object') {

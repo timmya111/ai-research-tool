@@ -2126,7 +2126,18 @@ function buildProfileHighlightMatcher(
 		if (!exactCase && clean.length < (opts?.minLen ?? 4)) return null;
 		const words = clean.split(/[\s,]+/).filter(Boolean);
 		if (words.length === 0) return null;
-		let pattern = words.map((w) => escapeRegExpChars(w)).join('[\\s,]+');
+		let pattern = words
+			.map((w) => {
+				if (w === '&' || w.toLowerCase() === 'and') return '(?:&|and)';
+				// Match initials like "R.D." across "R.D.", "R. D.", "R D", "RD"
+				if (/^[A-Za-z]\.[A-Za-z]\.?$/.test(w)) {
+					const a = escapeRegExpChars(w[0]!);
+					const b = escapeRegExpChars(w[2]!);
+					return `${a}\\.?\\s*${b}\\.?`;
+				}
+				return escapeRegExpChars(w);
+			})
+			.join('[\\s,]+');
 		if (opts?.suffixOptional) {
 			pattern += '(?:,?\\s+(?:Inc\\.?|LLC|L\\.L\\.C\\.?|Corp\\.?|Corporation|Ltd\\.?|Limited|LP|L\\.P\\.?|LLP|Company|Co\\.?))?';
 		}
@@ -2231,20 +2242,20 @@ function buildProfileHighlightMatcher(
 		}
 	};
 
-	for (const l of (detail.links || []).slice(0, 120)) {
+	for (const l of (detail.links || []).slice(0, 350)) {
 		const isOut = l.fromProfileId === detail.profile.id;
 		const peerId = isOut ? l.toProfileId : l.fromProfileId;
 		const peerSlug = isOut ? l.toSlug : l.fromSlug;
 		const peerName = isOut ? l.toName : l.fromName;
 		const peerType = isOut ? l.toType : l.fromType;
 		registerPeer(peerId, peerSlug, peerName, peerType);
-		if (peerTerms.size >= 120) break;
+		if (peerTerms.size >= 350) break;
 	}
 	for (const emp of detail.employmentHistory || []) {
 		if (emp.orgProfileId && emp.orgName) {
 			registerPeer(emp.orgProfileId, null, emp.orgName, 'firm');
 		}
-		if (peerTerms.size >= 140) break;
+		if (peerTerms.size >= 380) break;
 	}
 
 	const peerSorted = [...peerTerms.values()].sort((a, b) => b.length - a.length);
@@ -4734,7 +4745,7 @@ export default function ProfilesClient({
 		try {
 			const params = new URLSearchParams();
 			params.set('detectGaps', '0');
-			params.set('limit', '200');
+			params.set('limit', '2500');
 			if (opts?.includeLinkedEvents === false) params.set('includeLinkedEvents', '0');
 			if (opts?.includeLinkedEvents === true) params.set('includeLinkedEvents', '1');
 			const res = await fetch(`/api/profiles/${encodeURIComponent(id)}/timeline?${params.toString()}`, { cache: 'no-store' });
@@ -6052,6 +6063,15 @@ export default function ProfilesClient({
 				}
 			}
 
+			if (aliasDraft.trim()) {
+				const next = aliasDraft.trim();
+				latest = await patchProfile(profileKey, {
+					addAlias: { alias: next, aliasKind: aliasKindDraft },
+				});
+				profileKey = latest.profile.slug || latest.profile.id;
+				setAliasDraft('');
+			}
+
 			const originalLocs = new Map(detail.locations.map((l) => [l.id, l]));
 			for (const row of locationRowsDraft) {
 				if ((row.deleted || !row.raw.trim()) && row.id) {
@@ -6106,6 +6126,13 @@ export default function ProfilesClient({
 					addIdentifier: { scheme: ident.scheme, value: ident.value.trim() },
 				});
 				profileKey = latest.profile.slug || latest.profile.id;
+			}
+			if (identValueDraft.trim()) {
+				latest = await patchProfile(profileKey, {
+					addIdentifier: { scheme: identSchemeDraft, value: identValueDraft.trim() },
+				});
+				profileKey = latest.profile.slug || latest.profile.id;
+				setIdentValueDraft('');
 			}
 
 			const subjectId = latest.profile.id;
@@ -9405,6 +9432,21 @@ export default function ProfilesClient({
 																			onChange={(e) => setIdentValueDraft(e.target.value)}
 																			placeholder='Value…'
 																			className='min-w-[8rem] flex-1 rounded border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px]'
+																			onKeyDown={(e) => {
+																				if (e.key === 'Enter') {
+																					e.preventDefault();
+																					if (!identValueDraft.trim()) return;
+																					setPendingNewIdents((rows) => [
+																						...rows,
+																						{
+																							key: `new-${crypto.randomUUID()}`,
+																							scheme: identSchemeDraft,
+																							value: identValueDraft.trim(),
+																						},
+																					]);
+																					setIdentValueDraft('');
+																				}
+																			}}
 																		/>
 																		<button
 																			type='button'

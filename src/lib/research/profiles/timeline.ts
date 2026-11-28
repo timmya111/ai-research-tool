@@ -836,7 +836,7 @@ function loadMatchingKnowledgeDeedsForTimeline(
 	const kdb = openKnowledgeReadOnly();
 	if (!kdb) return [];
 
-	const maxDocs = Math.max(50, Math.min(1200, opts.maxDocs ?? 900));
+	const maxDocs = Math.max(50, Math.min(5000, opts.maxDocs ?? 2500));
 	const out: TimelineEntry[] = [];
 	const seenInst = new Set<string>();
 
@@ -958,7 +958,7 @@ export function getProfileTimeline(
 	const detectGaps = opts.detectGaps !== false;
 	const fillFromKnowledge = opts.fillFromKnowledge !== false;
 	const minGapDays = Math.max(7, Math.min(3650, Math.floor(Number(opts.minGapDays ?? 30))));
-	const limit = Math.max(10, Math.min(1500, Math.floor(Number(opts.limit ?? 600))));
+	const limit = Math.max(10, Math.min(5000, Math.floor(Number(opts.limit ?? 2000))));
 
 	// Collect direct profileId + linked historic_event / related child profile IDs
 	const targetIds = new Set<string>([profile.id]);
@@ -1054,7 +1054,7 @@ export function getProfileTimeline(
 			? loadMatchingKnowledgeDeedsForTimeline(db, profile, {
 					from: opts.from,
 					to: opts.to,
-					maxDocs: Math.min(1200, Math.max(600, limit)),
+					maxDocs: Math.min(5000, Math.max(2000, limit)),
 				})
 			: [];
 
